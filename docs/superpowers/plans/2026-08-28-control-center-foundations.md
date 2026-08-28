@@ -25,6 +25,10 @@
 - **Auth applicative : Google OIDC uniquement.** `users.auth_provider` = `'google'`, `users.google_sub` = clé d'identité. Aucun mot de passe stocké.
 - **Commits fréquents** : un commit par tâche terminée minimum, conventionnels (`feat:`, `chore:`, `test:`).
 - Toutes les commandes backend s'exécutent depuis `backend/` sauf mention contraire.
+- **`uv` n'est pas sur le PATH de cette machine** (installé sous Python 3.12 via
+  `pip --user`). Partout où le plan écrit `uv ...` (ex. `uv run pytest`,
+  `uv sync`, `uv run alembic`), exécuter **`python -m uv ...`**. Si `python`
+  n'est pas Python 3.12 dans le shell courant, utiliser `py -3.12 -m uv ...`.
 
 ---
 
@@ -1652,69 +1656,7 @@ Si des opérations sont détectées : la migration ne reflète pas les modèles 
 ```python
 import os
 import subprocess
-from pathlib import Path
-
-import pytest
-import sqlalchemy as sa
-
-from app.config import get_settings
-
-BACKEND_DIR = Path(__file__).resolve().parents[1]
-EXPECTED_TABLES = {
-    "users",
-    "google_connections",
-    "websites",
-    "website_google_links",
-    "audit_snapshots",
-    "issue_items",
-    "audit_log",
-}
-
-
-def _alembic(*args: str) -> subprocess.CompletedProcess:
-    env = {**os.environ, "ALEMBIC_DATABASE_URL": get_settings().database_url_migrations_test}
-    return subprocess.run(
-        ["uv", "run", "alembic", *args],
-        cwd=BACKEND_DIR,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-
-
-@pytest.fixture
-def clean_migrations_db():
-    _alembic("downgrade", "base")
-    yield
-    _alembic("downgrade", "base")
-
-
-def test_upgrade_creates_all_tables(clean_migrations_db) -> None:
-    result = _alembic("upgrade", "head")
-    assert result.returncode == 0, result.stderr
-
-    sync_url = get_settings().database_url_migrations_test.replace(
-        "postgresql+asyncpg", "postgresql+psycopg"
-    )
-    # psycopg n'est pas une dépendance : on interroge via asyncpg dans un run sync léger.
-    engine = sa.create_engine(
-        get_settings().database_url_migrations_test.replace(
-            "postgresql+asyncpg", "postgresql+asyncpg"
-        ),
-        future=True,
-    )
-    # NB: sqlalchemy sync ne parle pas asyncpg. Utiliser une inspection async à la place.
-    raise AssertionError("voir Step 9 : remplacer par la version async ci-dessous")
-```
-
-> Le squelette ci-dessus est **volontairement cassé** pour forcer l'écriture de
-> la version correcte au Step 9 (SQLAlchemy sync ne pilote pas `asyncpg`).
-
-- [ ] **Step 9: Réécrire `test_migrations.py` en version async correcte**
-
-```python
-import os
-import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -1738,9 +1680,12 @@ EXPECTED_TABLES = {
 
 
 def _alembic(*args: str) -> subprocess.CompletedProcess:
+    # `python -m alembic` via l'interpréteur courant : sous `python -m uv run
+    # pytest`, sys.executable est le python du venv (alembic y est installé).
+    # On n'appelle pas `uv` en sous-processus car uv n'est pas sur le PATH.
     env = {**os.environ, "ALEMBIC_DATABASE_URL": MIG_URL}
     return subprocess.run(
-        ["uv", "run", "alembic", *args],
+        [sys.executable, "-m", "alembic", *args],
         cwd=BACKEND_DIR,
         env=env,
         capture_output=True,
@@ -1785,18 +1730,18 @@ async def test_models_match_migration(clean_migrations_db) -> None:
     assert check.returncode == 0, f"schéma désynchronisé:\n{check.stdout}\n{check.stderr}"
 ```
 
-- [ ] **Step 10: Lancer — attendu : PASS**
+- [ ] **Step 9: Lancer — attendu : PASS**
 
-Run: `cd backend && uv run pytest tests/test_migrations.py -v`
+Run: `cd backend && python -m uv run pytest tests/test_migrations.py -v`
 Expected: 3 tests PASSED. (Ces tests lancent `alembic` en sous-processus ; ils sont plus lents — ~5-10 s.)
 
-- [ ] **Step 11: Appliquer la migration à la base de dev**
+- [ ] **Step 10: Appliquer la migration à la base de dev**
 
-Run: `cd backend && uv run alembic upgrade head`
+Run: `cd backend && python -m uv run alembic upgrade head`
 (cible `control_center` via `settings.database_url`)
 Expected: `Running upgrade  -> <hash>, initial schema`.
 
-- [ ] **Step 12: Lint + commit**
+- [ ] **Step 11: Lint + commit**
 
 ```bash
 cd backend && uv run ruff check .
