@@ -117,9 +117,6 @@ next-env.d.ts
 .DS_Store
 .idea/
 .vscode/
-
-# Docker volumes locaux
-.pgdata/
 ```
 
 - [ ] **Step 2: Créer `docker/postgres-init/01-create-databases.sql`**
@@ -144,7 +141,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - ./.pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
       - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U cc -d control_center"]
@@ -161,7 +158,14 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+volumes:
+  pgdata:
 ```
+
+> Volume nommé `pgdata` (pas de bind mount `./.pgdata`) : évite les problèmes de
+> permissions du répertoire PGDATA sous Docker Desktop / Windows. Pour repartir
+> de zéro (ré-exécuter les scripts d'init) : `docker compose down -v`.
 
 - [ ] **Step 4: Créer `README.md`**
 
@@ -212,17 +216,24 @@ Expected: services `db` et `redis` à l'état `running (healthy)` sous ~15 s.
 - [ ] **Step 6: Vérifier que les 3 bases existent**
 
 Run: `docker compose exec db psql -U cc -d control_center -c "\l"`
-Expected: la liste contient `control_center`, `control_center_test`, `control_center_migrations`.
+Expected: la liste contient les 3 bases `control_center`, `control_center_test`, `control_center_migrations`.
 
-> Si les bases de test manquent : `./.pgdata` a été créé lors d'un run précédent. `docker compose down`, `rm -rf .pgdata`, puis `docker compose up -d`.
+> Si les bases de test manquent : le volume `pgdata` a été créé lors d'un run
+> précédent (avant l'ajout du script d'init). `docker compose down -v` puis
+> `docker compose up -d` pour forcer la ré-exécution des scripts d'init.
 
-- [ ] **Step 7: Initialiser git et committer**
+- [ ] **Step 7: Committer**
+
+Le dépôt git est déjà initialisé et la branche de travail est `feat/foundations`
+(le contrôleur s'en est chargé). Committer les nouveaux fichiers d'infra :
 
 ```bash
-git init
-git add .gitignore docker-compose.yml docker/ README.md docs/
+git add .gitignore docker-compose.yml docker/ README.md
 git commit -m "chore: scaffold monorepo + docker compose infra"
 ```
+
+> `.gitignore` existe déjà (version bootstrap minimale) : le remplacer par le
+> contenu du Step 1, c'est une modification et non une création.
 
 ---
 
@@ -274,6 +285,7 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 
 [tool.ruff]
@@ -611,7 +623,7 @@ git commit -m "feat(backend): async DB layer + /health/db"
 - Produces (noms/signatures repris par T5–T7) :
   - `app.models.enums.ConnectionStatus` : `ACTIVE`, `NEEDS_REAUTH`, `REVOKED` (StrEnum).
   - `app.models.mixins.UUIDPrimaryKeyMixin` (colonne `id: Mapped[UUID]`), `TimestampMixin` (`created_at`, `updated_at`).
-  - `app.models.user.User` — table `users`. Champs : `id, email, auth_provider, google_sub, display_name, created_at, updated_at`. Relation `google_connections: Mapped[list[GoogleConnection]]`.
+  - `app.models.user.User` — table `users`. Champs : `id, email, auth_provider, google_sub, display_name, created_at, updated_at`. Relation `google_connections: Mapped[list[GoogleConnection]]` (avec `passive_deletes=True`). La relation `websites` est ajoutée en T5 (le modèle `Website` n'existe pas encore).
   - `app.models.google_connection.GoogleConnection` — table `google_connections`. Champs : `id, user_id, google_account_email, google_sub, granted_scopes (list[str]), refresh_token_encrypted (bytes), encryption_key_version (int), status (ConnectionStatus), created_at, updated_at, last_refreshed_at`. Relation `user: Mapped[User]`.
 
 - [ ] **Step 1: Créer `backend/app/models/enums.py`**
@@ -694,6 +706,13 @@ class TimestampMixin:
 
 - [ ] **Step 3: Créer `backend/app/models/user.py`**
 
+> ⚠️ La relation `websites` **n'est pas** dans cette version : le modèle
+> `Website` n'existe qu'en T5, et SQLAlchemy résout les cibles de relations à
+> la configuration des mappers (au premier `flush`), ce qui casserait les tests
+> de T4. T5 ajoutera `websites` à ce fichier. `passive_deletes=True` +
+> `ondelete="CASCADE"` (côté FK) : la suppression en cascade est faite par
+> Postgres, pas par un lazy-load ORM (impossible en async).
+
 ```python
 from __future__ import annotations
 
@@ -707,7 +726,6 @@ from app.models.mixins import TimestampMixin, UUIDPrimaryKeyMixin
 
 if TYPE_CHECKING:
     from app.models.google_connection import GoogleConnection
-    from app.models.website import Website
 
 
 class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -721,10 +739,7 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     google_connections: Mapped[list[GoogleConnection]] = relationship(
-        back_populates="user", cascade="all, delete-orphan"
-    )
-    websites: Mapped[list[Website]] = relationship(
-        back_populates="user", cascade="all, delete-orphan"
+        back_populates="user", cascade="all, delete-orphan", passive_deletes=True
     )
 ```
 
@@ -737,7 +752,16 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import ARRAY, DateTime, Enum, ForeignKey, Integer, LargeBinary, String
+from sqlalchemy import (
+    ARRAY,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    LargeBinary,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -752,7 +776,7 @@ class GoogleConnection(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "google_connections"
     __table_args__ = (
         # un utilisateur ne lie pas deux fois la même identité Google
-        {"comment": "Une ligne = une identité Google liée par un utilisateur."},
+        UniqueConstraint("user_id", "google_sub", name="user_google_sub"),
     )
 
     user_id: Mapped[UUID] = mapped_column(
@@ -779,48 +803,18 @@ class GoogleConnection(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     user: Mapped[User] = relationship(back_populates="google_connections")
 ```
 
-> La contrainte `UNIQUE (user_id, google_sub)` est ajoutée proprement via
-> `UniqueConstraint` dans `__table_args__`. Remplacer le `__table_args__`
-> ci-dessus par :
-> ```python
-> from sqlalchemy import UniqueConstraint
-> __table_args__ = (
->     UniqueConstraint("user_id", "google_sub", name="user_google_sub"),
-> )
-> ```
+- [ ] **Step 5: Modifier `backend/app/models/__init__.py` (version T4)**
 
-- [ ] **Step 5: Modifier `backend/app/models/__init__.py`**
+`__init__.py` grandit à chaque tâche (T4 : 2 modèles, T5 : +2, T6 : +3). Ne
+mettre que ce qui existe, sinon `import app.models` casse tout `conftest.py`.
+Version T4 exacte :
 
 ```python
-from app.models.audit_log import AuditLog
-from app.models.audit_snapshot import AuditSnapshot
 from app.models.google_connection import GoogleConnection
-from app.models.issue_item import IssueItem
 from app.models.user import User
-from app.models.website import Website
-from app.models.website_google_link import WebsiteGoogleLink
 
-__all__ = [
-    "AuditLog",
-    "AuditSnapshot",
-    "GoogleConnection",
-    "IssueItem",
-    "User",
-    "Website",
-    "WebsiteGoogleLink",
-]
+__all__ = ["GoogleConnection", "User"]
 ```
-
-> Les imports de `website*`, `issue_item`, `audit_*` référencent des modules
-> créés en T5–T6. Pour que `conftest.py` fonctionne dès maintenant, garder
-> temporairement dans `__init__.py` **seulement** les lignes `User` et
-> `GoogleConnection`, et compléter au fil de T5–T6. Version T4 :
-> ```python
-> from app.models.google_connection import GoogleConnection
-> from app.models.user import User
->
-> __all__ = ["GoogleConnection", "User"]
-> ```
 
 - [ ] **Step 6: Écrire les tests qui échouent — `backend/tests/test_models_users_connections.py`**
 
@@ -904,7 +898,11 @@ async def test_user_cascade_deletes_connections(db_session: AsyncSession) -> Non
 
 Run: `cd backend && uv run pytest tests/test_models_users_connections.py -v`
 Expected: 4 tests PASSED.
-(Si `test_user_cascade_deletes_connections` échoue : le cascade ORM exige que l'objet parent soit chargé avec sa collection ; l'`cascade="all, delete-orphan"` sur la relation suffit ici puisqu'on `delete(user)`. Si échec persistant, ajouter `passive_deletes=True` sur la relation et conserver l'`ondelete="CASCADE"` du FK.)
+(`test_user_cascade_deletes_connections` : le `passive_deletes=True` sur
+`User.google_connections` + `ondelete="CASCADE"` sur le FK délèguent la
+suppression à Postgres — pas de lazy-load ORM, ce qui serait impossible en
+async. Si `MissingGreenlet` apparaît, c'est que `passive_deletes=True` a été
+oublié sur la relation.)
 
 - [ ] **Step 8: Lint + commit**
 
@@ -921,6 +919,7 @@ git commit -m "feat(models): enums, mixins, User, GoogleConnection"
 **Files:**
 - Create: `backend/app/models/website.py`
 - Create: `backend/app/models/website_google_link.py`
+- Modify: `backend/app/models/user.py` (ajouter la relation `websites`)
 - Modify: `backend/app/models/__init__.py` (ajouter `Website`, `WebsiteGoogleLink`)
 - Create: `backend/tests/test_models_websites_links.py`
 
@@ -1021,11 +1020,36 @@ class WebsiteGoogleLink(UUIDPrimaryKeyMixin, Base):
     website: Mapped[Website] = relationship(back_populates="google_links")
 ```
 
-- [ ] **Step 3: Modifier `backend/app/models/__init__.py`**
+- [ ] **Step 3: Modifier `backend/app/models/user.py` — ajouter la relation `websites`**
 
-Ajouter les imports `Website` et `WebsiteGoogleLink` et les entrées `__all__` correspondantes (par ordre alphabétique).
+Ajouter l'import `TYPE_CHECKING` de `Website` et la relation. Résultat :
 
-- [ ] **Step 4: Écrire les tests qui échouent — `backend/tests/test_models_websites_links.py`**
+```python
+if TYPE_CHECKING:
+    from app.models.google_connection import GoogleConnection
+    from app.models.website import Website
+```
+
+et dans la classe `User`, après `google_connections` :
+
+```python
+    websites: Mapped[list[Website]] = relationship(
+        back_populates="user", cascade="all, delete-orphan", passive_deletes=True
+    )
+```
+
+- [ ] **Step 4: Modifier `backend/app/models/__init__.py` (version T5)**
+
+```python
+from app.models.google_connection import GoogleConnection
+from app.models.user import User
+from app.models.website import Website
+from app.models.website_google_link import WebsiteGoogleLink
+
+__all__ = ["GoogleConnection", "User", "Website", "WebsiteGoogleLink"]
+```
+
+- [ ] **Step 5: Écrire les tests qui échouent — `backend/tests/test_models_websites_links.py`**
 
 ```python
 import pytest
@@ -1132,12 +1156,18 @@ async def test_website_delete_cascades_links(db_session: AsyncSession) -> None:
     assert links == []
 ```
 
-- [ ] **Step 5: Lancer — attendu : PASS**
+- [ ] **Step 6: Lancer — attendu : PASS**
 
 Run: `cd backend && uv run pytest tests/test_models_websites_links.py -v`
 Expected: 4 tests PASSED.
 
-- [ ] **Step 6: Lint + commit**
+- [ ] **Step 7: Relancer T4 pour non-régression**
+
+Run: `cd backend && uv run pytest tests/test_models_users_connections.py -v`
+Expected: 4 tests toujours PASSED (l'ajout de la relation `websites` sur `User`
+ne casse rien).
+
+- [ ] **Step 8: Lint + commit**
 
 ```bash
 cd backend && uv run ruff check .
@@ -1303,9 +1333,27 @@ class AuditLog(UUIDPrimaryKeyMixin, Base):
     )
 ```
 
-- [ ] **Step 4: Modifier `backend/app/models/__init__.py`**
+- [ ] **Step 4: Modifier `backend/app/models/__init__.py` (version finale, 7 modèles)**
 
-Compléter avec les 7 imports/`__all__` (version finale telle que montrée dans T4 Step 5).
+```python
+from app.models.audit_log import AuditLog
+from app.models.audit_snapshot import AuditSnapshot
+from app.models.google_connection import GoogleConnection
+from app.models.issue_item import IssueItem
+from app.models.user import User
+from app.models.website import Website
+from app.models.website_google_link import WebsiteGoogleLink
+
+__all__ = [
+    "AuditLog",
+    "AuditSnapshot",
+    "GoogleConnection",
+    "IssueItem",
+    "User",
+    "Website",
+    "WebsiteGoogleLink",
+]
+```
 
 - [ ] **Step 5: Écrire les tests qui échouent — `backend/tests/test_models_journal.py`**
 
@@ -1520,7 +1568,7 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
-        compare_server_default=True,
+        compare_server_default=False,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -1531,7 +1579,7 @@ def do_run_migrations(connection) -> None:
         connection=connection,
         target_metadata=target_metadata,
         compare_type=True,
-        compare_server_default=True,
+        compare_server_default=False,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -1555,6 +1603,12 @@ if context.is_offline_mode():
 else:
     asyncio.run(run_migrations_online())
 ```
+
+> `compare_server_default=False` est délibéré : avec `True`, `alembic check`
+> signale de faux écarts sur les `server_default=func.now()` (Postgres renvoie
+> `now()` sous une forme normalisée qu'Alembic ne reconnaît pas comme
+> identique). `compare_type=True` reste actif. Les changements de schéma passent
+> de toute façon par des migrations explicites, jamais par autogenerate seul.
 
 - [ ] **Step 4: Générer la migration initiale**
 
@@ -2052,9 +2106,16 @@ git commit -m "feat(security): AES-256-GCM refresh token cipher with key version
 
 Run (depuis la racine `Guiili/`) :
 ```bash
-npx create-next-app@latest frontend --typescript --app --eslint --no-tailwind --no-src-dir --import-alias "@/*" --use-npm
+npx --yes create-next-app@latest frontend --typescript --app --eslint --no-tailwind --no-src-dir --no-turbopack --import-alias "@/*" --use-npm
 ```
-Expected: `frontend/` créé avec App Router + TypeScript.
+Expected: `frontend/` créé avec App Router + TypeScript, sans prompt interactif
+(tous les choix sont passés en flags ; `--yes` évite la question d'installation
+de `create-next-app`).
+
+> Si `create-next-app` refuse à cause d'un `.gitignore`/`README.md` déjà présents
+> à la racine : ce n'est pas le cas, il écrit dans `frontend/` qui est vide.
+> Si une version future retire un flag, garder les valeurs équivalentes
+> (TypeScript oui, App Router oui, Tailwind non, src/ non, alias `@/*`).
 
 - [ ] **Step 2: Créer `frontend/.env.example`**
 
