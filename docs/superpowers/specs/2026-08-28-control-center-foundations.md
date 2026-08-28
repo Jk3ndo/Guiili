@@ -332,10 +332,11 @@ Guiili/
 
 ```
 ENVIRONMENT=local
-DATABASE_URL=postgresql+asyncpg://cc:cc@localhost:5432/control_center
-DATABASE_URL_TEST=postgresql+asyncpg://cc:cc@localhost:5432/control_center_test
-DATABASE_URL_MIGRATIONS_TEST=postgresql+asyncpg://cc:cc@localhost:5432/control_center_migrations
-REDIS_URL=redis://localhost:6379/0
+# 5432 / 6379 déjà pris sur la machine de dev → Compose publie sur 55432 / 6380
+DATABASE_URL=postgresql+asyncpg://cc:cc@localhost:55432/control_center
+DATABASE_URL_TEST=postgresql+asyncpg://cc:cc@localhost:55432/control_center_test
+DATABASE_URL_MIGRATIONS_TEST=postgresql+asyncpg://cc:cc@localhost:55432/control_center_migrations
+REDIS_URL=redis://localhost:6380/0
 
 # OAuth Google (créés dans Google Cloud Console — client "Web application")
 GOOGLE_CLIENT_ID=

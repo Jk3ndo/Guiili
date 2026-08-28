@@ -29,6 +29,12 @@
   `pip --user`). Partout où le plan écrit `uv ...` (ex. `uv run pytest`,
   `uv sync`, `uv run alembic`), exécuter **`python -m uv ...`**. Si `python`
   n'est pas Python 3.12 dans le shell courant, utiliser `py -3.12 -m uv ...`.
+- **Ports Docker non standard sur cette machine** : Postgres est publié sur
+  **55432** (5432 = Postgres natif de l'hôte) et Redis sur **6380** (6379 =
+  Redis d'un autre projet). Toutes les URLs DB (`.env`, `.env.example`,
+  `ALEMBIC_DATABASE_URL`) utilisent `localhost:55432`. `docker compose up -d`
+  démarre les deux services proprement. `docker compose stop db` / `start db`
+  pour les cycles RED/GREEN.
 
 ---
 
@@ -93,7 +99,7 @@ Responsabilités par fichier clé :
 
 **Interfaces:**
 - Consumes: rien.
-- Produces: base de données `control_center`, `control_center_test`, `control_center_migrations` accessibles sur `localhost:5432` (user `cc`, mot de passe `cc`) ; Redis sur `localhost:6379`. Ces noms/identifiants sont réutilisés par `backend/.env.example` (T2).
+- Produces: bases `control_center`, `control_center_test`, `control_center_migrations` accessibles sur `localhost:55432` (user `cc`, mot de passe `cc`) ; Redis sur `localhost:6380`. Ports non standard car 5432/6379 sont déjà pris sur la machine de dev (Postgres natif + Redis d'un autre projet). Ces valeurs sont réutilisées par `backend/.env.example` (T2).
 
 - [ ] **Step 1: Créer `.gitignore`**
 
@@ -135,6 +141,8 @@ CREATE DATABASE control_center_migrations;
 - [ ] **Step 3: Créer `docker-compose.yml`**
 
 ```yaml
+# 5432 / 6379 sont déjà pris sur la machine de dev (Postgres natif + Redis d'un
+# autre projet) → on publie sur 55432 / 6380. backend/.env(.example) suivent.
 services:
   db:
     image: postgres:16
@@ -143,7 +151,7 @@ services:
       POSTGRES_PASSWORD: cc
       POSTGRES_DB: control_center
     ports:
-      - "5432:5432"
+      - "55432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
@@ -156,7 +164,7 @@ services:
   redis:
     image: redis:7
     ports:
-      - "6379:6379"
+      - "6380:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -306,10 +314,11 @@ Expected: crée `.venv/` et `uv.lock`. Aucune erreur de résolution.
 
 ```
 ENVIRONMENT=local
-DATABASE_URL=postgresql+asyncpg://cc:cc@localhost:5432/control_center
-DATABASE_URL_TEST=postgresql+asyncpg://cc:cc@localhost:5432/control_center_test
-DATABASE_URL_MIGRATIONS_TEST=postgresql+asyncpg://cc:cc@localhost:5432/control_center_migrations
-REDIS_URL=redis://localhost:6379/0
+# Docker Compose publie Postgres sur 55432 et Redis sur 6380 (voir docker-compose.yml)
+DATABASE_URL=postgresql+asyncpg://cc:cc@localhost:55432/control_center
+DATABASE_URL_TEST=postgresql+asyncpg://cc:cc@localhost:55432/control_center_test
+DATABASE_URL_MIGRATIONS_TEST=postgresql+asyncpg://cc:cc@localhost:55432/control_center_migrations
+REDIS_URL=redis://localhost:6380/0
 
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
@@ -1618,7 +1627,7 @@ else:
 
 Run:
 ```bash
-cd backend && ALEMBIC_DATABASE_URL="postgresql+asyncpg://cc:cc@localhost:5432/control_center_migrations" uv run alembic revision --autogenerate -m "initial schema"
+cd backend && ALEMBIC_DATABASE_URL="postgresql+asyncpg://cc:cc@localhost:55432/control_center_migrations" uv run alembic revision --autogenerate -m "initial schema"
 ```
 Expected: un fichier `alembic/versions/<hash>_initial_schema.py` apparaît.
 
@@ -1638,7 +1647,7 @@ Corriger l'ordre des `create_table`/`drop_table` si une FK est créée avant sa 
 
 ```bash
 cd backend
-export ALEMBIC_DATABASE_URL="postgresql+asyncpg://cc:cc@localhost:5432/control_center_migrations"
+export ALEMBIC_DATABASE_URL="postgresql+asyncpg://cc:cc@localhost:55432/control_center_migrations"
 uv run alembic upgrade head
 uv run alembic downgrade base
 uv run alembic upgrade head
@@ -1647,7 +1656,7 @@ Expected: aucune erreur sur les 3 commandes.
 
 - [ ] **Step 7: Vérifier la synchro modèles ⇔ migration**
 
-Run: `cd backend && ALEMBIC_DATABASE_URL="postgresql+asyncpg://cc:cc@localhost:5432/control_center_migrations" uv run alembic check`
+Run: `cd backend && ALEMBIC_DATABASE_URL="postgresql+asyncpg://cc:cc@localhost:55432/control_center_migrations" uv run alembic check`
 Expected: `No new upgrade operations detected.`
 Si des opérations sont détectées : la migration ne reflète pas les modèles → régénérer ou corriger à la main, puis relancer `alembic check`.
 

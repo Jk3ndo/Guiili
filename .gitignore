@@ -21,3 +21,6 @@ next-env.d.ts
 .DS_Store
 .idea/
 .vscode/
+
+# Local-only Docker overrides
+docker-compose.override.yml
