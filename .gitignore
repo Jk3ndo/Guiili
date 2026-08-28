@@ -1,0 +1,9 @@
+# Bootstrap ignore — replaced/expanded by Task 1
+.superpowers/
+.pgdata/
+.venv/
+__pycache__/
+node_modules/
+.next/
+.env
+.env.local
