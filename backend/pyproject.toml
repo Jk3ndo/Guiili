@@ -1,0 +1,42 @@
+[project]
+name = "control-center-backend"
+version = "0.1.0"
+requires-python = "==3.12.*"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+    "pydantic-settings>=2.7",
+    "cryptography>=44.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "httpx>=0.28",
+    "ruff>=0.9",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# Explicit selection so lint is stable across ruff releases (0.16 broadened its
+# default set, which caused per-task drift). Already satisfied by the whole tree.
+# "E4"/"E7"/"E9" = ruff's historical default E subset (E501 line-length is left to
+# the formatter, not enforced as a lint error).
+select = ["E4", "E7", "E9", "F", "W", "I", "UP", "B", "C4", "SIM", "PLC", "PLE", "PLW", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"**/__init__.py" = ["F401"]

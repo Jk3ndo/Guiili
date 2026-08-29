@@ -1,0 +1,2 @@
+CREATE DATABASE control_center_test;
+CREATE DATABASE control_center_migrations;
