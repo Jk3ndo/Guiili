@@ -37,9 +37,6 @@ async def test_connection_status_defaults_active(db_session: AsyncSession) -> No
     assert conn.status == ConnectionStatus.ACTIVE
 
 
-@pytest.mark.filterwarnings(
-    "ignore:transaction already deassociated from connection:sqlalchemy.exc.SAWarning"
-)
 async def test_connection_unique_user_google_sub(db_session: AsyncSession) -> None:
     user = await _make_user(db_session)
     common = {

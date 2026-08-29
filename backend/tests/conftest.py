@@ -27,7 +27,16 @@ async def engine() -> AsyncGenerator:
 async def db_session(engine) -> AsyncGenerator[AsyncSession, None]:
     conn = await engine.connect()
     trans = await conn.begin()
-    session_maker = async_sessionmaker(bind=conn, expire_on_commit=False)
+    # join_transaction_mode="create_savepoint": the session runs inside a
+    # SAVEPOINT, so a test that triggers an IntegrityError rolls back to the
+    # savepoint instead of poisoning the outer transaction. The teardown
+    # trans.rollback() below then stays clean (no "transaction already
+    # deassociated from connection" SAWarning).
+    session_maker = async_sessionmaker(
+        bind=conn,
+        expire_on_commit=False,
+        join_transaction_mode="create_savepoint",
+    )
     session = session_maker()
     try:
         yield session
