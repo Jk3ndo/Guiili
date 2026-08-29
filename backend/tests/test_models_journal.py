@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -103,6 +103,31 @@ async def test_snapshot_delete_nulls_issue_link(db_session: AsyncSession) -> Non
     await db_session.flush()
     await db_session.refresh(issue)
     assert issue.source_snapshot_id is None
+
+
+async def test_timestamp_mixin_updated_at_refires_on_update(
+    db_session: AsyncSession,
+) -> None:
+    # NOTE: onupdate=func.now() is emitted in the UPDATE SET clause, but
+    # Postgres now() is the transaction-start timestamp, so within the single
+    # transaction of db_session updated_at cannot advance past created_at.
+    # We instead plant a stale updated_at out-of-band and assert an ORM update
+    # overwrites it, proving onupdate fires for ORM-issued UPDATEs.
+    user = User(email="ts@example.com", google_sub="ts-sub")
+    db_session.add(user)
+    await db_session.flush()
+    await db_session.refresh(user)
+
+    stale = datetime(2000, 1, 1, tzinfo=UTC)
+    await db_session.execute(
+        update(User).where(User.id == user.id).values(updated_at=stale)
+    )
+
+    user.display_name = "renamed"
+    await db_session.flush()
+    await db_session.refresh(user)
+    assert user.updated_at != stale
+    assert user.updated_at >= user.created_at
 
 
 async def test_audit_log_survives_user_delete(db_session: AsyncSession) -> None:

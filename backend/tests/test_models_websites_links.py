@@ -36,7 +36,7 @@ async def test_website_unique_user_domain(db_session: AsyncSession) -> None:
         await db_session.flush()
 
 
-async def test_link_multi_connection_per_website(db_session: AsyncSession) -> None:
+async def test_link_multi_resource_per_website(db_session: AsyncSession) -> None:
     user, conn = await _seed(db_session)
     site = Website(user_id=user.id, domain="ex.com", display_name="Ex")
     db_session.add(site)

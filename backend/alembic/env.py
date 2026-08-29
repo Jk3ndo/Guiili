@@ -21,9 +21,18 @@ target_metadata = Base.metadata
 # CHECK est « type-bound » et SQLAlchemy l'exclut de la comparaison côté
 # métadonnées (all_table_check_constraints). Le comparateur
 # `checkconstraint_byname` (Alembic >= 1.16) la voit alors uniquement côté base
-# réfléchie et signale 7 faux « removed » à chaque `alembic check`. On désactive
-# ce comparateur : les CHECK d'enums sont créées/supprimées avec leur table, et
-# tout changement de valeurs passera par une migration explicite.
+# réfléchie et signale 7 faux « removed » à chaque `alembic check`.
+#
+# On désactive donc ce comparateur. CONSÉQUENCE : `alembic check` ne détecte
+# plus AUCUNE dérive de CheckConstraint — ni les CHECK d'enums, ni une
+# éventuelle CheckConstraint écrite à la main. C'est la même classe de
+# compromis que `compare_server_default=False` : ces objets sont créés /
+# supprimés avec leur table, et tout changement doit passer par une migration
+# explicite.
+#
+# Contrôle compensatoire : tests/test_enum_check_constraints.py compare, pour
+# chaque ck_* d'enum, les littéraux de la CHECK en base à {m.value for m in
+# EnumClass} et échoue si un membre d'enum est ajouté sans migration.
 AUTOGENERATE_PLUGINS = (
     "alembic.autogenerate.*",
     "~alembic.autogenerate.checkconstraint_byname",
