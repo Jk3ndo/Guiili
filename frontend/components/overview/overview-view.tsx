@@ -15,7 +15,7 @@ export function OverviewView() {
 
   return (
     <PageShell header={<OverviewHeader data={data} />}>
-      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {data.metrics.map((metric) => (
           <MetricCard key={metric.id} metric={metric} />
         ))}

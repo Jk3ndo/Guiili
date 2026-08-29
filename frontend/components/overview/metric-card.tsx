@@ -13,22 +13,24 @@ function deltaTone(delta: number): string {
 
 export function MetricCard({ metric }: { metric: MetricScore }) {
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-hairline bg-surface p-3.5">
+    <div className="rounded-xl border border-white/[0.08] bg-surface/60 p-5 backdrop-blur-sm">
       <div className="flex items-center justify-between">
-        <span className="text-xs text-ink-muted">{metric.label}</span>
+        <span className="text-sm text-ink-muted">{metric.label}</span>
         <StatusPill status={metric.status} />
       </div>
 
-      <div className="flex items-baseline gap-2">
-        <span className="font-mono text-[26px] leading-none font-medium text-ink tabular-nums">
+      <div className="mt-3.5 flex items-baseline gap-2.5">
+        <span className="font-mono text-3xl font-semibold text-ink tabular-nums">
           {metric.value}
         </span>
-        <span className={cn("text-2xs font-medium", deltaTone(metric.delta))}>
+        <span className={cn("text-xs font-medium", deltaTone(metric.delta))}>
           {formatDelta(metric.delta)}
         </span>
       </div>
 
-      <p className="text-2xs leading-snug text-ink-faint">{metric.hint}</p>
+      <p className="mt-2 text-xs leading-relaxed text-ink-muted">
+        {metric.hint}
+      </p>
     </div>
   );
 }

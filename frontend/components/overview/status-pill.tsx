@@ -19,7 +19,7 @@ export function StatusPill({
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1.5 text-2xs text-ink-muted",
+        "inline-flex items-center gap-1.5 text-xs text-ink-muted",
         className,
       )}
     >
