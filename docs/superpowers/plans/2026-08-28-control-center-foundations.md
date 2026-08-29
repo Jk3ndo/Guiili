@@ -563,7 +563,16 @@ async def engine() -> AsyncGenerator:
 async def db_session(engine) -> AsyncGenerator[AsyncSession, None]:
     conn = await engine.connect()
     trans = await conn.begin()
-    session_maker = async_sessionmaker(bind=conn, expire_on_commit=False)
+    # join_transaction_mode="create_savepoint" : la session travaille dans un
+    # SAVEPOINT, donc une IntegrityError levée par un test (ex. violation de
+    # contrainte UNIQUE testée via pytest.raises) revient au savepoint sans
+    # « empoisonner » la transaction externe — le trans.rollback() du teardown
+    # reste propre (pas de SAWarning "transaction already deassociated").
+    session_maker = async_sessionmaker(
+        bind=conn,
+        expire_on_commit=False,
+        join_transaction_mode="create_savepoint",
+    )
     session = session_maker()
     try:
         yield session
@@ -873,14 +882,14 @@ async def test_connection_status_defaults_active(db_session: AsyncSession) -> No
 
 async def test_connection_unique_user_google_sub(db_session: AsyncSession) -> None:
     user = await _make_user(db_session)
-    common = dict(
-        user_id=user.id,
-        google_account_email="a@example.com",
-        google_sub="dup-sub",
-        granted_scopes=["openid"],
-        refresh_token_encrypted=b"x",
-        encryption_key_version=1,
-    )
+    common = {
+        "user_id": user.id,
+        "google_account_email": "a@example.com",
+        "google_sub": "dup-sub",
+        "granted_scopes": ["openid"],
+        "refresh_token_encrypted": b"x",
+        "encryption_key_version": 1,
+    }
     db_session.add(GoogleConnection(**common))
     await db_session.flush()
     db_session.add(GoogleConnection(**common))
@@ -1435,15 +1444,15 @@ async def test_issue_status_defaults_todo(db_session: AsyncSession) -> None:
 
 async def test_issue_unique_fingerprint_per_site(db_session: AsyncSession) -> None:
     site = await _site(db_session)
-    common = dict(
-        website_id=site.id,
-        title="x",
-        description="x",
-        category=IssueCategory.SEO,
-        severity=IssueSeverity.LOW,
-        fingerprint="dup",
-        detected_at=datetime.now(UTC),
-    )
+    common = {
+        "website_id": site.id,
+        "title": "x",
+        "description": "x",
+        "category": IssueCategory.SEO,
+        "severity": IssueSeverity.LOW,
+        "fingerprint": "dup",
+        "detected_at": datetime.now(UTC),
+    }
     db_session.add(IssueItem(**common))
     await db_session.flush()
     db_session.add(IssueItem(**common))
