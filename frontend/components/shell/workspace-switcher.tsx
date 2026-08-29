@@ -76,7 +76,7 @@ export function WorkspaceSwitcher() {
                 <StackBadge stack={ws.stack} />
                 <Check
                   className={cn(
-                    "size-3.5 text-indigo",
+                    "size-3.5 text-ink",
                     ws.id === workspace.id ? "opacity-100" : "opacity-0",
                   )}
                 />

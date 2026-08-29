@@ -18,7 +18,7 @@ export function AppSidebar() {
     <Sidebar collapsible="icon" className="border-hairline">
       <SidebarHeader className="gap-2">
         <div className="flex items-center gap-2 px-1.5 pt-1 text-ink group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">
-          <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-indigo/15 text-indigo">
+          <span className="flex size-6 shrink-0 items-center justify-center rounded-md border border-hairline bg-white/[0.04] text-ink">
             <Radar className="size-3.5" />
           </span>
           <span className="text-sm font-semibold tracking-tight group-data-[collapsible=icon]:hidden">

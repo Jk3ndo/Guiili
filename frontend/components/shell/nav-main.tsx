@@ -34,7 +34,7 @@ export function NavMain() {
                 className={cn(
                   "relative text-ink-muted transition-colors",
                   "hover:text-ink data-[active=true]:font-medium data-[active=true]:text-ink",
-                  "data-[active=true]:before:absolute data-[active=true]:before:top-1/2 data-[active=true]:before:left-0 data-[active=true]:before:h-4 data-[active=true]:before:w-0.5 data-[active=true]:before:-translate-y-1/2 data-[active=true]:before:rounded-full data-[active=true]:before:bg-indigo",
+                  "data-[active=true]:before:absolute data-[active=true]:before:top-1/2 data-[active=true]:before:left-0 data-[active=true]:before:h-4 data-[active=true]:before:w-0.5 data-[active=true]:before:-translate-y-1/2 data-[active=true]:before:rounded-full data-[active=true]:before:bg-ink",
                 )}
               >
                 <Link href={route.href}>

@@ -76,7 +76,7 @@ export function CommandMenu() {
               )
             }
           >
-            <Play className="size-4 text-indigo" />
+            <Play className="size-4 text-ink-muted" />
             Lancer un diagnostic
           </CommandItem>
           <CommandItem

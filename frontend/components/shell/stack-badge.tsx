@@ -1,29 +1,15 @@
 import { cn } from "@/lib/utils";
 import type { StackId } from "@/lib/mock/types";
 
-const STACK_META: Record<StackId, { label: string; className: string }> = {
-  nextjs: {
-    label: "Next.js",
-    className: "border-indigo/25 bg-indigo/10 text-indigo",
-  },
-  wordpress: {
-    label: "WordPress",
-    className: "border-hairline-strong bg-white/5 text-ink-muted",
-  },
-  angular: {
-    label: "Angular",
-    className: "border-danger/25 bg-danger/10 text-danger",
-  },
-  vue: {
-    label: "Vue",
-    className: "border-ok/25 bg-ok/10 text-ok",
-  },
-  other: {
-    label: "Autre",
-    className: "border-hairline-strong bg-white/5 text-ink-faint",
-  },
+const LABEL: Record<StackId, string> = {
+  nextjs: "Next.js",
+  wordpress: "WordPress",
+  angular: "Angular",
+  vue: "Vue",
+  other: "Autre",
 };
 
+/** Uniform, colourless — the label carries the meaning, not a tint. */
 export function StackBadge({
   stack,
   className,
@@ -31,16 +17,14 @@ export function StackBadge({
   stack: StackId;
   className?: string;
 }) {
-  const meta = STACK_META[stack];
   return (
     <span
       className={cn(
-        "inline-flex h-[18px] shrink-0 items-center rounded-full border px-1.5 text-2xs font-medium tracking-wide",
-        meta.className,
+        "inline-flex h-[18px] shrink-0 items-center rounded border border-hairline bg-white/[0.03] px-1.5 font-mono text-2xs text-ink-muted",
         className,
       )}
     >
-      {meta.label}
+      {LABEL[stack]}
     </span>
   );
 }
