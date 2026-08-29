@@ -44,7 +44,13 @@ class GoogleConnection(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     encryption_key_version: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[ConnectionStatus] = mapped_column(
-        Enum(ConnectionStatus, native_enum=False, name="connection_status", length=32),
+        Enum(
+            ConnectionStatus,
+            native_enum=False,
+            create_constraint=True,
+            name="connection_status",
+            length=32,
+        ),
         nullable=False,
         default=ConnectionStatus.ACTIVE,
     )
