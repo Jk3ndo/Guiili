@@ -303,7 +303,19 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint]
+# Explicit selection so lint is stable across ruff releases (0.16 broadened its
+# default set). "E4"/"E7"/"E9" = ruff's historical default E subset.
+select = ["E4", "E7", "E9", "F", "W", "I", "UP", "B", "C4", "SIM", "PLC", "PLE", "PLW", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"**/__init__.py" = ["F401"]
 ```
+
+> ⚠️ ruff 0.16 a élargi son jeu de règles par défaut. Sans `select` explicite,
+> chaque tâche découvre de nouvelles règles (C408, B009, RUF012, PLW1510…). Le
+> `select` ci-dessus fige un ensemble raisonnable, déjà satisfait par tout l'arbre.
 
 - [ ] **Step 2: Synchroniser l'environnement**
 
