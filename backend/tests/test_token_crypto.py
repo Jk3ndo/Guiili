@@ -3,6 +3,7 @@ import os
 from typing import ClassVar
 
 import pytest
+from pydantic import SecretStr
 
 from app.security.token_crypto import (
     EncryptedToken,
@@ -121,15 +122,26 @@ def test_golden_decrypt_hardcoded_triple() -> None:
 
 
 def test_load_from_settings() -> None:
+    # Valeurs en SecretStr, comme la vraie classe Settings.
     class FakeSettings:
         token_enc_keys: ClassVar = {
-            1: base64.b64encode(KEY_V1).decode(),
-            2: base64.b64encode(KEY_V2).decode(),
+            1: SecretStr(base64.b64encode(KEY_V1).decode()),
+            2: SecretStr(base64.b64encode(KEY_V2).decode()),
         }
         token_enc_active_version = 2
 
     c = load_token_cipher(FakeSettings())
     assert c.decrypt(c.encrypt("hello", aad=None), aad=None) == "hello"
+
+
+def test_encrypted_token_repr_hides_bytes() -> None:
+    token = cipher().encrypt("super-secret-refresh-token", aad=None)
+    r = repr(token)
+    assert "ciphertext=<" in r and "nonce=<" in r
+    # ni le plaintext ni les octets bruts ne doivent apparaître
+    assert "super-secret-refresh-token" not in r
+    assert repr(token.ciphertext) not in r
+    assert repr(token.nonce) not in r
 
 
 def test_load_rejects_short_key() -> None:
