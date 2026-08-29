@@ -20,7 +20,9 @@ from app.models.mixins import TimestampMixin, UUIDPrimaryKeyMixin
 class IssueItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "issue_items"
     __table_args__ = (
-        UniqueConstraint("website_id", "fingerprint", name="website_fingerprint"),
+        UniqueConstraint(
+            "website_id", "fingerprint", name="uq_issue_items_website_fingerprint"
+        ),
     )
 
     website_id: Mapped[UUID] = mapped_column(
@@ -49,5 +51,7 @@ class IssueItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         DateTime(timezone=True), nullable=True
     )
     source_snapshot_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("audit_snapshots.id", ondelete="SET NULL"), nullable=True
+        ForeignKey("audit_snapshots.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )

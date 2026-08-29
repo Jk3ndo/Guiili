@@ -16,7 +16,9 @@ if TYPE_CHECKING:
 
 class Website(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "websites"
-    __table_args__ = (UniqueConstraint("user_id", "domain", name="user_domain"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "domain", name="uq_websites_user_domain"),
+    )
 
     user_id: Mapped[UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True

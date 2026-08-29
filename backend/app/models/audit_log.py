@@ -19,7 +19,9 @@ class AuditLog(UUIDPrimaryKeyMixin, Base):
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     google_connection_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("google_connections.id", ondelete="SET NULL"), nullable=True
+        ForeignKey("google_connections.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     action: Mapped[str] = mapped_column(String(100), nullable=False)
     resource_type: Mapped[str | None] = mapped_column(String(50), nullable=True)

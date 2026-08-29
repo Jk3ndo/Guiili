@@ -27,7 +27,9 @@ class GoogleConnection(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "google_connections"
     __table_args__ = (
         # un utilisateur ne lie pas deux fois la même identité Google
-        UniqueConstraint("user_id", "google_sub", name="user_google_sub"),
+        UniqueConstraint(
+            "user_id", "google_sub", name="uq_google_connections_user_google_sub"
+        ),
     )
 
     user_id: Mapped[UUID] = mapped_column(

@@ -25,7 +25,10 @@ class WebsiteGoogleLink(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "website_google_links"
     __table_args__ = (
         UniqueConstraint(
-            "website_id", "resource_type", "resource_id", name="website_resource"
+            "website_id",
+            "resource_type",
+            "resource_id",
+            name="uq_website_google_links_website_resource",
         ),
     )
 
