@@ -11,7 +11,7 @@ from app.config import get_settings
 
 
 def build_engine(url: str) -> AsyncEngine:
-    return create_async_engine(url, pool_pre_ping=True, future=True)
+    return create_async_engine(url, pool_pre_ping=True)
 
 
 engine: AsyncEngine = build_engine(get_settings().database_url)

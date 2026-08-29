@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     token_enc_keys: dict[int, str]
     token_enc_active_version: int
 
-    app_secret_key: str = "dev-only-not-secret"
+    app_secret_key: str
 
 
 @lru_cache
