@@ -8,6 +8,14 @@ export function relativeHours(hours: number): string {
   return `il y a ${Math.round(days / 30)} mois`;
 }
 
+/** "hier" / "il y a 4 j" / "il y a 2 mois" from a plain days-ago number. */
+export function relativeDays(days: number): string {
+  if (days <= 0) return "aujourd'hui";
+  if (days === 1) return "hier";
+  if (days < 30) return `il y a ${days} j`;
+  return `il y a ${Math.round(days / 30)} mois`;
+}
+
 /** "+3 pts" / "−4 pts" / "stable" */
 export function formatDelta(delta: number): string {
   if (delta === 0) return "stable";
