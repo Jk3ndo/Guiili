@@ -16,7 +16,7 @@
 - **SQLAlchemy 2.0** style `Mapped[] / mapped_column()`, moteur **async** (`postgresql+asyncpg://`).
 - **Node 20 LTS ou +**, frontend **TypeScript**, paquets **npm**, Next.js **App Router**.
 - **IDs = UUID v4** (`sqlalchemy.Uuid`, `default=uuid4`, générés côté Python). **Timestamps = `TIMESTAMP WITH TIME ZONE`** (`DateTime(timezone=True)`), `created_at`/`updated_at` en `server_default=func.now()`.
-- **Colonnes énumérées : `sa.Enum(PyEnum, native_enum=False, name="<nom>")`** → `VARCHAR` + `CHECK` nommé (pas d'`ENUM` natif Postgres).
+- **Colonnes énumérées : `sa.Enum(PyEnum, native_enum=False, create_constraint=True, name="<nom>")`** → `VARCHAR` + `CHECK` nommé `ck_<table>_<nom>` (pas d'`ENUM` natif Postgres). ⚠️ `create_constraint` vaut `False` par défaut dans SQLAlchemy 2.0 — sans lui, **aucune** contrainte `CHECK` n'est générée et une valeur invalide passe.
 - **`MetaData` naming convention obligatoire** (migrations autogénérées stables).
 - **Migrations Alembic uniquement** pour le schéma ; `Base.metadata.create_all()` autorisé **seulement** dans les fixtures de test.
 - **Refresh tokens Google chiffrés AES-256-GCM au repos.** Access tokens **jamais** persistés.
@@ -814,7 +814,7 @@ class GoogleConnection(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     encryption_key_version: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[ConnectionStatus] = mapped_column(
-        Enum(ConnectionStatus, native_enum=False, name="connection_status", length=32),
+        Enum(ConnectionStatus, native_enum=False, create_constraint=True, name="connection_status", length=32),
         nullable=False,
         default=ConnectionStatus.ACTIVE,
     )
@@ -1030,7 +1030,7 @@ class WebsiteGoogleLink(UUIDPrimaryKeyMixin, Base):
         index=True,
     )
     resource_type: Mapped[ResourceType] = mapped_column(
-        Enum(ResourceType, native_enum=False, name="resource_type", length=32),
+        Enum(ResourceType, native_enum=False, create_constraint=True, name="resource_type", length=32),
         nullable=False,
     )
     resource_id: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -1246,7 +1246,7 @@ class AuditSnapshot(UUIDPrimaryKeyMixin, Base):
         DateTime(timezone=True), nullable=False
     )
     source: Mapped[SnapshotSource] = mapped_column(
-        Enum(SnapshotSource, native_enum=False, name="snapshot_source", length=32),
+        Enum(SnapshotSource, native_enum=False, create_constraint=True, name="snapshot_source", length=32),
         nullable=False,
     )
     metrics: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
@@ -1290,15 +1290,15 @@ class IssueItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     category: Mapped[IssueCategory] = mapped_column(
-        Enum(IssueCategory, native_enum=False, name="issue_category", length=32),
+        Enum(IssueCategory, native_enum=False, create_constraint=True, name="issue_category", length=32),
         nullable=False,
     )
     severity: Mapped[IssueSeverity] = mapped_column(
-        Enum(IssueSeverity, native_enum=False, name="issue_severity", length=32),
+        Enum(IssueSeverity, native_enum=False, create_constraint=True, name="issue_severity", length=32),
         nullable=False,
     )
     status: Mapped[IssueStatus] = mapped_column(
-        Enum(IssueStatus, native_enum=False, name="issue_status", length=32),
+        Enum(IssueStatus, native_enum=False, create_constraint=True, name="issue_status", length=32),
         nullable=False,
         default=IssueStatus.TODO,
     )
@@ -1345,7 +1345,7 @@ class AuditLog(UUIDPrimaryKeyMixin, Base):
     resource_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     request_payload_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     result: Mapped[AuditResult] = mapped_column(
-        Enum(AuditResult, native_enum=False, name="audit_result", length=16),
+        Enum(AuditResult, native_enum=False, create_constraint=True, name="audit_result", length=16),
         nullable=False,
     )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)

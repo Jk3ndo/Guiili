@@ -64,7 +64,7 @@ côté Python (`default=uuid4`). Tous les timestamps sont `TIMESTAMP WITH TIME Z
 (`DateTime(timezone=True)`), `created_at`/`updated_at` avec
 `server_default=func.now()` et `onupdate=func.now()` pour `updated_at`.
 
-Les colonnes "énumérées" utilisent `sa.Enum(PyEnum, native_enum=False)` →
+Les colonnes "énumérées" utilisent `sa.Enum(PyEnum, native_enum=False, create_constraint=True)` →
 colonne `VARCHAR` + `CHECK`, pour éviter la douleur des `ALTER TYPE` Postgres.
 
 ### 3.1 `users`
