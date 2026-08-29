@@ -1578,6 +1578,19 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
+# Les 7 enums utilisent Enum(native_enum=False, create_constraint=True) : leur
+# CHECK est « type-bound » et SQLAlchemy l'exclut de la comparaison côté
+# métadonnées. Le comparateur `checkconstraint_byname` (Alembic >= 1.16) la voit
+# alors seulement côté base réfléchie et signale des faux « removed » à chaque
+# `alembic check`. On le désactive. Effet de bord assumé : `alembic check` ne
+# surveille plus AUCUNE CheckConstraint (y compris de futures CHECK écrites à la
+# main) — les changements de contraintes CHECK passent par une migration
+# explicite, comme les server_default (cf. compare_server_default=False).
+AUTOGENERATE_PLUGINS = [
+    "alembic.autogenerate.*",
+    "~alembic.autogenerate.checkconstraint_byname",
+]
+
 
 def _database_url() -> str:
     return os.environ.get("ALEMBIC_DATABASE_URL") or get_settings().database_url
@@ -1591,6 +1604,7 @@ def run_migrations_offline() -> None:
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
         compare_server_default=False,
+        autogenerate_plugins=AUTOGENERATE_PLUGINS,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -1602,6 +1616,7 @@ def do_run_migrations(connection) -> None:
         target_metadata=target_metadata,
         compare_type=True,
         compare_server_default=False,
+        autogenerate_plugins=AUTOGENERATE_PLUGINS,
     )
     with context.begin_transaction():
         context.run_migrations()
