@@ -1,8 +1,8 @@
 """initial schema
 
-Revision ID: 38c3e7468447
+Revision ID: d93e5e4d3574
 Revises:
-Create Date: 2026-08-29 09:22:57.046057
+Create Date: 2026-08-29 15:10:53.076593
 
 """
 from collections.abc import Sequence
@@ -13,7 +13,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = '38c3e7468447'
+revision: str = 'd93e5e4d3574'
 down_revision: str | Sequence[str] | None = None
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
@@ -44,14 +44,14 @@ def upgrade() -> None:
     sa.Column('granted_scopes', sa.ARRAY(sa.String()), nullable=False),
     sa.Column('refresh_token_encrypted', sa.LargeBinary(), nullable=False),
     sa.Column('encryption_key_version', sa.Integer(), nullable=False),
-    sa.Column('status', sa.Enum('ACTIVE', 'NEEDS_REAUTH', 'REVOKED', name='connection_status', native_enum=False, create_constraint=True, length=32), nullable=False),
+    sa.Column('status', sa.Enum('active', 'needs_reauth', 'revoked', name='connection_status', native_enum=False, create_constraint=True, length=32), nullable=False),
     sa.Column('last_refreshed_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('id', sa.Uuid(), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_google_connections_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_google_connections')),
-    sa.UniqueConstraint('user_id', 'google_sub', name='user_google_sub')
+    sa.UniqueConstraint('user_id', 'google_sub', name='uq_google_connections_user_google_sub')
     )
     op.create_index(op.f('ix_google_connections_user_id'), 'google_connections', ['user_id'], unique=False)
     op.create_table('websites',
@@ -63,13 +63,13 @@ def upgrade() -> None:
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_websites_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_websites')),
-    sa.UniqueConstraint('user_id', 'domain', name='user_domain')
+    sa.UniqueConstraint('user_id', 'domain', name='uq_websites_user_domain')
     )
     op.create_index(op.f('ix_websites_user_id'), 'websites', ['user_id'], unique=False)
     op.create_table('website_google_links',
     sa.Column('website_id', sa.Uuid(), nullable=False),
     sa.Column('google_connection_id', sa.Uuid(), nullable=False),
-    sa.Column('resource_type', sa.Enum('GA4_PROPERTY', 'GTM_CONTAINER', 'GSC_SITE', name='resource_type', native_enum=False, create_constraint=True, length=32), nullable=False),
+    sa.Column('resource_type', sa.Enum('ga4_property', 'gtm_container', 'gsc_site', name='resource_type', native_enum=False, create_constraint=True, length=32), nullable=False),
     sa.Column('resource_id', sa.String(length=255), nullable=False),
     sa.Column('resource_display_name', sa.String(length=255), nullable=True),
     sa.Column('linked_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
@@ -77,14 +77,14 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['google_connection_id'], ['google_connections.id'], name=op.f('fk_website_google_links_google_connection_id_google_connections'), ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['website_id'], ['websites.id'], name=op.f('fk_website_google_links_website_id_websites'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_website_google_links')),
-    sa.UniqueConstraint('website_id', 'resource_type', 'resource_id', name='website_resource')
+    sa.UniqueConstraint('website_id', 'resource_type', 'resource_id', name='uq_website_google_links_website_resource')
     )
     op.create_index(op.f('ix_website_google_links_google_connection_id'), 'website_google_links', ['google_connection_id'], unique=False)
     op.create_index(op.f('ix_website_google_links_website_id'), 'website_google_links', ['website_id'], unique=False)
     op.create_table('audit_snapshots',
     sa.Column('website_id', sa.Uuid(), nullable=False),
     sa.Column('captured_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('source', sa.Enum('PAGESPEED', 'GA4', 'GSC', 'COMPOSITE', name='snapshot_source', native_enum=False, create_constraint=True, length=32), nullable=False),
+    sa.Column('source', sa.Enum('pagespeed', 'ga4', 'gsc', 'composite', name='snapshot_source', native_enum=False, create_constraint=True, length=32), nullable=False),
     sa.Column('metrics', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.Column('id', sa.Uuid(), nullable=False),
@@ -96,9 +96,9 @@ def upgrade() -> None:
     sa.Column('website_id', sa.Uuid(), nullable=False),
     sa.Column('title', sa.String(length=255), nullable=False),
     sa.Column('description', sa.Text(), nullable=False),
-    sa.Column('category', sa.Enum('SEO', 'ANALYTICS', 'CWV', 'TRACKING', 'OTHER', name='issue_category', native_enum=False, create_constraint=True, length=32), nullable=False),
-    sa.Column('severity', sa.Enum('LOW', 'MEDIUM', 'HIGH', 'CRITICAL', name='issue_severity', native_enum=False, create_constraint=True, length=32), nullable=False),
-    sa.Column('status', sa.Enum('TODO', 'IN_PROGRESS', 'FIXED', 'DISMISSED', name='issue_status', native_enum=False, create_constraint=True, length=32), nullable=False),
+    sa.Column('category', sa.Enum('seo', 'analytics', 'cwv', 'tracking', 'other', name='issue_category', native_enum=False, create_constraint=True, length=32), nullable=False),
+    sa.Column('severity', sa.Enum('low', 'medium', 'high', 'critical', name='issue_severity', native_enum=False, create_constraint=True, length=32), nullable=False),
+    sa.Column('status', sa.Enum('todo', 'in_progress', 'fixed', 'dismissed', name='issue_status', native_enum=False, create_constraint=True, length=32), nullable=False),
     sa.Column('fingerprint', sa.String(length=255), nullable=False),
     sa.Column('detected_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('resolved_at', sa.DateTime(timezone=True), nullable=True),
@@ -109,8 +109,9 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['source_snapshot_id'], ['audit_snapshots.id'], name=op.f('fk_issue_items_source_snapshot_id_audit_snapshots'), ondelete='SET NULL'),
     sa.ForeignKeyConstraint(['website_id'], ['websites.id'], name=op.f('fk_issue_items_website_id_websites'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_issue_items')),
-    sa.UniqueConstraint('website_id', 'fingerprint', name='website_fingerprint')
+    sa.UniqueConstraint('website_id', 'fingerprint', name='uq_issue_items_website_fingerprint')
     )
+    op.create_index(op.f('ix_issue_items_source_snapshot_id'), 'issue_items', ['source_snapshot_id'], unique=False)
     op.create_index(op.f('ix_issue_items_website_id'), 'issue_items', ['website_id'], unique=False)
     op.create_table('audit_log',
     sa.Column('user_id', sa.Uuid(), nullable=True),
@@ -119,7 +120,7 @@ def upgrade() -> None:
     sa.Column('resource_type', sa.String(length=50), nullable=True),
     sa.Column('resource_id', sa.String(length=255), nullable=True),
     sa.Column('request_payload_hash', sa.String(length=64), nullable=True),
-    sa.Column('result', sa.Enum('SUCCESS', 'ERROR', name='audit_result', native_enum=False, create_constraint=True, length=16), nullable=False),
+    sa.Column('result', sa.Enum('success', 'error', name='audit_result', native_enum=False, create_constraint=True, length=16), nullable=False),
     sa.Column('error_message', sa.Text(), nullable=True),
     sa.Column('ip_address', sa.String(length=45), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
@@ -128,6 +129,7 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_audit_log_user_id_users'), ondelete='SET NULL'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_audit_log'))
     )
+    op.create_index(op.f('ix_audit_log_google_connection_id'), 'audit_log', ['google_connection_id'], unique=False)
     op.create_index('ix_audit_log_user_created', 'audit_log', ['user_id', 'created_at'], unique=False)
     # ### end Alembic commands ###
 
@@ -135,10 +137,12 @@ def upgrade() -> None:
 def downgrade() -> None:
     """Downgrade schema."""
     # ### commands auto generated by Alembic - please adjust! ###
-    # Ordre inverse de upgrade().
+    # Ordre inverse exact de upgrade().
     op.drop_index('ix_audit_log_user_created', table_name='audit_log')
+    op.drop_index(op.f('ix_audit_log_google_connection_id'), table_name='audit_log')
     op.drop_table('audit_log')
     op.drop_index(op.f('ix_issue_items_website_id'), table_name='issue_items')
+    op.drop_index(op.f('ix_issue_items_source_snapshot_id'), table_name='issue_items')
     op.drop_table('issue_items')
     op.drop_index('ix_audit_snapshots_website_captured', table_name='audit_snapshots')
     op.drop_table('audit_snapshots')
