@@ -33,7 +33,9 @@ export interface MetricScore {
   status: MetricStatus;
   /** Percentage-point change vs. the previous month. */
   delta: number;
-  /** One short line of context under the number. */
+  /** Short verdict line (font-medium) — the current-state read. */
+  verdict: string;
+  /** Muted context line under the verdict. */
   hint: string;
 }
 

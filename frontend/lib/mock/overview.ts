@@ -30,7 +30,8 @@ const FIXTURES: Record<string, Fixture> = {
         value: "92",
         status: "good",
         delta: 3,
-        hint: "Événements clés suivis, flux temps réel actif",
+        verdict: "Événements clés suivis",
+        hint: "Flux temps réel actif",
       },
       {
         id: "gsc",
@@ -38,7 +39,8 @@ const FIXTURES: Record<string, Fixture> = {
         value: "78 %",
         status: "warn",
         delta: -1,
-        hint: "12 pages produit hors index",
+        verdict: "12 pages produit hors index",
+        hint: "Sitemap à resoumettre",
       },
       {
         id: "cwv",
@@ -46,7 +48,8 @@ const FIXTURES: Record<string, Fixture> = {
         value: "61",
         status: "bad",
         delta: 6,
-        hint: "LCP 3,4 s sur mobile — images hero non optimisées",
+        verdict: "LCP 3,4 s sur mobile",
+        hint: "Images hero non optimisées",
       },
     ],
     recommendation: {
@@ -94,7 +97,8 @@ const FIXTURES: Record<string, Fixture> = {
         value: "64",
         status: "warn",
         delta: -4,
-        hint: "Formulaires de contact non instrumentés",
+        verdict: "Formulaires non instrumentés",
+        hint: "≈ 60 leads / mois non tracés",
       },
       {
         id: "gsc",
@@ -102,7 +106,8 @@ const FIXTURES: Record<string, Fixture> = {
         value: "—",
         status: "bad",
         delta: 0,
-        hint: "Reconnexion Search Console requise",
+        verdict: "Reconnexion GSC requise",
+        hint: "Aucune donnée d'indexation depuis 6 jours",
       },
       {
         id: "cwv",
@@ -110,7 +115,8 @@ const FIXTURES: Record<string, Fixture> = {
         value: "73",
         status: "warn",
         delta: 2,
-        hint: "CLS 0,18 sur la page d'accueil",
+        verdict: "CLS 0,18 en page d'accueil",
+        hint: "Bannière cookie sans réserve d'espace",
       },
     ],
     recommendation: {
@@ -158,7 +164,8 @@ const FIXTURES: Record<string, Fixture> = {
         value: "88",
         status: "good",
         delta: 1,
-        hint: "Suivi SPA via History Change",
+        verdict: "Suivi SPA opérationnel",
+        hint: "Pages vues captées via History Change",
       },
       {
         id: "gsc",
@@ -166,6 +173,7 @@ const FIXTURES: Record<string, Fixture> = {
         value: "95 %",
         status: "good",
         delta: 2,
+        verdict: "95 % des pages indexées",
         hint: "3 pages en cours d'exploration",
       },
       {
@@ -174,7 +182,8 @@ const FIXTURES: Record<string, Fixture> = {
         value: "79",
         status: "warn",
         delta: -3,
-        hint: "INP 260 ms sur la page tarifs",
+        verdict: "INP 260 ms sur /tarifs",
+        hint: "Hydratation lourde du tableau de prix",
       },
     ],
     recommendation: {
@@ -222,7 +231,8 @@ const FIXTURES: Record<string, Fixture> = {
         value: "71",
         status: "warn",
         delta: -2,
-        hint: "Paramètre user_id manquant après login",
+        verdict: "user_id absent après login",
+        hint: "Rapprochement cross-device inactif",
       },
       {
         id: "gsc",
@@ -230,7 +240,8 @@ const FIXTURES: Record<string, Fixture> = {
         value: "84 %",
         status: "good",
         delta: 4,
-        hint: "Sitemap resoumis la semaine dernière",
+        verdict: "Indexation en hausse",
+        hint: "Sitemap resoumis la semaine passée",
       },
       {
         id: "cwv",
@@ -238,7 +249,8 @@ const FIXTURES: Record<string, Fixture> = {
         value: "58",
         status: "bad",
         delta: -5,
-        hint: "Bundle Angular initial de 1,9 Mo",
+        verdict: "Bundle initial de 1,9 Mo",
+        hint: "Lazy-loading des routes à activer",
       },
     ],
     recommendation: {
