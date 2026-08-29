@@ -1,25 +1,13 @@
 import { cn } from "@/lib/utils";
 import type { MetricStatus } from "@/lib/mock/types";
 
-const META: Record<MetricStatus, { label: string; tone: string; dot: string }> =
-  {
-    good: {
-      label: "Bon",
-      tone: "text-ok ring-ok/25 bg-ok/[0.08]",
-      dot: "bg-ok shadow-[0_0_6px_1px] shadow-ok/70",
-    },
-    warn: {
-      label: "À surveiller",
-      tone: "text-warn ring-warn/25 bg-warn/[0.08]",
-      dot: "bg-warn shadow-[0_0_6px_1px] shadow-warn/70",
-    },
-    bad: {
-      label: "Critique",
-      tone: "text-danger ring-danger/25 bg-danger/[0.08]",
-      dot: "bg-danger shadow-[0_0_6px_1px] shadow-danger/70",
-    },
-  };
+const META: Record<MetricStatus, { label: string; dot: string }> = {
+  good: { label: "Bon", dot: "bg-ok" },
+  warn: { label: "À surveiller", dot: "bg-warn" },
+  bad: { label: "Critique", dot: "bg-danger" },
+};
 
+/** Flat 6px dot + neutral label. No ring, no tint, no glow. */
 export function StatusPill({
   status,
   className,
@@ -31,8 +19,7 @@ export function StatusPill({
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-2xs font-medium ring-1 ring-inset",
-        m.tone,
+        "inline-flex items-center gap-1.5 text-2xs text-ink-muted",
         className,
       )}
     >

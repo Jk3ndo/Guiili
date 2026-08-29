@@ -1,11 +1,12 @@
 import { cn } from "@/lib/utils";
 import type { TokenStatus } from "@/lib/mock/types";
 
-const DOT: Record<TokenStatus, { color: string; pulse: boolean }> = {
-  connected: { color: "bg-ok", pulse: false },
-  needs_reauth: { color: "bg-warn", pulse: true },
+const COLOR: Record<TokenStatus, string> = {
+  connected: "bg-ok",
+  needs_reauth: "bg-warn",
 };
 
+/** Flat 6px dot. No pulse, no glow. */
 export function StatusDot({
   status,
   className,
@@ -13,18 +14,9 @@ export function StatusDot({
   status: TokenStatus;
   className?: string;
 }) {
-  const { color, pulse } = DOT[status];
   return (
-    <span className={cn("relative flex size-2 shrink-0", className)}>
-      {pulse && (
-        <span
-          className={cn(
-            "absolute inline-flex size-full animate-ping rounded-full opacity-60 motion-reduce:hidden",
-            color,
-          )}
-        />
-      )}
-      <span className={cn("relative inline-flex size-2 rounded-full", color)} />
-    </span>
+    <span
+      className={cn("size-1.5 shrink-0 rounded-full", COLOR[status], className)}
+    />
   );
 }

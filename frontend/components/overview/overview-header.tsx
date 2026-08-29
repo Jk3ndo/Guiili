@@ -23,7 +23,7 @@ export function OverviewHeader({ data }: { data: OverviewData }) {
             href={`https://${data.domain}`}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex items-center gap-1 text-ink-faint transition-colors hover:text-indigo"
+            className="inline-flex items-center gap-1 text-ink-faint transition-colors hover:text-ink"
           >
             {data.domain}
             <ExternalLink className="size-3" />

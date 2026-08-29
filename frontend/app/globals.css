@@ -22,13 +22,15 @@
   --text-muted: rgba(255, 255, 255, 0.55);
   --text-faint: rgba(255, 255, 255, 0.4);
 
-  --accent-indigo: #6366f1;
-  --accent-indigo-fg: #ffffff;
-  --accent-cyan: #06b6d4;
+  /* Status is the only colour in the UI — soft 400-level tints, used as flat
+     dots and short state labels, never as fills or glows. */
+  --status-ok: #4ade80;
+  --status-warn: #fbbf24;
+  --status-danger: #f87171;
 
-  --status-ok: #22c55e;
-  --status-warn: #f59e0b;
-  --status-danger: #ef4444;
+  /* High-contrast monochrome primary (Linear / Vercel style), no colour. */
+  --solid: #fafafa;
+  --solid-fg: #18181b;
 
   --radius: 0.5rem; /* 8px — cards, inputs */
 
@@ -39,8 +41,8 @@
   --card-foreground: var(--text-primary);
   --popover: var(--surface-raised);
   --popover-foreground: var(--text-primary);
-  --primary: var(--accent-indigo);
-  --primary-foreground: var(--accent-indigo-fg);
+  --primary: var(--solid);
+  --primary-foreground: var(--solid-fg);
   --secondary: rgba(255, 255, 255, 0.06);
   --secondary-foreground: var(--text-primary);
   --muted: rgba(255, 255, 255, 0.04);
@@ -48,19 +50,19 @@
   --accent: rgba(255, 255, 255, 0.06);
   --accent-foreground: var(--text-primary);
   --destructive: var(--status-danger);
-  --destructive-foreground: #ffffff;
+  --destructive-foreground: #18181b;
   --border: var(--border-subtle);
   --input: var(--border-strong);
-  --ring: var(--accent-indigo);
+  --ring: rgba(255, 255, 255, 0.5);
 
   --sidebar: var(--surface-card);
   --sidebar-foreground: var(--text-primary);
-  --sidebar-primary: var(--accent-indigo);
-  --sidebar-primary-foreground: var(--accent-indigo-fg);
+  --sidebar-primary: var(--solid);
+  --sidebar-primary-foreground: var(--solid-fg);
   --sidebar-accent: var(--surface-raised);
   --sidebar-accent-foreground: var(--text-primary);
   --sidebar-border: var(--border-subtle);
-  --sidebar-ring: var(--accent-indigo);
+  --sidebar-ring: rgba(255, 255, 255, 0.5);
 }
 
 /* ------------------------------------------------------------------ *
@@ -106,8 +108,6 @@
   --color-ink: var(--text-primary);
   --color-ink-muted: var(--text-muted);
   --color-ink-faint: var(--text-faint);
-  --color-indigo: var(--accent-indigo);
-  --color-cyan: var(--accent-cyan);
   --color-ok: var(--status-ok);
   --color-warn: var(--status-warn);
   --color-danger: var(--status-danger);
@@ -161,7 +161,7 @@
   }
 
   ::selection {
-    background-color: color-mix(in srgb, var(--accent-indigo) 30%, transparent);
+    background-color: rgba(255, 255, 255, 0.16);
   }
 
   /* Numeric / tabular data */
@@ -173,7 +173,7 @@
 
   /* Visible keyboard focus everywhere */
   :focus-visible {
-    outline: 2px solid var(--accent-indigo);
+    outline: 2px solid rgba(255, 255, 255, 0.6);
     outline-offset: 2px;
     border-radius: var(--radius-sm);
   }
