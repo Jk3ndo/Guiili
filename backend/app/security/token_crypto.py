@@ -52,6 +52,9 @@ class EncryptedToken:
         return cls(ciphertext=ciphertext, nonce=nonce, key_version=version)
 
 
+_MAX_VERSION = 1 << (_VERSION_BYTES * 8)  # 65536 : la version tient sur 2 octets
+
+
 class TokenCipher:
     def __init__(self, keys: dict[int, bytes], active_version: int) -> None:
         if active_version not in keys:
@@ -59,6 +62,10 @@ class TokenCipher:
                 f"version active {active_version} absente du registre de clés"
             )
         for version, key in keys.items():
+            if not 0 <= version < _MAX_VERSION:
+                raise TokenCryptoConfigError(
+                    f"version de clé {version} hors plage [0, {_MAX_VERSION})"
+                )
             if len(key) != _KEY_BYTES:
                 raise TokenCryptoConfigError(
                     f"la clé v{version} fait {len(key)} octets, {_KEY_BYTES} attendus"
@@ -68,11 +75,12 @@ class TokenCipher:
 
     def _aesgcm(self, version: int) -> AESGCM:
         try:
-            return AESGCM(self._keys[version])
+            key = self._keys[version]
         except KeyError as exc:
             raise UnknownKeyVersionError(f"version de clé inconnue : {version}") from exc
+        return AESGCM(key)
 
-    def encrypt(self, plaintext: str, *, aad: bytes | None = None) -> EncryptedToken:
+    def encrypt(self, plaintext: str, *, aad: bytes | None) -> EncryptedToken:
         nonce = os.urandom(_NONCE_BYTES)
         ciphertext = self._aesgcm(self._active_version).encrypt(
             nonce, plaintext.encode("utf-8"), aad
@@ -81,7 +89,7 @@ class TokenCipher:
             ciphertext=ciphertext, nonce=nonce, key_version=self._active_version
         )
 
-    def decrypt(self, token: EncryptedToken, *, aad: bytes | None = None) -> str:
+    def decrypt(self, token: EncryptedToken, *, aad: bytes | None) -> str:
         aesgcm = self._aesgcm(token.key_version)
         try:
             plaintext = aesgcm.decrypt(token.nonce, token.ciphertext, aad)
@@ -89,10 +97,13 @@ class TokenCipher:
             raise TokenDecryptionError(
                 "échec d'authentification du token chiffré"
             ) from exc
+        except ValueError as exc:
+            # nonce de longueur invalide, etc. — cryptography lève ValueError
+            raise TokenDecryptionError(f"blob chiffré malformé : {exc}") from exc
         return plaintext.decode("utf-8")
 
     def rotate(
-        self, token: EncryptedToken, *, aad: bytes | None = None
+        self, token: EncryptedToken, *, aad: bytes | None
     ) -> EncryptedToken:
         plaintext = self.decrypt(token, aad=aad)
         return self.encrypt(plaintext, aad=aad)
@@ -104,7 +115,13 @@ def load_token_cipher(settings: object) -> TokenCipher:
     decoded: dict[int, bytes] = {}
     for version, b64 in raw_keys.items():
         try:
-            decoded[int(version)] = base64.b64decode(b64, validate=True)
+            int_version = int(version)
+        except (ValueError, TypeError) as exc:
+            raise TokenCryptoConfigError(
+                f"clé v{version}: version non entière"
+            ) from exc
+        try:
+            decoded[int_version] = base64.b64decode(b64, validate=True)
         except (ValueError, TypeError) as exc:
             raise TokenCryptoConfigError(
                 f"clé v{version} : base64 invalide"
