@@ -30,9 +30,14 @@ target_metadata = Base.metadata
 # supprimés avec leur table, et tout changement doit passer par une migration
 # explicite.
 #
-# Contrôle compensatoire : tests/test_enum_check_constraints.py compare, pour
-# chaque ck_* d'enum, les littéraux de la CHECK en base à {m.value for m in
-# EnumClass} et échoue si un membre d'enum est ajouté sans migration.
+# Garde-fou PARTIEL : tests/test_enum_check_constraints.py compare, pour chaque
+# ck_* d'enum, les littéraux de la CHECK à {m.value for m in EnumClass}. Comme
+# il lit une base construite par create_all() depuis les modèles, il attrape une
+# régression du mapping values_callable (cf. le bug « ACTIVE » vs « active »),
+# PAS une migration périmée : ajouter un membre d'enum sans régénérer la
+# migration laisse toute la suite verte. Un vrai garde-fou de fraîcheur de
+# migration doit tourner sur database_url_migrations_test après `alembic upgrade
+# head` (machinerie dans test_migrations.py) — à faire avec le spec OAuth.
 AUTOGENERATE_PLUGINS = (
     "alembic.autogenerate.*",
     "~alembic.autogenerate.checkconstraint_byname",

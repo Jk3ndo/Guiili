@@ -1,11 +1,19 @@
-"""Enum-value-drift guard.
+"""Enum CHECK ↔ Python enum mapping guard (PARTIAL).
 
 alembic/env.py disables the `checkconstraint_byname` autogenerate comparator,
-so `alembic check` cannot notice when a Python StrEnum gains a member whose
-value is missing from the DB CHECK constraint. This test is the compensating
-control: for every ck_* enum CHECK it reads the live definition from Postgres
-and asserts the set of string literals equals {m.value for m in EnumClass}.
-It fails if someone adds an enum member without a matching migration.
+so `alembic check` cannot notice CHECK-constraint drift.
+
+Scope of THIS test: it reads each ck_* enum CHECK from a database built by
+`create_all()` (the `engine` fixture) and asserts its string literals equal
+{m.value for m in EnumClass}. Because both sides derive from the same model
+definitions, it catches a `pg_enum`/`values_callable` regression (the "ACTIVE"
+vs "active" bug) — NOT a stale migration. Adding an enum member without
+regenerating the migration keeps this test (and the whole suite) green.
+
+A real migration-freshness guard would run these assertions against
+`database_url_migrations_test` after `alembic upgrade head` (reuse the
+`clean_migrations_db` machinery in test_migrations.py). Deferred to the OAuth
+spec — see the ledger.
 """
 
 import re
