@@ -21,20 +21,6 @@ function Card({
   );
 }
 
-export function KpiRowSkeleton({ count = 4 }: { count?: number }) {
-  return (
-    <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-      {Array.from({ length: count }).map((_, i) => (
-        <Card key={i} className="h-[92px] space-y-2.5">
-          <Skeleton className="h-3 w-24" />
-          <Skeleton className="h-6 w-16" />
-          <Skeleton className="h-3 w-20" />
-        </Card>
-      ))}
-    </div>
-  );
-}
-
 export function ChartSkeleton({ label }: { label?: string }) {
   return (
     <Card className="flex h-full flex-col gap-3">
@@ -43,27 +29,6 @@ export function ChartSkeleton({ label }: { label?: string }) {
         <Skeleton className="h-7 w-28" />
       </div>
       <Skeleton className="min-h-[220px] flex-1" />
-      {label && <p className="text-2xs text-ink-faint">{label}</p>}
-    </Card>
-  );
-}
-
-export function DonutSkeleton({ label }: { label?: string }) {
-  return (
-    <Card className="flex h-full flex-col gap-3">
-      <Skeleton className="h-3.5 w-40" />
-      <div className="flex flex-1 items-center justify-center py-4">
-        <Skeleton className="size-32 rounded-full border-8 border-white/[0.04] bg-transparent" />
-      </div>
-      <div className="space-y-2">
-        {Array.from({ length: 3 }).map((_, i) => (
-          <div key={i} className="flex items-center gap-2">
-            <Skeleton className="size-2.5 rounded-full" />
-            <Skeleton className="h-3 w-24" />
-            <Skeleton className="ml-auto h-3 w-8" />
-          </div>
-        ))}
-      </div>
       {label && <p className="text-2xs text-ink-faint">{label}</p>}
     </Card>
   );
