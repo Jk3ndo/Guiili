@@ -35,6 +35,14 @@ class EncryptedToken:
     nonce: bytes
     key_version: int
 
+    def __repr__(self) -> str:
+        # Pas de dump d'octets : le repr par défaut du dataclass afficherait
+        # ciphertext + nonce, bruit inutile dans les logs.
+        return (
+            f"EncryptedToken(key_version={self.key_version}, "
+            f"nonce=<{len(self.nonce)}o>, ciphertext=<{len(self.ciphertext)}o>)"
+        )
+
     def pack(self) -> bytes:
         return (
             self.key_version.to_bytes(_VERSION_BYTES, _BYTE_ORDER)
@@ -100,7 +108,12 @@ class TokenCipher:
         except ValueError as exc:
             # nonce de longueur invalide, etc. — cryptography lève ValueError
             raise TokenDecryptionError(f"blob chiffré malformé : {exc}") from exc
-        return plaintext.decode("utf-8")
+        try:
+            return plaintext.decode("utf-8")
+        except UnicodeDecodeError:
+            # Quasi impossible après auth GCM réussie ; `from None` pour ne PAS
+            # laisser des octets du token en clair dans la trace chaînée.
+            raise TokenDecryptionError("plaintext déchiffré non-UTF-8") from None
 
     def rotate(
         self, token: EncryptedToken, *, aad: bytes | None
@@ -110,7 +123,7 @@ class TokenCipher:
 
 
 def load_token_cipher(settings: object) -> TokenCipher:
-    raw_keys: dict[int, str] = settings.token_enc_keys
+    raw_keys = settings.token_enc_keys
     active_version: int = settings.token_enc_active_version
     decoded: dict[int, bytes] = {}
     for version, b64 in raw_keys.items():
@@ -120,8 +133,11 @@ def load_token_cipher(settings: object) -> TokenCipher:
             raise TokenCryptoConfigError(
                 f"clé v{version}: version non entière"
             ) from exc
+        # Accepte str ou pydantic.SecretStr (Settings enveloppe les clés) sans
+        # coupler ce module à pydantic.
+        b64_value = b64.get_secret_value() if hasattr(b64, "get_secret_value") else b64
         try:
-            decoded[int_version] = base64.b64decode(b64, validate=True)
+            decoded[int_version] = base64.b64decode(b64_value, validate=True)
         except (ValueError, TypeError) as exc:
             raise TokenCryptoConfigError(
                 f"clé v{version} : base64 invalide"
