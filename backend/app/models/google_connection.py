@@ -7,7 +7,6 @@ from uuid import UUID
 from sqlalchemy import (
     ARRAY,
     DateTime,
-    Enum,
     ForeignKey,
     Integer,
     LargeBinary,
@@ -17,7 +16,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
-from app.models.enums import ConnectionStatus
+from app.models.enums import ConnectionStatus, pg_enum
 from app.models.mixins import TimestampMixin, UUIDPrimaryKeyMixin
 
 if TYPE_CHECKING:
@@ -44,13 +43,7 @@ class GoogleConnection(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     encryption_key_version: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[ConnectionStatus] = mapped_column(
-        Enum(
-            ConnectionStatus,
-            native_enum=False,
-            create_constraint=True,
-            name="connection_status",
-            length=32,
-        ),
+        pg_enum(ConnectionStatus, "connection_status"),
         nullable=False,
         default=ConnectionStatus.ACTIVE,
     )

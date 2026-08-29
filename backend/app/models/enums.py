@@ -1,5 +1,19 @@
 from enum import StrEnum
 
+from sqlalchemy import Enum as SAEnum
+
+
+def pg_enum(enum_cls: type, name: str, *, length: int = 32) -> SAEnum:
+    """Non-native VARCHAR + CHECK enum that persists the lowercase .value."""
+    return SAEnum(
+        enum_cls,
+        native_enum=False,
+        create_constraint=True,
+        name=name,
+        length=length,
+        values_callable=lambda e: [m.value for m in e],
+    )
+
 
 class ConnectionStatus(StrEnum):
     ACTIVE = "active"

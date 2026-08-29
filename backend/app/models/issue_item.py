@@ -5,7 +5,6 @@ from uuid import UUID
 
 from sqlalchemy import (
     DateTime,
-    Enum,
     ForeignKey,
     String,
     Text,
@@ -14,7 +13,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
-from app.models.enums import IssueCategory, IssueSeverity, IssueStatus
+from app.models.enums import IssueCategory, IssueSeverity, IssueStatus, pg_enum
 from app.models.mixins import TimestampMixin, UUIDPrimaryKeyMixin
 
 
@@ -30,15 +29,15 @@ class IssueItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     category: Mapped[IssueCategory] = mapped_column(
-        Enum(IssueCategory, native_enum=False, create_constraint=True, name="issue_category", length=32),
+        pg_enum(IssueCategory, "issue_category"),
         nullable=False,
     )
     severity: Mapped[IssueSeverity] = mapped_column(
-        Enum(IssueSeverity, native_enum=False, create_constraint=True, name="issue_severity", length=32),
+        pg_enum(IssueSeverity, "issue_severity"),
         nullable=False,
     )
     status: Mapped[IssueStatus] = mapped_column(
-        Enum(IssueStatus, native_enum=False, create_constraint=True, name="issue_status", length=32),
+        pg_enum(IssueStatus, "issue_status"),
         nullable=False,
         default=IssueStatus.TODO,
     )

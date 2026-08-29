@@ -6,7 +6,6 @@ from uuid import UUID
 
 from sqlalchemy import (
     DateTime,
-    Enum,
     ForeignKey,
     String,
     UniqueConstraint,
@@ -15,7 +14,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
-from app.models.enums import ResourceType
+from app.models.enums import ResourceType, pg_enum
 from app.models.mixins import UUIDPrimaryKeyMixin
 
 if TYPE_CHECKING:
@@ -39,13 +38,7 @@ class WebsiteGoogleLink(UUIDPrimaryKeyMixin, Base):
         index=True,
     )
     resource_type: Mapped[ResourceType] = mapped_column(
-        Enum(
-            ResourceType,
-            native_enum=False,
-            create_constraint=True,
-            name="resource_type",
-            length=32,
-        ),
+        pg_enum(ResourceType, "resource_type"),
         nullable=False,
     )
     resource_id: Mapped[str] = mapped_column(String(255), nullable=False)

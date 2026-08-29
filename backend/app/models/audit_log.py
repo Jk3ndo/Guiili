@@ -3,11 +3,11 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
-from app.models.enums import AuditResult
+from app.models.enums import AuditResult, pg_enum
 from app.models.mixins import UUIDPrimaryKeyMixin
 
 
@@ -26,7 +26,7 @@ class AuditLog(UUIDPrimaryKeyMixin, Base):
     resource_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     request_payload_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     result: Mapped[AuditResult] = mapped_column(
-        Enum(AuditResult, native_enum=False, create_constraint=True, name="audit_result", length=16),
+        pg_enum(AuditResult, "audit_result", length=16),
         nullable=False,
     )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)

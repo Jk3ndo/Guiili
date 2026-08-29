@@ -4,12 +4,12 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, func
+from sqlalchemy import DateTime, ForeignKey, Index, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
-from app.models.enums import SnapshotSource
+from app.models.enums import SnapshotSource, pg_enum
 from app.models.mixins import UUIDPrimaryKeyMixin
 
 
@@ -26,7 +26,7 @@ class AuditSnapshot(UUIDPrimaryKeyMixin, Base):
         DateTime(timezone=True), nullable=False
     )
     source: Mapped[SnapshotSource] = mapped_column(
-        Enum(SnapshotSource, native_enum=False, create_constraint=True, name="snapshot_source", length=32),
+        pg_enum(SnapshotSource, "snapshot_source"),
         nullable=False,
     )
     metrics: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
