@@ -16,6 +16,16 @@ const eslintConfig = defineConfig([
       "react-hooks/set-state-in-effect": "off",
     },
   },
+  {
+    // lib/api/hooks.ts is the API-integration layer: fetch-on-mount +
+    // subscribe-to-refetch is the intended effect use here. The setState calls
+    // are always after an `await` (network), which the rule's static analysis
+    // can't see.
+    files: ["lib/api/hooks.ts"],
+    rules: {
+      "react-hooks/set-state-in-effect": "off",
+    },
+  },
 ]);
 
 export default eslintConfig;

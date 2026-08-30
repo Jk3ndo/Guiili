@@ -3,11 +3,13 @@ from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import Depends, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.router import api_router
+from app.config import get_settings
 from app.db.session import engine, get_session
 
 
@@ -23,7 +25,16 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.include_router(api_router)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=get_settings().cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
+)
+
+app.include_router(api_router, prefix="/api/v1")
 
 
 @app.get("/health")

@@ -158,6 +158,22 @@ def analyze_response(html: str, headers: Mapping[str, str] | None = None) -> Sta
     return StackDetection(StackKind.UNKNOWN, (), 0.0)
 
 
+# Domaines de démo (frontend/lib/mock/workspaces.ts) : pas de vrai site à
+# sonder, on renvoie une stack figée en mode mock.
+DEMO_STACKS: dict[str, StackKind] = {
+    "boutique-verte.fr": StackKind.NEXTJS,
+    "atelier-nord.com": StackKind.WORDPRESS,
+    "studiolumen.io": StackKind.VUE,
+    "cap-horizon.co": StackKind.ANGULAR,
+}
+
+
+async def demo_detector(url: str) -> StackDetection:
+    host = httpx.URL(url).host
+    stack = DEMO_STACKS.get(host, StackKind.UNKNOWN)
+    return StackDetection(stack, ("demo",), 1.0 if stack is not StackKind.UNKNOWN else 0.0)
+
+
 async def detect_stack(url: str, *, client: httpx.AsyncClient | None = None) -> StackDetection:
     owns_client = client is None
     http = client or httpx.AsyncClient(

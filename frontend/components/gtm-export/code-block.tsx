@@ -9,8 +9,8 @@ import { cn } from "@/lib/utils";
 interface CodeBlockProps {
   /** Raw source, copied verbatim to the clipboard. */
   code: string;
-  /** Server-tokenised lines from shiki. */
-  lines: CodeToken[][];
+  /** Server-tokenised lines from shiki. Absent -> plain rendering (API source). */
+  lines?: CodeToken[][];
   filename: string;
 }
 
@@ -86,15 +86,17 @@ export function CodeBlock({ code, lines, filename }: CodeBlockProps) {
       </div>
       <pre className="max-h-[440px] overflow-auto px-4 py-3.5 font-mono text-xs leading-relaxed text-ink-muted">
         <code>
-          {lines.map((line, i) => (
-            <span key={i} className="block min-h-[1.6em]">
-              {line.map((token, j) => (
-                <span key={j} style={tokenStyle(token)}>
-                  {token.content}
+          {lines
+            ? lines.map((line, i) => (
+                <span key={i} className="block min-h-[1.6em]">
+                  {line.map((token, j) => (
+                    <span key={j} style={tokenStyle(token)}>
+                      {token.content}
+                    </span>
+                  ))}
                 </span>
-              ))}
-            </span>
-          ))}
+              ))
+            : code}
         </code>
       </pre>
     </div>

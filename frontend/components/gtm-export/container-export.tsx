@@ -3,6 +3,8 @@
 import { Braces, Download, Package, Tag, Zap, type LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 
+import { downloadGtmContainer } from "@/lib/api/actions";
+import { saveBlob } from "@/lib/api/client";
 import {
   buildGtmContainer,
   containerRef,
@@ -28,19 +30,16 @@ const KIND_LABEL: Record<GtmElementKind, string> = {
 export function ContainerExport({ workspace }: { workspace: Workspace }) {
   const { publicId } = containerRef(workspace);
 
-  function handleDownload() {
-    const json = JSON.stringify(buildGtmContainer(workspace), null, 2);
-    const blob = new Blob([json], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `gtm-container-${publicId}.json`;
-    document.body.append(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
+  async function handleDownload() {
+    if (await downloadGtmContainer(workspace.domain)) return;
 
-    toast.success("Conteneur GTM téléchargé", {
+    // Fallback mode démo : conteneur généré côté client.
+    const json = JSON.stringify(buildGtmContainer(workspace), null, 2);
+    saveBlob(
+      new Blob([json], { type: "application/json" }),
+      `gtm-container-${publicId}.json`,
+    );
+    toast.success("Conteneur GTM téléchargé (mode démo)", {
       description: `${publicId} · format v2 · ${EXPORT_ELEMENTS.length} éléments`,
     });
   }
@@ -88,7 +87,7 @@ export function ContainerExport({ workspace }: { workspace: Workspace }) {
 
         <button
           type="button"
-          onClick={handleDownload}
+          onClick={() => void handleDownload()}
           className="mt-5 inline-flex h-9 items-center gap-2 rounded-lg bg-zinc-100 px-4 text-xs font-medium text-zinc-950 shadow-sm transition-colors hover:bg-zinc-200"
         >
           <Download className="size-3.5" />

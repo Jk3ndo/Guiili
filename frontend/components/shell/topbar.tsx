@@ -1,11 +1,11 @@
 "use client";
 
 import { Play, Search } from "lucide-react";
-import { toast } from "sonner";
 
 import { Kbd } from "@/components/ui/kbd";
 import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
+import { runDiagnostic } from "@/lib/api/actions";
 import { useShell } from "@/lib/shell/shell-context";
 
 import { AppBreadcrumb } from "./app-breadcrumb";
@@ -35,11 +35,7 @@ export function Topbar() {
 
         <button
           type="button"
-          onClick={() =>
-            toast("Diagnostic lancé", {
-              description: `Analyse de ${workspace.domain} en file d'attente.`,
-            })
-          }
+          onClick={() => void runDiagnostic(workspace.domain)}
           className="inline-flex h-9 items-center gap-2 rounded-lg bg-zinc-100 px-4 text-xs font-medium text-zinc-950 shadow-sm transition-colors hover:bg-zinc-200"
         >
           <Play className="size-3.5" />

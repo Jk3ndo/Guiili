@@ -41,9 +41,11 @@ function emptyGroups(): Record<IssueStatus, IssueItem[]> {
 export function Board({
   items,
   highlighted,
+  onPersistStatus,
 }: {
   items: IssueItem[];
   highlighted: HighlightedFixes;
+  onPersistStatus?: (id: string, status: IssueStatus) => void;
 }) {
   const [tickets, setTickets] = useState<IssueItem[]>(items);
   const [filters, setFilters] = useState<BacklogFilters>({
@@ -105,6 +107,7 @@ export function Board({
         candidate.id === id ? { ...candidate, status } : candidate,
       ),
     );
+    onPersistStatus?.(id, status);
     toast("Ticket déplacé", {
       description: `${ticket.title} → ${STATUS_LABEL[status]}`,
     });
@@ -169,6 +172,7 @@ export function Board({
       (ticket) => ticket.id === activeCardId,
     )?.status;
     if (origin && finalStatus && finalStatus !== origin.status) {
+      onPersistStatus?.(activeCardId, finalStatus);
       const ticket = tickets.find((candidate) => candidate.id === activeCardId);
       if (ticket) {
         toast("Ticket déplacé", {

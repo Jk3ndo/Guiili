@@ -1,13 +1,18 @@
 "use client";
 
 import { ExternalLink, RefreshCw } from "lucide-react";
-import { toast } from "sonner";
 
 import { StackBadge } from "@/components/shell/stack-badge";
 import { relativeHours } from "@/lib/format";
 import type { OverviewData } from "@/lib/mock/types";
 
-export function OverviewHeader({ data }: { data: OverviewData }) {
+export function OverviewHeader({
+  data,
+  onRescan,
+}: {
+  data: OverviewData;
+  onRescan?: () => void | Promise<void>;
+}) {
   return (
     <header className="flex flex-wrap items-start justify-between gap-3 pb-6">
       <div className="space-y-1.5">
@@ -34,11 +39,7 @@ export function OverviewHeader({ data }: { data: OverviewData }) {
 
       <button
         type="button"
-        onClick={() =>
-          toast("Re-scan lancé", {
-            description: `Analyse de ${data.domain} en file d'attente.`,
-          })
-        }
+        onClick={() => void onRescan?.()}
         className="inline-flex h-9 items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.03] px-3.5 text-xs font-medium text-ink-muted shadow-sm transition-colors hover:bg-white/[0.06] hover:text-ink"
       >
         <RefreshCw className="size-3.5" />

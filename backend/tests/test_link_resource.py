@@ -45,7 +45,7 @@ async def test_two_connections_one_website(
     site = await _website(db_session, user=user, domain="monsite.com")
 
     ga4 = await client.post(
-        f"/websites/{site.id}/link-resource",
+        f"/api/v1/websites/{site.id}/link-resource",
         json={
             "google_connection_id": str(conn_a.id),
             "resource_type": "ga4_property",
@@ -56,7 +56,7 @@ async def test_two_connections_one_website(
     assert ga4.status_code == 201, ga4.text
 
     gtm = await client.post(
-        f"/websites/{site.id}/link-resource",
+        f"/api/v1/websites/{site.id}/link-resource",
         json={
             "google_connection_id": str(conn_b.id),
             "resource_type": "gtm_container",
@@ -94,7 +94,7 @@ async def test_relink_same_type_replaces_previous(
 
     for resource_id in ("properties/111", "properties/222"):
         resp = await client.post(
-            f"/websites/{site.id}/link-resource",
+            f"/api/v1/websites/{site.id}/link-resource",
             json={
                 "google_connection_id": str(conn.id),
                 "resource_type": "ga4_property",
@@ -125,7 +125,7 @@ async def test_rejects_website_of_another_user(
     foreign_site = await _website(db_session, user=stranger, domain="notyours.com")
 
     resp = await client.post(
-        f"/websites/{foreign_site.id}/link-resource",
+        f"/api/v1/websites/{foreign_site.id}/link-resource",
         json={
             "google_connection_id": str(conn.id),
             "resource_type": "ga4_property",
@@ -144,7 +144,7 @@ async def test_rejects_connection_of_another_user(
     foreign_conn = await _connection(db_session, user=stranger, sub="acct-foreign")
 
     resp = await client.post(
-        f"/websites/{site.id}/link-resource",
+        f"/api/v1/websites/{site.id}/link-resource",
         json={
             "google_connection_id": str(foreign_conn.id),
             "resource_type": "ga4_property",
@@ -156,7 +156,7 @@ async def test_rejects_connection_of_another_user(
 
 async def test_requires_authentication(db_client: AsyncClient) -> None:
     resp = await db_client.post(
-        "/websites/00000000-0000-0000-0000-000000000000/link-resource",
+        "/api/v1/websites/00000000-0000-0000-0000-000000000000/link-resource",
         json={
             "google_connection_id": "00000000-0000-0000-0000-000000000000",
             "resource_type": "ga4_property",

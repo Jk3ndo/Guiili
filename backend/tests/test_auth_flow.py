@@ -17,7 +17,7 @@ def _query(url: str) -> dict[str, str]:
 
 
 async def _start(client: AsyncClient) -> str:
-    resp = await client.get("/auth/google/start")
+    resp = await client.get("/api/v1/auth/google/start")
     assert resp.status_code == 200, resp.text
     return _query(resp.json()["authorization_url"])["state"]
 
@@ -25,7 +25,7 @@ async def _start(client: AsyncClient) -> str:
 async def test_start_generates_pkce_challenge_and_persists_state(
     db_client: AsyncClient, db_session: AsyncSession
 ) -> None:
-    resp = await db_client.get("/auth/google/start")
+    resp = await db_client.get("/api/v1/auth/google/start")
     assert resp.status_code == 200
     params = _query(resp.json()["authorization_url"])
     assert params["code_challenge_method"] == "S256"
@@ -44,7 +44,7 @@ async def test_callback_logs_in_creates_user_and_encrypted_connection(
 ) -> None:
     state = await _start(db_client)
     resp = await db_client.get(
-        "/auth/google/callback",
+        "/api/v1/auth/google/callback",
         params={"code": "mock:client_perso", "state": state},
         follow_redirects=False,
     )
@@ -73,13 +73,13 @@ async def test_callback_logs_in_creates_user_and_encrypted_connection(
 async def test_state_is_single_use(db_client: AsyncClient) -> None:
     state = await _start(db_client)
     first = await db_client.get(
-        "/auth/google/callback",
+        "/api/v1/auth/google/callback",
         params={"code": "mock:dev_agence", "state": state},
         follow_redirects=False,
     )
     assert first.status_code == 302
     second = await db_client.get(
-        "/auth/google/callback",
+        "/api/v1/auth/google/callback",
         params={"code": "mock:dev_agence", "state": state},
         follow_redirects=False,
     )
@@ -88,7 +88,7 @@ async def test_state_is_single_use(db_client: AsyncClient) -> None:
 
 async def test_callback_rejects_unknown_state(db_client: AsyncClient) -> None:
     resp = await db_client.get(
-        "/auth/google/callback",
+        "/api/v1/auth/google/callback",
         params={"code": "mock:dev_agence", "state": "forged-state"},
         follow_redirects=False,
     )
@@ -97,7 +97,7 @@ async def test_callback_rejects_unknown_state(db_client: AsyncClient) -> None:
 
 async def test_callback_rejects_denied_consent(db_client: AsyncClient) -> None:
     resp = await db_client.get(
-        "/auth/google/callback",
+        "/api/v1/auth/google/callback",
         params={"error": "access_denied", "state": "x"},
         follow_redirects=False,
     )
@@ -110,7 +110,7 @@ async def test_reauth_updates_connection_without_duplicate(
     for _ in range(2):
         state = await _start(db_client)
         resp = await db_client.get(
-            "/auth/google/callback",
+            "/api/v1/auth/google/callback",
             params={"code": "mock:dev_agence", "state": state},
             follow_redirects=False,
         )
@@ -132,7 +132,7 @@ async def test_logged_in_user_adds_second_account(
     assert row.user_id == user.id
 
     resp = await client.get(
-        "/auth/google/callback",
+        "/api/v1/auth/google/callback",
         params={"code": "mock:dev_agence", "state": state},
         follow_redirects=False,
     )
