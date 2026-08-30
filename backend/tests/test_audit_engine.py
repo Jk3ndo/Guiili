@@ -88,6 +88,47 @@ def test_clean_site_has_no_anomaly() -> None:
     assert detect_anomalies(_CLEAN) == []
 
 
+def test_lcp_rule_lists_heavy_assets_from_pagespeed() -> None:
+    data = ProbeData(
+        ga4=Ga4Signals(score=0),
+        gsc=GscSignals(score=0),
+        cwv=CwvSignals(
+            score=40,
+            lcp_ms=4200,
+            cls=0.02,
+            heavy_assets=("hero-banner.jpg", "collection.png"),
+            lcp_element="<img class='hero'>",
+            field_data=True,
+        ),
+    )
+    lcp = next(a for a in detect_anomalies(data) if a.rule_id == "cwv_lcp")
+    assert lcp.severity is IssueSeverity.CRITICAL  # > 4000 ms
+    assert "hero-banner.jpg" in lcp.description
+    assert "collection.png" in lcp.description
+    assert "terrain" in lcp.description
+    assert "<img class='hero'>" in lcp.description
+
+
+def test_inp_rule_lists_third_party_scripts() -> None:
+    data = ProbeData(
+        ga4=Ga4Signals(score=0),
+        gsc=GscSignals(score=0),
+        cwv=CwvSignals(
+            score=55,
+            inp_ms=340,
+            cls=0.0,
+            third_party_scripts=("Google Tag Manager", "Hotjar"),
+            js_execution_ms=2100,
+            field_data=False,
+        ),
+    )
+    inp = next(a for a in detect_anomalies(data) if a.rule_id == "cwv_inp")
+    assert "Google Tag Manager" in inp.description
+    assert "Hotjar" in inp.description
+    assert "2100 ms" in inp.description
+    assert "labo" in inp.description
+
+
 # --------------------------------------------------------------------------- #
 #  run_audit                                                                   #
 # --------------------------------------------------------------------------- #
