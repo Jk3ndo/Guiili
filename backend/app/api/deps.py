@@ -28,7 +28,9 @@ def get_google_client(settings: SettingsDep) -> GoogleOAuthClient:
 
 
 def get_audit_probe(settings: SettingsDep) -> AuditProbe:
-    return MockAuditProbe() if settings.audit_probe_mock else RealAuditProbe()
+    if settings.audit_probe_mock:
+        return MockAuditProbe()
+    return RealAuditProbe(api_key=settings.pagespeed_api_key.get_secret_value() or None)
 
 
 def get_stack_detector(settings: SettingsDep) -> Detector:

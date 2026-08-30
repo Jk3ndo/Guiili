@@ -160,22 +160,52 @@ def detect_anomalies(data: ProbeData) -> list[DetectedAnomaly]:
                 )
             )
 
-    if cwv.lcp_ms > 4000:
+    source = "terrain" if cwv.field_data else "labo"
+
+    if cwv.lcp_ms > 2500:
+        severity = IssueSeverity.CRITICAL if cwv.lcp_ms > 4000 else IssueSeverity.HIGH
+        detail = (
+            f"LCP mesure a {cwv.lcp_ms} ms ({source}), cible < 2500 ms. "
+            "Signal Core Web Vitals hors zone « bon »."
+        )
+        if cwv.lcp_element:
+            detail += f" Element LCP : {cwv.lcp_element}."
+        assets = cwv.heavy_assets or cwv.blocking_scripts
+        if assets:
+            detail += f" Assets lourds a optimiser : {', '.join(assets)}."
         out.append(
-            _cwv_anomaly(
-                "cwv_lcp", "lcp", IssueSeverity.CRITICAL, "LCP", f"{cwv.lcp_ms} ms", "2500 ms"
+            DetectedAnomaly(
+                "cwv_lcp",
+                "lcp",
+                IssueCategory.CWV,
+                severity,
+                f"LCP au-dessus du seuil ({cwv.lcp_ms} ms)",
+                detail,
             )
         )
-    elif cwv.lcp_ms > 2500:
-        out.append(
-            _cwv_anomaly("cwv_lcp", "lcp", IssueSeverity.HIGH, "LCP", f"{cwv.lcp_ms} ms", "2500 ms")
-        )
+
     if cwv.inp_ms > 200:
+        detail = (
+            f"INP mesure a {cwv.inp_ms} ms ({source}), cible < 200 ms. "
+            "Les interactions repondent trop lentement."
+        )
+        if cwv.third_party_scripts:
+            detail += f" Scripts tiers couteux : {', '.join(cwv.third_party_scripts)}."
+        elif cwv.blocking_scripts:
+            detail += f" Scripts bloquants : {', '.join(cwv.blocking_scripts)}."
+        if cwv.js_execution_ms:
+            detail += f" Execution JS totale : {cwv.js_execution_ms} ms."
         out.append(
-            _cwv_anomaly(
-                "cwv_inp", "inp", IssueSeverity.MEDIUM, "INP", f"{cwv.inp_ms} ms", "200 ms"
+            DetectedAnomaly(
+                "cwv_inp",
+                "inp",
+                IssueCategory.CWV,
+                IssueSeverity.MEDIUM,
+                f"INP au-dessus du seuil ({cwv.inp_ms} ms)",
+                detail,
             )
         )
+
     if cwv.cls > 0.1:
         out.append(
             _cwv_anomaly("cwv_cls", "cls", IssueSeverity.MEDIUM, "CLS", f"{cwv.cls:.2f}", "0.1")

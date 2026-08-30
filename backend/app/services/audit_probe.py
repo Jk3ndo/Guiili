@@ -1,16 +1,21 @@
 """Source de signaux d'audit (GA4 / GSC / Core Web Vitals).
 
-P1 : seule l'implementation `MockAuditProbe` existe (fixtures alignees avec les
-mocks frontend). `RealAuditProbe` (PageSpeed API + GA4 Data API + GSC) arrive en
-P2 — le stub leve `NotImplementedError` pour eviter tout appel silencieux.
+`MockAuditProbe` : fixtures alignees avec les mocks frontend.
+`RealAuditProbe` : Core Web Vitals reels via PageSpeed Insights (P2) ; GA4 / GSC
+restent neutres jusqu'a l'integration GA4 Data API + Search Console (P3).
 """
 
 from __future__ import annotations
 
 import abc
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from app.models.enums import StackKind
+from app.services.pagespeed import fetch_pagespeed
+
+if TYPE_CHECKING:
+    import httpx
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +42,14 @@ class CwvSignals:
     lcp_ms: int = 0
     inp_ms: int = 0
     cls: float = 0.0
+    # Diagnostics PageSpeed (vides = pas de rapport / mode degrade).
+    heavy_assets: tuple[str, ...] = ()  # images / JS non optimises
+    blocking_scripts: tuple[str, ...] = ()  # ressources bloquant le rendu
+    third_party_scripts: tuple[str, ...] = ()  # entites tierces couteuses (INP)
+    js_execution_ms: int = 0
+    total_blocking_time_ms: int = 0
+    lcp_element: str | None = None
+    field_data: bool = False  # True = CrUX terrain, False = labo / degrade
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,5 +121,23 @@ class MockAuditProbe(AuditProbe):
 
 
 class RealAuditProbe(AuditProbe):
+    """Core Web Vitals via PageSpeed Insights. GA4 / GSC : signaux neutres
+    (score 0) jusqu'a l'integration GA4 Data API + Search Console (P3)."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        self._api_key = api_key or None
+        self._client = client
+
     async def collect(self, *, domain: str, stack: StackKind) -> ProbeData:
-        raise NotImplementedError("RealAuditProbe (PageSpeed + GA4 Data API + GSC) arrive en P2")
+        _ = stack
+        cwv_kwargs = await fetch_pagespeed(domain, api_key=self._api_key, client=self._client)
+        return ProbeData(
+            ga4=Ga4Signals(score=0),
+            gsc=GscSignals(score=0),
+            cwv=CwvSignals(**cwv_kwargs),
+        )

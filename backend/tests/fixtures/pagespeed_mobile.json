@@ -1,0 +1,160 @@
+{
+  "captchaResult": "CAPTCHA_NOT_NEEDED",
+  "kind": "pagespeedonline#result",
+  "id": "https://boutique-verte.fr/",
+  "loadingExperience": {
+    "id": "https://boutique-verte.fr/",
+    "metrics": {
+      "LARGEST_CONTENTFUL_PAINT_MS": {
+        "percentile": 3400,
+        "distributions": [
+          { "min": 0, "max": 2500, "proportion": 0.55 },
+          { "min": 2500, "max": 4000, "proportion": 0.30 },
+          { "min": 4000, "proportion": 0.15 }
+        ],
+        "category": "AVERAGE"
+      },
+      "INTERACTION_TO_NEXT_PAINT": {
+        "percentile": 310,
+        "distributions": [
+          { "min": 0, "max": 200, "proportion": 0.60 },
+          { "min": 200, "max": 500, "proportion": 0.30 },
+          { "min": 500, "proportion": 0.10 }
+        ],
+        "category": "AVERAGE"
+      },
+      "CUMULATIVE_LAYOUT_SHIFT_SCORE": {
+        "percentile": 18,
+        "distributions": [
+          { "min": 0, "max": 10, "proportion": 0.70 },
+          { "min": 10, "max": 25, "proportion": 0.22 },
+          { "min": 25, "proportion": 0.08 }
+        ],
+        "category": "AVERAGE"
+      }
+    },
+    "overall_category": "AVERAGE"
+  },
+  "lighthouseResult": {
+    "requestedUrl": "https://boutique-verte.fr/",
+    "finalUrl": "https://boutique-verte.fr/",
+    "lighthouseVersion": "11.0.0",
+    "categories": {
+      "performance": {
+        "id": "performance",
+        "title": "Performance",
+        "score": 0.42
+      }
+    },
+    "audits": {
+      "largest-contentful-paint": {
+        "id": "largest-contentful-paint",
+        "title": "Largest Contentful Paint",
+        "score": 0.15,
+        "numericValue": 3812.5,
+        "numericUnit": "millisecond",
+        "displayValue": "3.8 s"
+      },
+      "cumulative-layout-shift": {
+        "id": "cumulative-layout-shift",
+        "title": "Cumulative Layout Shift",
+        "score": 0.4,
+        "numericValue": 0.214,
+        "displayValue": "0.214"
+      },
+      "interaction-to-next-paint": {
+        "id": "interaction-to-next-paint",
+        "title": "Interaction to Next Paint",
+        "score": 0.3,
+        "numericValue": 290,
+        "numericUnit": "millisecond"
+      },
+      "total-blocking-time": {
+        "id": "total-blocking-time",
+        "title": "Total Blocking Time",
+        "score": 0.2,
+        "numericValue": 640.0,
+        "numericUnit": "millisecond",
+        "displayValue": "640 ms"
+      },
+      "bootup-time": {
+        "id": "bootup-time",
+        "title": "JavaScript execution time",
+        "score": 0.25,
+        "numericValue": 2100.0,
+        "numericUnit": "millisecond",
+        "displayValue": "2.1 s"
+      },
+      "largest-contentful-paint-element": {
+        "id": "largest-contentful-paint-element",
+        "title": "Largest Contentful Paint element",
+        "score": null,
+        "details": {
+          "type": "table",
+          "items": [
+            {
+              "items": [
+                {
+                  "node": {
+                    "type": "node",
+                    "selector": "main > section.hero > img",
+                    "snippet": "<img class=\"hero-image\" src=\"/img/hero-banner.jpg\">"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "render-blocking-resources": {
+        "id": "render-blocking-resources",
+        "title": "Eliminate render-blocking resources",
+        "score": 0.3,
+        "details": {
+          "type": "opportunity",
+          "overallSavingsMs": 780,
+          "items": [
+            { "url": "https://boutique-verte.fr/css/theme.css?v=12", "totalBytes": 41200, "wastedMs": 480 },
+            { "url": "https://fonts.googleapis.com/css2?family=Inter", "totalBytes": 900, "wastedMs": 300 }
+          ]
+        }
+      },
+      "modern-image-formats": {
+        "id": "modern-image-formats",
+        "title": "Serve images in next-gen formats",
+        "score": 0.1,
+        "details": {
+          "type": "opportunity",
+          "overallSavingsMs": 1200,
+          "items": [
+            { "url": "https://boutique-verte.fr/img/hero-banner.jpg", "totalBytes": 1843200, "wastedBytes": 1400000 },
+            { "url": "https://cdn.boutique-verte.fr/media/collection-2026-large.png", "totalBytes": 920000, "wastedBytes": 600000 }
+          ]
+        }
+      },
+      "unused-javascript": {
+        "id": "unused-javascript",
+        "title": "Reduce unused JavaScript",
+        "score": 0.2,
+        "details": {
+          "type": "opportunity",
+          "items": [
+            { "url": "https://www.googletagmanager.com/gtag/js?id=G-XXXX", "totalBytes": 120000, "wastedBytes": 88000 }
+          ]
+        }
+      },
+      "third-party-summary": {
+        "id": "third-party-summary",
+        "title": "Minimize third-party usage",
+        "score": 0.4,
+        "details": {
+          "type": "table",
+          "items": [
+            { "entity": { "type": "link", "text": "Google Tag Manager", "url": "https://www.googletagmanager.com" }, "blockingTime": 210.5, "mainThreadTime": 480.0 },
+            { "entity": { "type": "link", "text": "Hotjar", "url": "https://www.hotjar.com" }, "blockingTime": 140.0, "mainThreadTime": 260.0 }
+          ]
+        }
+      }
+    }
+  }
+}
