@@ -1,4 +1,4 @@
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -9,6 +9,8 @@ from app.config import get_settings
 from app.db.base import Base
 from app.db.session import build_engine, get_session
 from app.main import app
+from app.models.user import User
+from app.security.session import issue_session
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
@@ -68,3 +70,36 @@ async def db_client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, Non
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
     app.dependency_overrides.pop(get_session, None)
+
+
+UserFactory = Callable[..., Awaitable[User]]
+
+
+@pytest_asyncio.fixture
+async def make_user(db_session: AsyncSession) -> UserFactory:
+    """Crée un utilisateur dans la transaction de test."""
+
+    async def _make(*, sub: str = "sub-user", email: str | None = None,
+                    name: str | None = None) -> User:
+        user = User(
+            email=email or f"{sub}@example.com", google_sub=sub, display_name=name
+        )
+        db_session.add(user)
+        await db_session.flush()
+        return user
+
+    return _make
+
+
+@pytest_asyncio.fixture
+async def authed_client(
+    db_client: AsyncClient, make_user: UserFactory
+) -> tuple[AsyncClient, User]:
+    """Client HTTP + cookie de session signé pour un utilisateur frais."""
+    user = await make_user(sub="owner-sub", email="owner@example.com", name="Owner")
+    settings = get_settings()
+    db_client.cookies.set(
+        settings.session_cookie_name,
+        issue_session(user.id, secret=settings.app_secret_key.get_secret_value()),
+    )
+    return db_client, user
