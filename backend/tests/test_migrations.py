@@ -19,6 +19,7 @@ EXPECTED_TABLES = {
     "audit_snapshots",
     "issue_items",
     "audit_log",
+    "oauth_states",
 }
 
 

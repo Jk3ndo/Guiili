@@ -1,26 +1,28 @@
-"""Enum CHECK ↔ Python enum mapping guard (PARTIAL).
+"""Enum CHECK ↔ Python enum mapping guard.
 
 alembic/env.py disables the `checkconstraint_byname` autogenerate comparator,
 so `alembic check` cannot notice CHECK-constraint drift.
 
-Scope of THIS test: it reads each ck_* enum CHECK from a database built by
-`create_all()` (the `engine` fixture) and asserts its string literals equal
-{m.value for m in EnumClass}. Because both sides derive from the same model
-definitions, it catches a `pg_enum`/`values_callable` regression (the "ACTIVE"
-vs "active" bug) — NOT a stale migration. Adding an enum member without
-regenerating the migration keeps this test (and the whole suite) green.
+Two layers here:
 
-A real migration-freshness guard would run these assertions against
-`database_url_migrations_test` after `alembic upgrade head` (reuse the
-`clean_migrations_db` machinery in test_migrations.py). Deferred to the OAuth
-spec — see the ledger.
+1. `test_enum_check_matches_python_values` — reads each ck_* enum CHECK from a
+   database built by `create_all()` (the `engine` fixture). Both sides derive
+   from the same model definitions, so it catches a `pg_enum`/`values_callable`
+   regression (the "ACTIVE" vs "active" bug) — NOT a stale migration.
+
+2. `test_enum_check_matches_after_migration` — the real freshness guard: runs
+   the SAME assertions against `database_url_migrations_test` AFTER
+   `alembic upgrade head` (reuses `clean_migrations_db` from test_migrations.py).
+   Adding an enum member without regenerating the migration now fails here.
 """
 
 import re
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
 
+from app.config import get_settings
 from app.models.enums import (
     AuditResult,
     ConnectionStatus,
@@ -30,6 +32,9 @@ from app.models.enums import (
     ResourceType,
     SnapshotSource,
 )
+from tests.test_migrations import _alembic, clean_migrations_db  # noqa: F401 — fixtures
+
+_MIG_URL = get_settings().database_url_migrations_test
 
 # (table, ck_ constraint name, enum class)
 ENUM_CHECKS = [
@@ -72,3 +77,36 @@ async def test_enum_check_matches_python_values(
     assert row is not None, f"CHECK {constraint_name} introuvable sur {table}"
     literals = set(re.findall(r"'([^']*)'", row[0]))
     assert literals == {m.value for m in enum_cls}
+
+
+@pytest.mark.parametrize(
+    ("table", "constraint_name", "enum_cls"),
+    ENUM_CHECKS,
+    ids=[name for _, name, _ in ENUM_CHECKS],
+)
+async def test_enum_check_matches_after_migration(
+    clean_migrations_db,  # noqa: F811 — fixture, pas la fonction importee
+    table: str,
+    constraint_name: str,
+    enum_cls: type,
+) -> None:
+    """Garde-fou de fraicheur : la CHECK EN BASE (posee par la migration) doit
+    correspondre a l'enum Python. Ajouter un membre sans migrer echoue ici."""
+    assert _alembic("upgrade", "head").returncode == 0
+
+    mig_engine = create_async_engine(_MIG_URL)
+    try:
+        async with mig_engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    _CONSTRAINTDEF_SQL, {"table": table, "name": constraint_name}
+                )
+            ).first()
+    finally:
+        await mig_engine.dispose()
+
+    assert row is not None, f"CHECK {constraint_name} absente apres migration"
+    literals = set(re.findall(r"'([^']*)'", row[0]))
+    assert literals == {m.value for m in enum_cls}, (
+        f"{constraint_name} en base != enum {enum_cls.__name__} — migration perimee ?"
+    )
