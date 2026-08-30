@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     google_oauth_redirect_uri: str = "http://localhost:8000/auth/google/callback"
     # true -> MockGoogleOAuthClient : aucun appel réseau, fixtures déterministes.
     google_oauth_mock: bool = False
+    # true -> MockAuditProbe (fixtures). false -> RealAuditProbe (P2, non implémenté).
+    audit_probe_mock: bool = True
 
     # Où renvoyer le navigateur après le callback OAuth (défaut = dev front).
     frontend_base_url: str = "http://localhost:4000"

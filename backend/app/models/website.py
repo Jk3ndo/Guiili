@@ -7,6 +7,7 @@ from sqlalchemy import ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+from app.models.enums import StackKind, pg_enum
 from app.models.mixins import TimestampMixin, UUIDPrimaryKeyMixin
 
 if TYPE_CHECKING:
@@ -16,15 +17,17 @@ if TYPE_CHECKING:
 
 class Website(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "websites"
-    __table_args__ = (
-        UniqueConstraint("user_id", "domain", name="uq_websites_user_domain"),
-    )
+    __table_args__ = (UniqueConstraint("user_id", "domain", name="uq_websites_user_domain"),)
 
     user_id: Mapped[UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     domain: Mapped[str] = mapped_column(String(255), nullable=False)
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Renseigne par le moteur d'audit au premier scan ; null tant qu'inconnu.
+    detected_stack: Mapped[StackKind | None] = mapped_column(
+        pg_enum(StackKind, "stack_kind"), nullable=True
+    )
 
     user: Mapped[User] = relationship(back_populates="websites")
     google_links: Mapped[list[WebsiteGoogleLink]] = relationship(

@@ -59,3 +59,14 @@ class IssueStatus(StrEnum):
 class AuditResult(StrEnum):
     SUCCESS = "success"
     ERROR = "error"
+
+
+class StackKind(StrEnum):
+    NEXTJS = "nextjs"
+    WORDPRESS = "wordpress"
+    WOOCOMMERCE = "woocommerce"
+    NUXT = "nuxt"
+    VUE = "vue"
+    ANGULAR = "angular"
+    GENERIC = "generic"
+    UNKNOWN = "unknown"
