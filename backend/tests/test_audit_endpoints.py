@@ -115,6 +115,16 @@ async def test_audit_endpoint_composes_diagnostics(
     assert any(e["name"] == "purchase" for e in body["ga4"]["events"])
     assert any("noindex" in r["label"] for r in body["index"]["reasons"])
 
+    urls = {u["url"]: u for u in body["urls"]}
+    assert len(urls) >= 8
+    # CTR calcule cote serveur
+    edition = urls["/produits/edition-limitee"]
+    assert edition["ctr"] == round(5 / 5200 * 100, 1)
+    assert "Title" in edition["marketing_action"]  # gros volume + CTR ridicule
+    assert "noindex" in urls["/panier"]["marketing_action"].lower()
+    assert "indexation" in urls["/collections/soldes-ete"]["marketing_action"].lower()
+    assert urls["/blog/entretien-laine"]["marketing_action"].startswith("Renforcer le maillage")
+
 
 async def test_audit_endpoint_404_before_scan(
     authed_client: tuple[AsyncClient, User],

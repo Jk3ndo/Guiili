@@ -63,6 +63,62 @@ export interface IndexHealth {
   reasons: IndexReason[];
 }
 
+export type UrlIndexStatus =
+  "Indexée" | "Exclue noindex" | "Redirection 301" | "Découverte non indexée";
+
+export interface SearchUrl {
+  /** Relative path, e.g. "/collections/vetements-homme". */
+  url: string;
+  status: UrlIndexStatus;
+  /** Clicks over the trailing 30 days. */
+  clicks: number;
+  impressions: number;
+  /** Click-through rate as a percentage (1 decimal). */
+  ctr: number;
+  /** Concrete marketing opportunity for this URL. */
+  marketingAction: string;
+}
+
+function urlCtr(clicks: number, impressions: number): number {
+  return impressions ? Math.round((clicks / impressions) * 1000) / 10 : 0;
+}
+
+/** Mirror of the backend `_url_marketing_action` heuristic (accented copy). */
+function urlAction(
+  status: UrlIndexStatus,
+  clicks: number,
+  impressions: number,
+  ctr: number,
+): string {
+  if (status === "Exclue noindex")
+    return "Retirer la balise noindex si la page doit ranker, sinon la sortir du sitemap pour ne plus gaspiller de budget de crawl.";
+  if (status === "Redirection 301")
+    return "Mettre à jour les liens internes et externes pointant vers l'ancienne URL pour transmettre le signal directement à la cible.";
+  if (status === "Découverte non indexée")
+    return "Ajouter 3 à 5 liens internes depuis des pages fortes (accueil, articles phares) et soumettre l'URL à l'inspection pour déclencher l'indexation.";
+  if (impressions >= 500 && ctr < 1.5)
+    return `Réécrire le Title et la meta-description autour du mot-clé principal : CTR ${ctr.toFixed(1)} % très en dessous du potentiel (< 1,5 %).`;
+  if (clicks < 20 && impressions < 300)
+    return "Renforcer le maillage interne : viser au moins 3 liens contextualisés depuis les articles à fort trafic pour faire remonter la page.";
+  return "Page performante : construire un cluster de contenu autour du sujet et lier cette page en pilier pour capter les requêtes voisines.";
+}
+
+function buildUrls(
+  rows: [string, UrlIndexStatus, number, number][],
+): SearchUrl[] {
+  return rows.map(([url, status, clicks, impressions]) => {
+    const ctr = urlCtr(clicks, impressions);
+    return {
+      url,
+      status,
+      clicks,
+      impressions,
+      ctr,
+      marketingAction: urlAction(status, clicks, impressions, ctr),
+    };
+  });
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Block 3 — Core Web Vitals                                                */
 /* -------------------------------------------------------------------------- */
@@ -159,6 +215,7 @@ export interface WebVital {
 export interface AuditData {
   ga4: Ga4Stream;
   index: IndexHealth;
+  urls: SearchUrl[];
   vitals: WebVital[];
 }
 
@@ -169,10 +226,30 @@ const FIXTURES: Record<string, AuditData> = {
       statusLine: "Flux actif · 0 perte de paquets",
       property: "properties/447213908",
       events: [
-        { name: "page_view", conformity: "conforme", volume: 48200, note: "100 % conforme" },
-        { name: "session_start", conformity: "conforme", volume: 21400, note: "100 % conforme" },
-        { name: "view_item", conformity: "conforme", volume: 15900, note: "100 % conforme" },
-        { name: "add_to_cart", conformity: "conforme", volume: 3120, note: "100 % conforme" },
+        {
+          name: "page_view",
+          conformity: "conforme",
+          volume: 48200,
+          note: "100 % conforme",
+        },
+        {
+          name: "session_start",
+          conformity: "conforme",
+          volume: 21400,
+          note: "100 % conforme",
+        },
+        {
+          name: "view_item",
+          conformity: "conforme",
+          volume: 15900,
+          note: "100 % conforme",
+        },
+        {
+          name: "add_to_cart",
+          conformity: "conforme",
+          volume: 3120,
+          note: "100 % conforme",
+        },
         {
           name: "purchase",
           conformity: "missing",
@@ -199,6 +276,17 @@ const FIXTURES: Record<string, AuditData> = {
         { label: "Autre page avec balise canonique correcte", urls: 3 },
       ],
     },
+    urls: buildUrls([
+      ["/collections/vetements-homme", "Indexée", 320, 8400],
+      ["/collections/accessoires", "Indexée", 45, 6200],
+      ["/produits/edition-limitee", "Indexée", 5, 5200],
+      ["/blog/guide-coton-bio", "Indexée", 210, 3100],
+      ["/produits/pull-marin", "Indexée", 88, 1900],
+      ["/blog/entretien-laine", "Indexée", 12, 240],
+      ["/collections/soldes-ete", "Découverte non indexée", 0, 30],
+      ["/produits/vieux-modele-2024", "Redirection 301", 0, 0],
+      ["/panier", "Exclue noindex", 0, 0],
+    ]),
     vitals: [
       {
         id: "lcp",
@@ -239,10 +327,30 @@ const FIXTURES: Record<string, AuditData> = {
       statusLine: "Flux actif · 0 perte de paquets",
       property: "properties/512006644",
       events: [
-        { name: "page_view", conformity: "conforme", volume: 12600, note: "100 % conforme" },
-        { name: "session_start", conformity: "conforme", volume: 6800, note: "100 % conforme" },
-        { name: "view_item", conformity: "conforme", volume: 4100, note: "100 % conforme" },
-        { name: "purchase", conformity: "conforme", volume: 220, note: "100 % conforme" },
+        {
+          name: "page_view",
+          conformity: "conforme",
+          volume: 12600,
+          note: "100 % conforme",
+        },
+        {
+          name: "session_start",
+          conformity: "conforme",
+          volume: 6800,
+          note: "100 % conforme",
+        },
+        {
+          name: "view_item",
+          conformity: "conforme",
+          volume: 4100,
+          note: "100 % conforme",
+        },
+        {
+          name: "purchase",
+          conformity: "conforme",
+          volume: 220,
+          note: "100 % conforme",
+        },
         {
           name: "generate_lead",
           conformity: "missing",
@@ -262,6 +370,14 @@ const FIXTURES: Record<string, AuditData> = {
         { label: "Exclue par la balise « noindex »", urls: 3 },
       ],
     },
+    urls: buildUrls([
+      ["/realisations/cuisine-chene", "Indexée", 64, 1500],
+      ["/realisations/bibliotheque-sur-mesure", "Indexée", 40, 980],
+      ["/blog/choisir-son-bois", "Indexée", 18, 620],
+      ["/services/pose", "Découverte non indexée", 0, 45],
+      ["/realisations/ancienne-galerie", "Redirection 301", 0, 0],
+      ["/devis", "Exclue noindex", 0, 0],
+    ]),
     vitals: [
       {
         id: "lcp",
@@ -308,9 +424,24 @@ const FIXTURES: Record<string, AuditData> = {
           volume: 32100,
           note: "≈ 10 % des vues non captées (3 routes lazy)",
         },
-        { name: "session_start", conformity: "conforme", volume: 14200, note: "100 % conforme" },
-        { name: "view_item", conformity: "conforme", volume: 5600, note: "100 % conforme" },
-        { name: "sign_up", conformity: "conforme", volume: 190, note: "100 % conforme" },
+        {
+          name: "session_start",
+          conformity: "conforme",
+          volume: 14200,
+          note: "100 % conforme",
+        },
+        {
+          name: "view_item",
+          conformity: "conforme",
+          volume: 5600,
+          note: "100 % conforme",
+        },
+        {
+          name: "sign_up",
+          conformity: "conforme",
+          volume: 190,
+          note: "100 % conforme",
+        },
         {
           name: "demo_requested",
           conformity: "missing",
@@ -329,6 +460,15 @@ const FIXTURES: Record<string, AuditData> = {
         { label: "Introuvable (404)", urls: 1 },
       ],
     },
+    urls: buildUrls([
+      ["/blog/design-system-2026", "Indexée", 340, 4200],
+      ["/fonctionnalites", "Indexée", 260, 5400],
+      ["/tarifs", "Indexée", 95, 7800],
+      ["/docs/demarrage", "Indexée", 70, 1100],
+      ["/demo", "Découverte non indexée", 0, 60],
+      ["/old-pricing", "Redirection 301", 0, 0],
+      ["/legal/cgu", "Exclue noindex", 0, 0],
+    ]),
     vitals: [
       {
         id: "lcp",
@@ -369,16 +509,36 @@ const FIXTURES: Record<string, AuditData> = {
       statusLine: "Flux actif · 0 perte de paquets",
       property: "properties/462119003",
       events: [
-        { name: "page_view", conformity: "conforme", volume: 27800, note: "100 % conforme" },
-        { name: "session_start", conformity: "conforme", volume: 12900, note: "100 % conforme" },
+        {
+          name: "page_view",
+          conformity: "conforme",
+          volume: 27800,
+          note: "100 % conforme",
+        },
+        {
+          name: "session_start",
+          conformity: "conforme",
+          volume: 12900,
+          note: "100 % conforme",
+        },
         {
           name: "login",
           conformity: "missing",
           volume: 1240,
           note: "Paramètre manquant : user_id",
         },
-        { name: "view_item", conformity: "conforme", volume: 8300, note: "100 % conforme" },
-        { name: "purchase", conformity: "conforme", volume: 540, note: "100 % conforme" },
+        {
+          name: "view_item",
+          conformity: "conforme",
+          volume: 8300,
+          note: "100 % conforme",
+        },
+        {
+          name: "purchase",
+          conformity: "conforme",
+          volume: 540,
+          note: "100 % conforme",
+        },
       ],
     },
     index: {
@@ -392,6 +552,15 @@ const FIXTURES: Record<string, AuditData> = {
         { label: "Introuvable (404)", urls: 3 },
       ],
     },
+    urls: buildUrls([
+      ["/destinations/islande", "Indexée", 180, 4900],
+      ["/blog/preparer-trek-hiver", "Indexée", 140, 2600],
+      ["/destinations/patagonie", "Indexée", 30, 5100],
+      ["/a-propos", "Indexée", 8, 190],
+      ["/offres/derniere-minute", "Découverte non indexée", 0, 80],
+      ["/destinations/norvege-2024", "Redirection 301", 0, 0],
+      ["/reserver", "Exclue noindex", 0, 0],
+    ]),
     vitals: [
       {
         id: "lcp",
@@ -457,7 +626,7 @@ const DIAGNOSTICS: Record<string, VitalDiagnostic> = {
       '<link rel="preload" as="image" href="/img/hero-banner.avif" fetchpriority="high">',
     recommendations: [
       "Servir le visuel d'accueil en AVIF (repli WebP) — gain estimé ≈ 1,3 Mo.",
-      "Précharger l'image LCP dans le <head> avec fetchpriority=\"high\".",
+      'Précharger l\'image LCP dans le <head> avec fetchpriority="high".',
       "Dimensionner le visuel à la taille d'affichage mobile réelle (≤ 720 px de large).",
     ],
   },
@@ -555,7 +724,8 @@ const DIAGNOSTICS: Record<string, VitalDiagnostic> = {
   "ws_atelier_nord:lcp": {
     kind: "lcp",
     source: "lab",
-    elementSnippet: '<h1 class="page-title">Atelier Nord — mobilier sur mesure</h1>',
+    elementSnippet:
+      '<h1 class="page-title">Atelier Nord — mobilier sur mesure</h1>',
     assets: [
       {
         name: "banner-workshop.jpg",
@@ -599,7 +769,8 @@ const DIAGNOSTICS: Record<string, VitalDiagnostic> = {
   "ws_studio_lumen:lcp": {
     kind: "lcp",
     source: "field",
-    elementSnippet: '<img class="case-study-cover" src="/media/lumen-cover.avif">',
+    elementSnippet:
+      '<img class="case-study-cover" src="/media/lumen-cover.avif">',
     assets: [],
     preloadHint:
       '<link rel="preload" as="image" href="/media/lumen-cover.avif" fetchpriority="high">',

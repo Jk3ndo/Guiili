@@ -237,6 +237,7 @@ def _build_metrics(detection: StackDetection, data: ProbeData) -> dict:
             "noindex_pages": gsc.noindex_pages,
             "noindex_on_products": gsc.noindex_on_products,
             "connection_stale_days": gsc.connection_stale_days,
+            "sample_urls": [asdict(sample) for sample in gsc.sample_urls],
         },
         "cwv": {
             "score": cwv.score,

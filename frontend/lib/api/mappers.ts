@@ -1,4 +1,10 @@
-import type { AuditData, Ga4Stream, VitalDiagnostic, WebVital } from "@/lib/mock/audit";
+import type {
+  AuditData,
+  Ga4Stream,
+  UrlIndexStatus,
+  VitalDiagnostic,
+  WebVital,
+} from "@/lib/mock/audit";
 import type {
   IssueCategory,
   IssueItem,
@@ -228,6 +234,14 @@ export function mapAudit(dto: AuditDto): AuditData {
         urls: reason.urls,
       })),
     },
+    urls: dto.urls.map((entry) => ({
+      url: entry.url,
+      status: entry.status as UrlIndexStatus,
+      clicks: entry.clicks,
+      impressions: entry.impressions,
+      ctr: entry.ctr,
+      marketingAction: entry.marketing_action,
+    })),
     vitals: dto.vitals.map(mapAuditVital),
   };
 }
