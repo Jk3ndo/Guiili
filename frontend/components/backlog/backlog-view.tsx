@@ -5,7 +5,7 @@ import type { HighlightedFixes } from "@/lib/backlog/highlight";
 import { getBacklog } from "@/lib/mock/backlog";
 import { useShell } from "@/lib/shell/shell-context";
 
-import { Backlog } from "./backlog";
+import { Board } from "./board";
 
 export function BacklogView({
   highlighted,
@@ -17,9 +17,9 @@ export function BacklogView({
   return (
     <PageShell
       title="Backlog des correctifs"
-      subtitle="Historique des problèmes détectés et suivi de leur résolution dans le temps."
+      subtitle="Tableau d'ingénierie : chaque anomalie détectée, son correctif et sa progression."
     >
-      <Backlog
+      <Board
         key={workspace.id}
         items={getBacklog(workspace)}
         highlighted={highlighted}

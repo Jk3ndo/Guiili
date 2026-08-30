@@ -167,6 +167,12 @@
     background-color: rgba(255, 255, 255, 0.16);
   }
 
+  /* The scroll lives on <main>; reserve the scrollbar gutter so opening a
+     dialog / drawer (or filtering a long list) never shifts the layout. */
+  main {
+    scrollbar-gutter: stable;
+  }
+
   /* Numeric / tabular data */
   .tabular {
     font-family: var(--font-mono);

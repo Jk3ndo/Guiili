@@ -3,7 +3,7 @@ import type { Workspace } from "./types";
 /**
  * Stand-in for `GET /api/workspaces/:id/backlog`. Deterministic per workspace
  * and aligned with the issues surfaced on /overview — the priority
- * recommendation there is the first "à faire" critical item here.
+ * recommendation there is the first "à traiter" critical item here.
  */
 
 export type IssueCategory = "gtm" | "ga4" | "vitals" | "indexation";
@@ -15,6 +15,8 @@ export type FixLang = "ts" | "tsx" | "js" | "php" | "json" | "css";
 export interface IssueFix {
   /** Lead-in shown above the snippet or the steps. */
   summary: string;
+  /** Exact file the patch targets, when there is one. */
+  file?: string;
   /** A copy-pasteable patch. */
   code?: string;
   lang?: FixLang;
@@ -26,6 +28,8 @@ export interface IssueItem {
   id: string;
   title: string;
   context: string;
+  /** Quantified consequence, shown in the detail drawer. */
+  impact: string;
   category: IssueCategory;
   severity: IssueSeverity;
   status: IssueStatus;
@@ -47,7 +51,7 @@ export const SEVERITY_LABEL: Record<IssueSeverity, string> = {
 };
 
 export const STATUS_LABEL: Record<IssueStatus, string> = {
-  todo: "À faire",
+  todo: "À traiter",
   in_progress: "En cours",
   done: "Résolu",
 };
@@ -60,7 +64,8 @@ const FIXTURES: Record<string, IssueItem[]> = {
       id: "bv-1",
       title: "L'événement purchase GA4 ne transmet ni value ni items",
       context:
-        "Le tag se déclenche à chaque commande mais GA4 enregistre 0 € de revenu.",
+        "Le tag se déclenche à chaque commande mais l'objet ecommerce envoyé est vide.",
+      impact: "≈ 38 % des commandes sans revenu dans les rapports GA4",
       category: "ga4",
       severity: "critical",
       status: "todo",
@@ -68,6 +73,7 @@ const FIXTURES: Record<string, IssueItem[]> = {
       fix: {
         summary:
           "Ajoutez value, currency et items à l'objet ecommerce avant l'envoi de l'événement purchase.",
+        file: "lib/analytics.ts",
         lang: "ts",
         code: `// lib/analytics.ts — appelé sur /checkout/success, paiement confirmé
 export function trackPurchase(order: {
@@ -101,6 +107,7 @@ export function trackPurchase(order: {
       title: "12 pages produit absentes de l'index Google",
       context:
         "Une balise noindex héritée du template de préproduction bloque l'indexation.",
+      impact: "12 URLs produit invisibles dans la recherche Google",
       category: "indexation",
       severity: "warning",
       status: "in_progress",
@@ -121,6 +128,7 @@ export function trackPurchase(order: {
       title: "LCP à 3,4 s sur mobile — visuel d'accueil non optimisé",
       context:
         "Le visuel hero pèse 1,8 Mo, n'est pas préchargé et n'est pas servi en AVIF.",
+      impact: "LCP mobile à 3,4 s — au-dessus du seuil « bon » de 2,5 s",
       category: "vitals",
       severity: "warning",
       status: "todo",
@@ -128,6 +136,7 @@ export function trackPurchase(order: {
       fix: {
         summary:
           "Servez le visuel via next/image avec priority, et exportez-le en AVIF sous 200 Ko.",
+        file: "app/(marketing)/page.tsx",
         lang: "tsx",
         code: `// app/(marketing)/page.tsx
 import Image from "next/image";
@@ -153,6 +162,7 @@ export function Hero() {
       title: "Deux balises GA4 se déclenchaient avant le consentement",
       context:
         "Résolu le 12/08 : le déclenchement est conditionné au consentement analytics_storage.",
+      impact: "Résolu — plus aucune collecte GA4 avant consentement",
       category: "gtm",
       severity: "info",
       status: "done",
@@ -172,6 +182,7 @@ export function Hero() {
       title: "Les paramètres UTM ne sont pas capturés en variable GTM",
       context:
         "Les campagnes payantes ne peuvent pas être attribuées dans les rapports GA4.",
+      impact: "Campagnes payantes non attribuables dans GA4",
       category: "gtm",
       severity: "warning",
       status: "todo",
@@ -179,6 +190,7 @@ export function Hero() {
       fix: {
         summary:
           "Créez une variable d'URL par paramètre UTM, puis mappez-les en paramètres d'événement GA4.",
+        file: "Espace de travail GTM — Variables",
         lang: "json",
         code: `{
   "name": "URL - utm_source",
@@ -199,6 +211,7 @@ export function Hero() {
       title: "Connexion Search Console expirée depuis 6 jours",
       context:
         "Aucune donnée d'indexation ni de position : le diagnostic SEO tourne en aveugle.",
+      impact: "6 jours de données SEO manquantes et comptant",
       category: "indexation",
       severity: "critical",
       status: "todo",
@@ -217,14 +230,16 @@ export function Hero() {
     {
       id: "an-2",
       title: "Formulaires WooCommerce non instrumentés (generate_lead)",
-      context: "Environ 60 leads par mois ne sont pas tracés dans GA4.",
+      context: "Aucun formulaire ne pousse d'événement dans la couche de données.",
+      impact: "≈ 60 leads par mois non tracés dans GA4",
       category: "ga4",
       severity: "warning",
       status: "todo",
       detectedDaysAgo: 15,
       fix: {
         summary:
-          "Aucun formulaire ne pousse d'événement. Ce hook couvre tous les Contact Form 7 du site.",
+          "Ce hook couvre tous les Contact Form 7 du site, sans toucher aux templates.",
+        file: "wp-content/themes/<thème>/functions.php",
         lang: "php",
         code: `<?php
 // functions.php — événement generate_lead après un envoi Contact Form 7
@@ -249,12 +264,14 @@ add_action( 'wp_footer', function () {
       id: "an-3",
       title: "CLS 0,18 en page d'accueil — bannière cookie sans réserve",
       context: "La bannière de consentement s'insère après le rendu et pousse le contenu.",
+      impact: "CLS 0,18 — au-dessus du seuil « bon » de 0,1",
       category: "vitals",
       severity: "warning",
       status: "in_progress",
       detectedDaysAgo: 11,
       fix: {
         summary: "Réservez la hauteur de la bannière pour supprimer le décalage.",
+        file: "assets/css/cookie-banner.css",
         lang: "css",
         code: `/* Réserve l'espace de la bannière avant son hydratation. */
 .cookie-banner {
@@ -274,6 +291,7 @@ add_action( 'wp_footer', function () {
       id: "an-4",
       title: "Le conteneur GTM se chargeait deux fois",
       context: "Résolu le 03/08 : snippet présent dans le thème et dans une extension.",
+      impact: "Résolu — un seul chargement du conteneur",
       category: "gtm",
       severity: "warning",
       status: "done",
@@ -293,13 +311,15 @@ add_action( 'wp_footer', function () {
     {
       id: "sl-1",
       title: "Le CTA « Demander une démo » n'émet aucun événement",
-      context: "L'objectif de conversion principal du site n'est pas mesuré.",
+      context: "Le bouton ouvre une modale sans push dans la couche de données.",
+      impact: "Objectif de conversion principal non mesuré",
       category: "ga4",
       severity: "warning",
       status: "todo",
       detectedDaysAgo: 3,
       fix: {
         summary: "Poussez cta_click au clic sur le bouton, avant l'ouverture de la modale.",
+        file: "components/demo-cta.tsx",
         lang: "tsx",
         code: `// components/demo-cta.tsx
 "use client";
@@ -327,6 +347,7 @@ export function DemoCta() {
       id: "sl-2",
       title: "INP 260 ms sur /tarifs — hydratation lourde du tableau de prix",
       context: "Le tableau recalcule toutes ses lignes à chaque bascule mensuel / annuel.",
+      impact: "INP 260 ms sur /tarifs — au-dessus du seuil « bon » de 200 ms",
       category: "vitals",
       severity: "warning",
       status: "todo",
@@ -345,12 +366,14 @@ export function DemoCta() {
       id: "sl-3",
       title: "Suivi SPA : 3 routes lazy sans page_view",
       context: "History Change couvre 90 % des vues ; 3 routes chargées en lazy sont muettes.",
+      impact: "≈ 10 % des pages vues SPA non comptées",
       category: "ga4",
       severity: "info",
       status: "in_progress",
       detectedDaysAgo: 14,
       fix: {
         summary: "Ce tracker couvre toutes les navigations App Router, y compris les routes lazy.",
+        file: "app/providers/page-view-tracker.tsx",
         lang: "tsx",
         code: `// app/providers/page-view-tracker.tsx
 "use client";
@@ -375,6 +398,7 @@ export function PageViewTracker() {
       id: "sl-4",
       title: "Sitemap non déclaré dans robots.txt",
       context: "Résolu le 09/08 : la ligne Sitemap a été ajoutée et resoumise.",
+      impact: "Résolu — sitemap déclaré et resoumis",
       category: "indexation",
       severity: "info",
       status: "done",
@@ -395,13 +419,15 @@ export function PageViewTracker() {
       id: "ch-1",
       title: "L'identifiant utilisateur n'est pas transmis à GA4",
       context:
-        "Aucun user_id après connexion : environ 45 % de sessions dupliquées entre appareils.",
+        "Aucun user_id après connexion : le rapprochement cross-device est inopérant.",
+      impact: "≈ 45 % de sessions dupliquées entre appareils",
       category: "ga4",
       severity: "critical",
       status: "todo",
       detectedDaysAgo: 5,
       fix: {
         summary: "Poussez user_id juste après le login ; GTM le relaie à GA4 via le champ User ID.",
+        file: "lib/analytics.ts",
         lang: "ts",
         code: `// lib/analytics.ts — après authentification réussie
 export function identifyUser(userId: string) {
@@ -417,7 +443,8 @@ export function identifyUser(userId: string) {
     {
       id: "ch-2",
       title: "Bundle initial de 1,9 Mo — routes non découpées",
-      context: "LCP mobile à 4,1 s. Le lazy-loading par route n'est pas activé.",
+      context: "Le lazy-loading par route n'est pas activé ; tout part dans le premier bundle.",
+      impact: "LCP mobile à 4,1 s, bundle initial de 1,9 Mo",
       category: "vitals",
       severity: "critical",
       status: "todo",
@@ -436,6 +463,7 @@ export function identifyUser(userId: string) {
       id: "ch-3",
       title: "Indexation en progression après resoumission du sitemap",
       context: "84 % des pages indexées, en hausse de 4 points sur la semaine.",
+      impact: "Indexation à 84 %, +4 points sur la semaine",
       category: "indexation",
       severity: "info",
       status: "in_progress",
@@ -453,6 +481,7 @@ export function identifyUser(userId: string) {
       id: "ch-4",
       title: "Le conteneur GTM se chargeait après l'hydratation",
       context: "Résolu le 15/08 : le snippet est désormais dans le <head>.",
+      impact: "Résolu — conteneur chargé avant le premier événement",
       category: "gtm",
       severity: "warning",
       status: "done",
