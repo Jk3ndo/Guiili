@@ -29,7 +29,7 @@ async def test_gtm_export_downloads_valid_container(
     client, user = authed_client
     site = await _website(db_session, user=user, domain="boutique-verte.fr", stack=StackKind.NEXTJS)
 
-    resp = await client.get(f"/websites/{site.id}/gtm-export")
+    resp = await client.get(f"/api/v1/websites/{site.id}/gtm-export")
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("application/json")
     assert (
@@ -54,7 +54,7 @@ async def test_gtm_export_overwrite_mode(
     client, user = authed_client
     site = await _website(db_session, user=user, domain="x.test")
 
-    resp = await client.get(f"/websites/{site.id}/gtm-export?mode=overwrite")
+    resp = await client.get(f"/api/v1/websites/{site.id}/gtm-export?mode=overwrite")
     assert resp.status_code == 200
     assert json.loads(resp.text)["importMetadata"]["mode"] == "overwrite"
 
@@ -84,7 +84,7 @@ async def test_gtm_export_uses_linked_ga4_property(
     )
     await db_session.flush()
 
-    resp = await client.get(f"/websites/{site.id}/gtm-export")
+    resp = await client.get(f"/api/v1/websites/{site.id}/gtm-export")
     assert "properties/447213908" in json.loads(resp.text)["containerVersion"]["description"]
 
 
@@ -94,7 +94,7 @@ async def test_snippets_match_detected_stack(
     client, user = authed_client
     site = await _website(db_session, user=user, domain="shop.test", stack=StackKind.WOOCOMMERCE)
 
-    resp = await client.get(f"/websites/{site.id}/snippets")
+    resp = await client.get(f"/api/v1/websites/{site.id}/snippets")
     assert resp.status_code == 200
     body = resp.json()
     assert body["detected_stack"] == "woocommerce"
@@ -110,7 +110,7 @@ async def test_snippets_event_filter_and_unknown_stack(
     client, user = authed_client
     site = await _website(db_session, user=user, domain="plain.test")  # stack None
 
-    resp = await client.get(f"/websites/{site.id}/snippets?event=lead")
+    resp = await client.get(f"/api/v1/websites/{site.id}/snippets?event=lead")
     body = resp.json()
     assert body["detected_stack"] is None
     assert body["resolved_stack"] == "unknown"
@@ -126,11 +126,11 @@ async def test_gtm_endpoints_ownership_and_auth(
     stranger = await make_user(sub="stranger-gtm")
     foreign = await _website(db_session, user=stranger, domain="notyours.test")
 
-    assert (await client.get(f"/websites/{foreign.id}/gtm-export")).status_code == 404
-    assert (await client.get(f"/websites/{foreign.id}/snippets")).status_code == 404
+    assert (await client.get(f"/api/v1/websites/{foreign.id}/gtm-export")).status_code == 404
+    assert (await client.get(f"/api/v1/websites/{foreign.id}/snippets")).status_code == 404
 
 
 async def test_gtm_requires_auth(db_client: AsyncClient) -> None:
     fake = "00000000-0000-0000-0000-000000000000"
-    assert (await db_client.get(f"/websites/{fake}/gtm-export")).status_code == 401
-    assert (await db_client.get(f"/websites/{fake}/snippets")).status_code == 401
+    assert (await db_client.get(f"/api/v1/websites/{fake}/gtm-export")).status_code == 401
+    assert (await db_client.get(f"/api/v1/websites/{fake}/snippets")).status_code == 401

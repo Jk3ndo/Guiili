@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     # Où renvoyer le navigateur après le callback OAuth (défaut = dev front).
     frontend_base_url: str = "http://localhost:4000"
     session_cookie_name: str = "cc_session"
+    # Origines autorisées par CORS (le front Next.js en dev).
+    cors_origins: list[str] = [
+        "http://127.0.0.1:4000",
+        "http://localhost:4000",
+    ]
     # Durée de vie d'une transaction OAuth (state + code_verifier) côté serveur.
     oauth_state_ttl_seconds: int = 600
 

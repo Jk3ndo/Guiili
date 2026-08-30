@@ -38,7 +38,7 @@ async def test_scan_updates_stack_and_creates_issues(
     client, user = authed_client
     site = await _website(db_session, user=user, domain="boutique-verte.fr")
 
-    resp = await client.post(f"/websites/{site.id}/scan")
+    resp = await client.post(f"/api/v1/websites/{site.id}/scan")
     assert resp.status_code == 201, resp.text
     body = resp.json()
     assert body["detected_stack"] == "nextjs"
@@ -49,7 +49,7 @@ async def test_scan_updates_stack_and_creates_issues(
     assert site.detected_stack is StackKind.NEXTJS
 
     # 2e scan : rien de nouveau, tout est "updated"
-    again = (await client.post(f"/websites/{site.id}/scan")).json()
+    again = (await client.post(f"/api/v1/websites/{site.id}/scan")).json()
     assert again["issues"]["created"] == 0
     assert again["issues"]["updated"] >= 3
 
@@ -61,9 +61,9 @@ async def test_overview_shape(
 ) -> None:
     client, user = authed_client
     site = await _website(db_session, user=user, domain="boutique-verte.fr")
-    await client.post(f"/websites/{site.id}/scan")
+    await client.post(f"/api/v1/websites/{site.id}/scan")
 
-    resp = await client.get(f"/websites/{site.id}/overview")
+    resp = await client.get(f"/api/v1/websites/{site.id}/overview")
     assert resp.status_code == 200
     body = resp.json()
 
@@ -85,16 +85,16 @@ async def test_issues_list_and_filters(
 ) -> None:
     client, user = authed_client
     site = await _website(db_session, user=user, domain="boutique-verte.fr")
-    await client.post(f"/websites/{site.id}/scan")
+    await client.post(f"/api/v1/websites/{site.id}/scan")
 
-    everything = (await client.get(f"/websites/{site.id}/issues")).json()
+    everything = (await client.get(f"/api/v1/websites/{site.id}/issues")).json()
     assert len(everything) >= 3
 
-    todo = (await client.get(f"/websites/{site.id}/issues?status=todo")).json()
+    todo = (await client.get(f"/api/v1/websites/{site.id}/issues?status=todo")).json()
     assert len(todo) == len(everything)
     assert all(i["status"] == "todo" for i in todo)
 
-    crit = (await client.get(f"/websites/{site.id}/issues?severity=critical")).json()
+    crit = (await client.get(f"/api/v1/websites/{site.id}/issues?severity=critical")).json()
     assert len(crit) == 1
     assert crit[0]["severity"] == "critical"
 
@@ -106,22 +106,22 @@ async def test_patch_issue_status_transitions(
 ) -> None:
     client, user = authed_client
     site = await _website(db_session, user=user, domain="boutique-verte.fr")
-    await client.post(f"/websites/{site.id}/scan")
-    issue_id = (await client.get(f"/websites/{site.id}/issues")).json()[0]["id"]
+    await client.post(f"/api/v1/websites/{site.id}/scan")
+    issue_id = (await client.get(f"/api/v1/websites/{site.id}/issues")).json()[0]["id"]
 
     started = await client.patch(
-        f"/websites/{site.id}/issues/{issue_id}", json={"status": "in_progress"}
+        f"/api/v1/websites/{site.id}/issues/{issue_id}", json={"status": "in_progress"}
     )
     assert started.status_code == 200
     assert started.json()["status"] == "in_progress"
     assert started.json()["resolved_at"] is None
 
-    done = await client.patch(f"/websites/{site.id}/issues/{issue_id}", json={"status": "resolved"})
+    done = await client.patch(f"/api/v1/websites/{site.id}/issues/{issue_id}", json={"status": "resolved"})
     assert done.status_code == 200
     assert done.json()["status"] == "fixed"
     assert done.json()["resolved_at"] is not None
 
-    bad = await client.patch(f"/websites/{site.id}/issues/{issue_id}", json={"status": "banana"})
+    bad = await client.patch(f"/api/v1/websites/{site.id}/issues/{issue_id}", json={"status": "banana"})
     assert bad.status_code == 422
 
 
@@ -135,12 +135,12 @@ async def test_scan_rejects_foreign_website(
     stranger = await make_user(sub="stranger-audit")
     foreign = await _website(db_session, user=stranger, domain="notyours.com")
 
-    resp = await client.post(f"/websites/{foreign.id}/scan")
+    resp = await client.post(f"/api/v1/websites/{foreign.id}/scan")
     assert resp.status_code == 404
 
 
 async def test_endpoints_require_auth(db_client: AsyncClient) -> None:
     fake_id = "00000000-0000-0000-0000-000000000000"
-    assert (await db_client.post(f"/websites/{fake_id}/scan")).status_code == 401
-    assert (await db_client.get(f"/websites/{fake_id}/overview")).status_code == 401
-    assert (await db_client.get(f"/websites/{fake_id}/issues")).status_code == 401
+    assert (await db_client.post(f"/api/v1/websites/{fake_id}/scan")).status_code == 401
+    assert (await db_client.get(f"/api/v1/websites/{fake_id}/overview")).status_code == 401
+    assert (await db_client.get(f"/api/v1/websites/{fake_id}/issues")).status_code == 401

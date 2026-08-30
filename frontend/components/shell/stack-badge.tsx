@@ -1,7 +1,7 @@
 import { cn } from "@/lib/utils";
 import type { StackId } from "@/lib/mock/types";
 
-const LABEL: Record<StackId, string> = {
+export const STACK_LABEL: Record<StackId, string> = {
   nextjs: "Next.js",
   wordpress: "WordPress",
   angular: "Angular",
@@ -24,7 +24,7 @@ export function StackBadge({
         className,
       )}
     >
-      {LABEL[stack]}
+      {STACK_LABEL[stack]}
     </span>
   );
 }

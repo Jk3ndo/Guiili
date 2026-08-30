@@ -13,7 +13,7 @@ from app.security.token_crypto import TokenCipher, load_token_cipher
 from app.services.audit_engine import Detector
 from app.services.audit_probe import AuditProbe, MockAuditProbe, RealAuditProbe
 from app.services.google_oauth import GoogleOAuthClient, get_google_oauth_client
-from app.services.stack_detector import detect_stack
+from app.services.stack_detector import demo_detector, detect_stack
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
@@ -31,8 +31,9 @@ def get_audit_probe(settings: SettingsDep) -> AuditProbe:
     return MockAuditProbe() if settings.audit_probe_mock else RealAuditProbe()
 
 
-def get_stack_detector() -> Detector:
-    return detect_stack
+def get_stack_detector(settings: SettingsDep) -> Detector:
+    # En mode mock les domaines de démo n'ont pas de vrai site à sonder.
+    return demo_detector if settings.google_oauth_mock else detect_stack
 
 
 TokenCipherDep = Annotated[TokenCipher, Depends(get_token_cipher)]

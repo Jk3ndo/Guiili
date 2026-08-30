@@ -31,7 +31,7 @@ async def _make_connection(
 
 
 async def test_requires_authentication(db_client: AsyncClient) -> None:
-    assert (await db_client.get("/google/resources")).status_code == 401
+    assert (await db_client.get("/api/v1/google/resources")).status_code == 401
 
 
 async def test_aggregates_resources_across_two_connections(
@@ -53,7 +53,7 @@ async def test_aggregates_resources_across_two_connections(
         refresh="mock-refresh|google-sub-client-perso",
     )
 
-    resp = await client.get("/google/resources")
+    resp = await client.get("/api/v1/google/resources")
     assert resp.status_code == 200, resp.text
     body = resp.json()
 
@@ -89,7 +89,7 @@ async def test_revoked_connection_flips_to_needs_reauth(
         refresh="mock-refresh|ghost-sub|revoked",
     )
 
-    resp = await client.get("/google/resources")
+    resp = await client.get("/api/v1/google/resources")
     assert resp.status_code == 200
     body = resp.json()
 
