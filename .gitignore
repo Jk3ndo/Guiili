@@ -24,3 +24,6 @@ next-env.d.ts
 
 # Local-only Docker overrides
 docker-compose.override.yml
+
+# scripts/dev.sh runtime (pids + logs)
+.dev/
