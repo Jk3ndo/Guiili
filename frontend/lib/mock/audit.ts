@@ -70,6 +70,75 @@ export interface IndexHealth {
 export type WebVitalId = "lcp" | "inp" | "cls";
 export type VitalRating = "good" | "warn" | "bad";
 
+/** Where the measure comes from: CrUX field data or a synthetic lab audit. */
+export type VitalSource = "field" | "lab";
+
+export const VITAL_SOURCE_LABEL: Record<VitalSource, string> = {
+  field: "Données de terrain (CrUX)",
+  lab: "Audit laboratoire (Lighthouse)",
+};
+
+/** A costly third-party actor blocking the main thread (INP). */
+export interface CostlyEntity {
+  name: string;
+  /** Human category, e.g. "Tag manager", "Session replay". */
+  category: string;
+  /** Time the entity kept the main thread busy, in ms. */
+  mainThreadMs: number;
+  /** Portion of that time that actually blocked input, in ms. */
+  blockingMs: number;
+}
+
+export interface InpDiagnostic {
+  kind: "inp";
+  source: VitalSource;
+  /** Total Blocking Time over the trace, in ms. */
+  totalBlockingTimeMs: number;
+  /** Total JS execution time (Lighthouse `bootup-time`), in ms. */
+  jsExecutionMs: number;
+  entities: CostlyEntity[];
+  recommendations: string[];
+}
+
+/** An unoptimised asset weighing on the LCP. */
+export interface LcpAsset {
+  /** Short file name, e.g. "hero-banner.jpg". */
+  name: string;
+  /** Current encoding, e.g. "JPEG", "PNG". */
+  currentFormat: string;
+  sizeKb: number;
+  /** Estimated saving after AVIF/WebP conversion, in KB. */
+  estimatedSavingKb: number;
+}
+
+export interface LcpDiagnostic {
+  kind: "lcp";
+  source: VitalSource;
+  /** DOM snippet of the LCP element, e.g. `<img class="hero-image" …>`. */
+  elementSnippet: string;
+  assets: LcpAsset[];
+  /** Ready-to-paste `<link rel="preload">` line. */
+  preloadHint: string;
+  recommendations: string[];
+}
+
+/** A DOM node responsible for a visible layout shift (CLS). */
+export interface ClsShiftElement {
+  selector: string;
+  /** Contribution to the CLS score (0–1). */
+  impact: number;
+  note: string;
+}
+
+export interface ClsDiagnostic {
+  kind: "cls";
+  source: VitalSource;
+  elements: ClsShiftElement[];
+  recommendations: string[];
+}
+
+export type VitalDiagnostic = InpDiagnostic | LcpDiagnostic | ClsDiagnostic;
+
 export interface WebVital {
   id: WebVitalId;
   label: string;
@@ -83,6 +152,8 @@ export interface WebVital {
   /** [good ceiling, needs-improvement ceiling] in the base unit. */
   thresholds: [number, number];
   hint: string;
+  /** Surgical diagnostic shown in the inspection drawer. */
+  diagnostic?: VitalDiagnostic;
 }
 
 export interface AuditData {
@@ -356,8 +427,272 @@ const FIXTURES: Record<string, AuditData> = {
   },
 };
 
+/* -------------------------------------------------------------------------- */
+/*  Surgical CWV diagnostics — keyed by `${workspaceId}:${vitalId}`           */
+/*  Mirrors what the backend PageSpeed probe extracts (P2): costly third      */
+/*  parties for INP, unoptimised assets + LCP node for LCP, shifting nodes    */
+/*  for CLS. Values stay coherent with each workspace's `hint`.               */
+/* -------------------------------------------------------------------------- */
+
+const DIAGNOSTICS: Record<string, VitalDiagnostic> = {
+  "ws_boutique_verte:lcp": {
+    kind: "lcp",
+    source: "field",
+    elementSnippet: '<img class="hero-image" src="/img/hero-banner.jpg">',
+    assets: [
+      {
+        name: "hero-banner.jpg",
+        currentFormat: "JPEG",
+        sizeKb: 1801,
+        estimatedSavingKb: 1367,
+      },
+      {
+        name: "collection-2026-large.png",
+        currentFormat: "PNG",
+        sizeKb: 898,
+        estimatedSavingKb: 586,
+      },
+    ],
+    preloadHint:
+      '<link rel="preload" as="image" href="/img/hero-banner.avif" fetchpriority="high">',
+    recommendations: [
+      "Servir le visuel d'accueil en AVIF (repli WebP) — gain estimé ≈ 1,3 Mo.",
+      "Précharger l'image LCP dans le <head> avec fetchpriority=\"high\".",
+      "Dimensionner le visuel à la taille d'affichage mobile réelle (≤ 720 px de large).",
+    ],
+  },
+  "ws_boutique_verte:inp": {
+    kind: "inp",
+    source: "field",
+    totalBlockingTimeMs: 640,
+    jsExecutionMs: 2100,
+    entities: [
+      {
+        name: "Google Tag Manager",
+        category: "Tag manager",
+        mainThreadMs: 480,
+        blockingMs: 210,
+      },
+      {
+        name: "Hotjar",
+        category: "Enregistrement de session",
+        mainThreadMs: 260,
+        blockingMs: 140,
+      },
+    ],
+    recommendations: [
+      "Différer le chargement de GTM après le premier rendu (événement `requestIdleCallback` ou interaction).",
+      "Charger Hotjar en différé ou le limiter à un échantillon de sessions.",
+      "Regrouper les balises tierces derrière un gestionnaire de consentement pour éviter l'exécution au chargement.",
+    ],
+  },
+  "ws_boutique_verte:cls": {
+    kind: "cls",
+    source: "field",
+    elements: [
+      {
+        selector: "section.hero > img.hero-image",
+        impact: 0.05,
+        note: "Visuel d'accueil sans width/height — réserve l'espace après chargement.",
+      },
+      {
+        selector: "div.promo-bar",
+        impact: 0.03,
+        note: "Bandeau promo injecté après l'hydratation, pousse le contenu.",
+      },
+    ],
+    recommendations: [
+      "Fixer `width` et `height` (ou `aspect-ratio`) sur le visuel d'accueil.",
+      "Réserver la hauteur du bandeau promo via un conteneur à hauteur fixe rendu côté serveur.",
+    ],
+  },
+
+  "ws_atelier_nord:inp": {
+    kind: "inp",
+    source: "field",
+    totalBlockingTimeMs: 410,
+    jsExecutionMs: 1450,
+    entities: [
+      {
+        name: "Filtres produit (bundle interne)",
+        category: "Script applicatif",
+        mainThreadMs: 320,
+        blockingMs: 180,
+      },
+      {
+        name: "Google Tag Manager",
+        category: "Tag manager",
+        mainThreadMs: 190,
+        blockingMs: 90,
+      },
+    ],
+    recommendations: [
+      "Découper le script de filtrage et l'exécuter sur interaction plutôt qu'au chargement.",
+      "Déplacer le calcul de facettes dans un web worker.",
+      "Différer GTM après le premier rendu.",
+    ],
+  },
+  "ws_atelier_nord:cls": {
+    kind: "cls",
+    source: "field",
+    elements: [
+      {
+        selector: "div.consent-banner",
+        impact: 0.12,
+        note: "Bannière de consentement sans réserve d'espace, insérée en haut de page.",
+      },
+      {
+        selector: "img.product-thumb",
+        impact: 0.04,
+        note: "Vignettes produit sans dimensions explicites.",
+      },
+    ],
+    recommendations: [
+      "Rendre la bannière de consentement en overlay `position: fixed` (hors flux).",
+      "Ajouter `width`/`height` sur toutes les vignettes de la grille produit.",
+    ],
+  },
+  "ws_atelier_nord:lcp": {
+    kind: "lcp",
+    source: "lab",
+    elementSnippet: '<h1 class="page-title">Atelier Nord — mobilier sur mesure</h1>',
+    assets: [
+      {
+        name: "banner-workshop.jpg",
+        currentFormat: "JPEG",
+        sizeKb: 540,
+        estimatedSavingKb: 360,
+      },
+    ],
+    preloadHint:
+      '<link rel="preload" as="font" href="/fonts/canela.woff2" type="font/woff2" crossorigin>',
+    recommendations: [
+      "Précharger la police du titre pour éviter le rendu différé du texte LCP.",
+      "Compresser la bannière d'atelier et la servir en WebP.",
+    ],
+  },
+
+  "ws_studio_lumen:inp": {
+    kind: "inp",
+    source: "field",
+    totalBlockingTimeMs: 520,
+    jsExecutionMs: 1980,
+    entities: [
+      {
+        name: "Table de prix (hydratation React)",
+        category: "Script applicatif",
+        mainThreadMs: 610,
+        blockingMs: 280,
+      },
+      {
+        name: "Intercom",
+        category: "Chat support",
+        mainThreadMs: 240,
+        blockingMs: 110,
+      },
+    ],
+    recommendations: [
+      "Rendre la table de prix côté serveur et n'hydrater que les contrôles interactifs.",
+      "Charger Intercom après interaction (clic sur la bulle) plutôt qu'au chargement.",
+    ],
+  },
+  "ws_studio_lumen:lcp": {
+    kind: "lcp",
+    source: "field",
+    elementSnippet: '<img class="case-study-cover" src="/media/lumen-cover.avif">',
+    assets: [],
+    preloadHint:
+      '<link rel="preload" as="image" href="/media/lumen-cover.avif" fetchpriority="high">',
+    recommendations: [
+      "Le visuel LCP est déjà en AVIF — ajouter un `preload` pour le prioriser.",
+      "Réduire la chaîne de requêtes critiques (police + CSS) qui retarde l'affichage.",
+    ],
+  },
+  "ws_studio_lumen:cls": {
+    kind: "cls",
+    source: "field",
+    elements: [
+      {
+        selector: "table.pricing-grid",
+        impact: 0.03,
+        note: "La table de prix se redimensionne à l'hydratation sur /tarifs.",
+      },
+    ],
+    recommendations: [
+      "Fixer la hauteur minimale de la table de prix pendant l'hydratation.",
+    ],
+  },
+
+  "ws_cap_horizon:lcp": {
+    kind: "lcp",
+    source: "lab",
+    elementSnippet: '<div class="hero-carousel" data-slide="1"></div>',
+    assets: [
+      {
+        name: "app-main.js",
+        currentFormat: "JS",
+        sizeKb: 1904,
+        estimatedSavingKb: 0,
+      },
+      {
+        name: "slide-01.jpg",
+        currentFormat: "JPEG",
+        sizeKb: 720,
+        estimatedSavingKb: 470,
+      },
+    ],
+    preloadHint:
+      '<link rel="preload" as="image" href="/img/slide-01.webp" fetchpriority="high">',
+    recommendations: [
+      "Découper le bundle initial (1,9 Mo) par route — le carrousel n'a pas besoin de tout l'applicatif.",
+      "Servir la première diapositive en WebP et la précharger.",
+      "Retarder l'initialisation JS du carrousel jusqu'à la visibilité (`IntersectionObserver`).",
+    ],
+  },
+  "ws_cap_horizon:inp": {
+    kind: "inp",
+    source: "field",
+    totalBlockingTimeMs: 700,
+    jsExecutionMs: 2450,
+    entities: [
+      {
+        name: "Bundle applicatif (montage des vues)",
+        category: "Script applicatif",
+        mainThreadMs: 890,
+        blockingMs: 360,
+      },
+      {
+        name: "Google Tag Manager",
+        category: "Tag manager",
+        mainThreadMs: 210,
+        blockingMs: 95,
+      },
+    ],
+    recommendations: [
+      "Activer le fractionnement de code par route pour alléger le montage initial.",
+      "Différer GTM et les scripts non critiques après `load`.",
+      "Mesurer les longues tâches (> 50 ms) et les découper.",
+    ],
+  },
+  "ws_cap_horizon:cls": {
+    kind: "cls",
+    source: "field",
+    elements: [
+      {
+        selector: "div.hero-carousel",
+        impact: 0.04,
+        note: "Le carrousel n'a pas de hauteur réservée avant initialisation JS.",
+      },
+    ],
+    recommendations: [
+      "Réserver la hauteur du carrousel via `aspect-ratio` ou une hauteur fixe en CSS.",
+    ],
+  },
+};
+
 export function getAudit(workspace: Workspace, period: AuditPeriod): AuditData {
-  const base = FIXTURES[workspace.id] ?? FIXTURES.ws_boutique_verte;
+  const key = FIXTURES[workspace.id] ? workspace.id : "ws_boutique_verte";
+  const base = FIXTURES[key];
   const factor = PERIOD_FACTOR[period];
 
   return {
@@ -369,5 +704,9 @@ export function getAudit(workspace: Workspace, period: AuditPeriod): AuditData {
         volume: Math.round(event.volume * factor),
       })),
     },
+    vitals: base.vitals.map((vital) => {
+      const diagnostic = DIAGNOSTICS[`${key}:${vital.id}`];
+      return diagnostic ? { ...vital, diagnostic } : vital;
+    }),
   };
 }

@@ -4,6 +4,7 @@ import type {
   IssueSeverity,
   IssueStatus,
 } from "@/lib/mock/backlog";
+import type { VitalDiagnostic, WebVital } from "@/lib/mock/audit";
 import type {
   AuditEventResult,
   MetricScore,
@@ -12,7 +13,7 @@ import type {
   StackId,
 } from "@/lib/mock/types";
 
-import type { IssueDto, OverviewDto } from "./dto";
+import type { AuditVitalDto, CwvDiagnosticDto, IssueDto, OverviewDto } from "./dto";
 
 const METRIC_STATUS: Record<string, MetricStatus> = {
   good: "good",
@@ -115,6 +116,82 @@ export const STATUS_TO_API: Record<IssueStatus, string> = {
   in_progress: "in_progress",
   done: "resolved",
 };
+
+/**
+ * Map a backend CWV diagnostic (snake_case) to the mock-shaped union the
+ * inspection drawer renders. Returns `undefined` when the payload is null so
+ * the card stays non-clickable rather than opening an empty drawer.
+ */
+export function mapDiagnostic(
+  dto: CwvDiagnosticDto | null | undefined,
+): VitalDiagnostic | undefined {
+  if (!dto) return undefined;
+  const recommendations = dto.recommendations ?? [];
+
+  if (dto.metric === "inp") {
+    return {
+      kind: "inp",
+      source: dto.source,
+      totalBlockingTimeMs: dto.total_blocking_time_ms ?? 0,
+      jsExecutionMs: dto.js_execution_ms ?? 0,
+      entities: (dto.entities ?? []).map((entity) => ({
+        name: entity.name,
+        category: entity.category,
+        mainThreadMs: entity.main_thread_ms,
+        blockingMs: entity.blocking_ms,
+      })),
+      recommendations,
+    };
+  }
+
+  if (dto.metric === "lcp") {
+    return {
+      kind: "lcp",
+      source: dto.source,
+      elementSnippet: dto.element_snippet ?? "",
+      assets: (dto.assets ?? []).map((asset) => ({
+        name: asset.name,
+        currentFormat: asset.current_format,
+        sizeKb: asset.size_kb,
+        estimatedSavingKb: asset.estimated_saving_kb,
+      })),
+      preloadHint: dto.preload_hint ?? "",
+      recommendations,
+    };
+  }
+
+  return {
+    kind: "cls",
+    source: dto.source,
+    elements: (dto.shift_elements ?? []).map((element) => ({
+      selector: element.selector,
+      impact: element.impact,
+      note: element.note,
+    })),
+    recommendations,
+  };
+}
+
+const VITAL_RATING: Record<string, WebVital["rating"]> = {
+  good: "good",
+  warn: "warn",
+  bad: "bad",
+};
+
+export function mapAuditVital(dto: AuditVitalDto): WebVital {
+  const diagnostic = mapDiagnostic(dto.diagnostic);
+  const vital: WebVital = {
+    id: dto.id,
+    label: dto.label,
+    value: dto.value,
+    raw: dto.raw,
+    rating: VITAL_RATING[dto.rating] ?? "bad",
+    target: dto.target,
+    thresholds: dto.thresholds,
+    hint: dto.hint,
+  };
+  return diagnostic ? { ...vital, diagnostic } : vital;
+}
 
 export function mapIssue(dto: IssueDto): IssueItem {
   const detectedMs = Date.parse(dto.detected_at);
