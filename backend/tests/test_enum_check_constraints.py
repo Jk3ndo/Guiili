@@ -33,7 +33,7 @@ from app.models.enums import (
     SnapshotSource,
     StackKind,
 )
-from tests.test_migrations import _alembic, clean_migrations_db  # noqa: F401 — fixtures
+from tests.test_migrations import _alembic
 
 _MIG_URL = get_settings().database_url_migrations_test
 
@@ -79,21 +79,37 @@ async def test_enum_check_matches_python_values(
     assert literals == {m.value for m in enum_cls}
 
 
+@pytest.fixture(scope="module")
+def migrated_head_db():
+    """Un SEUL `alembic upgrade head` pour les 8 assertions d'enum.
+
+    L'ancienne version relançait toute la migration (downgrade + upgrade +
+    downgrade) une fois par parametre — 24 sous-processus alembic ouvrant
+    chacun une connexion a la base de migration. Sous charge (suite complete)
+    cette rafale saturait les slots Postgres et un `upgrade` timeoutait
+    (flake `TimeoutError` d'asyncpg). Une seule montee, en fixture de module,
+    supprime la rafale.
+    """
+    _alembic("downgrade", "base")
+    result = _alembic("upgrade", "head")
+    assert result.returncode == 0, result.stderr
+    yield
+    _alembic("downgrade", "base")
+
+
 @pytest.mark.parametrize(
     ("table", "constraint_name", "enum_cls"),
     ENUM_CHECKS,
     ids=[name for _, name, _ in ENUM_CHECKS],
 )
 async def test_enum_check_matches_after_migration(
-    clean_migrations_db,  # noqa: F811 — fixture, pas la fonction importee
+    migrated_head_db,
     table: str,
     constraint_name: str,
     enum_cls: type,
 ) -> None:
     """Garde-fou de fraicheur : la CHECK EN BASE (posee par la migration) doit
     correspondre a l'enum Python. Ajouter un membre sans migrer echoue ici."""
-    assert _alembic("upgrade", "head").returncode == 0
-
     mig_engine = create_async_engine(_MIG_URL)
     try:
         async with mig_engine.connect() as conn:
