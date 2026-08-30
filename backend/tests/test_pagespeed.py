@@ -36,6 +36,25 @@ def test_parse_extracts_diagnostics() -> None:
     assert isinstance(CwvSignals(**result), CwvSignals)
 
 
+def test_parse_extracts_structured_diagnostics() -> None:
+    result = parse_pagespeed(_FIXTURE)
+
+    entities = {e.name: e for e in result["costly_entities"]}
+    assert entities["Google Tag Manager"].category == "Tag manager"
+    assert entities["Google Tag Manager"].main_thread_ms == 480
+    assert entities["Google Tag Manager"].blocking_ms == 210  # round(210.5) -> pair
+    # trie par temps de thread principal decroissant
+    assert [e.name for e in result["costly_entities"]] == ["Google Tag Manager", "Hotjar"]
+
+    assets = {a.name: a for a in result["lcp_assets"]}
+    assert assets["hero-banner.jpg"].current_format == "JPEG"
+    assert assets["hero-banner.jpg"].size_kb == round(1843200 / 1024)
+    assert assets["hero-banner.jpg"].estimated_saving_kb == round(1400000 / 1024)
+
+    shifts = {s.selector: s for s in result["shift_elements"]}
+    assert shifts["div.consent-banner"].impact == 0.128
+
+
 def test_parse_falls_back_to_lab_without_field_data() -> None:
     lab_only = {"lighthouseResult": _FIXTURE["lighthouseResult"]}
     result = parse_pagespeed(lab_only)
@@ -55,11 +74,15 @@ def test_parse_empty_payload_is_degraded() -> None:
         "heavy_assets": (),
         "blocking_scripts": (),
         "third_party_scripts": (),
+        "costly_entities": (),
+        "lcp_assets": (),
+        "shift_elements": (),
         "js_execution_ms": 0,
         "total_blocking_time_ms": 0,
         "lcp_element": None,
         "field_data": False,
     }
+    assert isinstance(CwvSignals(**result), CwvSignals)
 
 
 def _transport(handler) -> httpx.AsyncClient:

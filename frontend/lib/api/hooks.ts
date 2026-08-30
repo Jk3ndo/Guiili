@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { getAudit, type AuditData, type AuditPeriod } from "@/lib/mock/audit";
 import { getBacklog, type IssueItem, type IssueStatus } from "@/lib/mock/backlog";
 import { getOverview } from "@/lib/mock/overview";
 import type { OverviewData, Workspace } from "@/lib/mock/types";
@@ -9,9 +10,9 @@ import type { OverviewData, Workspace } from "@/lib/mock/types";
 import { runDiagnostic } from "./actions";
 import { apiGet, apiPatch } from "./client";
 import { notifyDemoMode } from "./demo";
-import type { IssueDto, OverviewDto, SnippetsDto } from "./dto";
+import type { AuditDto, IssueDto, OverviewDto, SnippetsDto } from "./dto";
 import { onDiagnosticComplete } from "./events";
-import { mapIssue, mapOverview, STATUS_TO_API } from "./mappers";
+import { mapAudit, mapIssue, mapOverview, STATUS_TO_API } from "./mappers";
 import { resolveWebsiteId } from "./workspaces";
 
 export type DataSource = "api" | "fallback";
@@ -86,6 +87,33 @@ export function useBacklog(workspace: Workspace) {
   );
 
   return { items, source, version, persistStatus };
+}
+
+export function useAudit(workspace: Workspace, period: AuditPeriod) {
+  const [apiData, setApiData] = useState<AuditData | null>(null);
+  const [source, setSource] = useState<DataSource>("fallback");
+
+  const load = useCallback(async () => {
+    try {
+      const websiteId = await resolveWebsiteId(workspace.domain);
+      const dto = await apiGet<AuditDto>(`/websites/${websiteId}/audit`);
+      setApiData(mapAudit(dto));
+      setSource("api");
+    } catch {
+      notifyDemoMode();
+      setApiData(null);
+      setSource("fallback");
+    }
+  }, [workspace.domain]);
+
+  useEffect(() => {
+    void load();
+    return onDiagnosticComplete(() => void load());
+  }, [load]);
+
+  // API data is period-independent; only the mock fallback rescales volumes.
+  const data = apiData ?? getAudit(workspace, period);
+  return { data, source };
 }
 
 export function useSnippets(workspace: Workspace) {

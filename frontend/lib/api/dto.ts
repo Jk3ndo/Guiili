@@ -124,3 +124,39 @@ export interface AuditVitalDto {
   hint: string;
   diagnostic: CwvDiagnosticDto | null;
 }
+
+export interface AuditGa4EventDto {
+  name: string;
+  conformity: "conforme" | "partial" | "missing";
+  note: string;
+  volume: number;
+}
+
+export interface AuditGa4Dto {
+  score: number;
+  status: "good" | "warn" | "bad";
+  status_line: string;
+  property: string | null;
+  events: AuditGa4EventDto[];
+}
+
+export interface AuditIndexReasonDto {
+  label: string;
+  urls: number;
+}
+
+export interface AuditIndexDto {
+  property: string | null;
+  valid: number;
+  excluded: number;
+  reasons: AuditIndexReasonDto[];
+}
+
+export interface AuditDto {
+  site_name: string;
+  domain: string;
+  captured_at: string | null;
+  ga4: AuditGa4Dto;
+  index: AuditIndexDto;
+  vitals: AuditVitalDto[];
+}

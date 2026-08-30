@@ -1,10 +1,10 @@
+import type { AuditData, Ga4Stream, VitalDiagnostic, WebVital } from "@/lib/mock/audit";
 import type {
   IssueCategory,
   IssueItem,
   IssueSeverity,
   IssueStatus,
 } from "@/lib/mock/backlog";
-import type { VitalDiagnostic, WebVital } from "@/lib/mock/audit";
 import type {
   AuditEventResult,
   MetricScore,
@@ -13,7 +13,13 @@ import type {
   StackId,
 } from "@/lib/mock/types";
 
-import type { AuditVitalDto, CwvDiagnosticDto, IssueDto, OverviewDto } from "./dto";
+import type {
+  AuditDto,
+  AuditVitalDto,
+  CwvDiagnosticDto,
+  IssueDto,
+  OverviewDto,
+} from "./dto";
 
 const METRIC_STATUS: Record<string, MetricStatus> = {
   good: "good",
@@ -191,6 +197,39 @@ export function mapAuditVital(dto: AuditVitalDto): WebVital {
     hint: dto.hint,
   };
   return diagnostic ? { ...vital, diagnostic } : vital;
+}
+
+const GA4_STREAM_STATUS: Record<string, Ga4Stream["status"]> = {
+  good: "active",
+  warn: "degraded",
+  bad: "down",
+};
+
+/** Backend `GET /websites/{id}/audit` payload -> the shape `/audit` renders. */
+export function mapAudit(dto: AuditDto): AuditData {
+  return {
+    ga4: {
+      status: GA4_STREAM_STATUS[dto.ga4.status] ?? "down",
+      statusLine: dto.ga4.status_line,
+      property: dto.ga4.property ?? "—",
+      events: dto.ga4.events.map((event) => ({
+        name: event.name,
+        conformity: event.conformity,
+        volume: event.volume,
+        note: event.note,
+      })),
+    },
+    index: {
+      property: dto.index.property ?? "—",
+      valid: dto.index.valid,
+      excluded: dto.index.excluded,
+      reasons: dto.index.reasons.map((reason) => ({
+        label: reason.label,
+        urls: reason.urls,
+      })),
+    },
+    vitals: dto.vitals.map(mapAuditVital),
+  };
 }
 
 export function mapIssue(dto: IssueDto): IssueItem {

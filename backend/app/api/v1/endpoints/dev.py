@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.api.deps import SessionDep, SettingsDep
+from app.models.audit_snapshot import AuditSnapshot
 from app.models.enums import StackKind
 from app.models.user import User
 from app.models.website import Website
@@ -78,6 +79,18 @@ async def dev_workspaces(
             site = Website(user_id=user.id, domain=domain, display_name=name)
             session.add(site)
             await session.flush()
+
+        latest = (
+            await session.execute(
+                select(AuditSnapshot)
+                .where(AuditSnapshot.website_id == site.id)
+                .order_by(AuditSnapshot.captured_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        # Re-scanne si jamais scanne ou si le snapshot precede les diagnostics
+        # structures (montee de version de la sonde) — self-healing en dev.
+        if latest is None or "costly_entities" not in latest.metrics.get("cwv", {}):
             await run_audit(
                 session,
                 website=site,

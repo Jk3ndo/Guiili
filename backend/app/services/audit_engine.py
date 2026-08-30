@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -219,24 +219,39 @@ def _fingerprint(website_id: UUID, anomaly: DetectedAnomaly) -> str:
 
 
 def _build_metrics(detection: StackDetection, data: ProbeData) -> dict:
+    ga4, gsc, cwv = data.ga4, data.gsc, data.cwv
     return {
         "stack": detection.stack.value,
         "ga4": {
-            "score": data.ga4.score,
-            "status": _score_status(data.ga4.score),
+            "score": ga4.score,
+            "status": _score_status(ga4.score),
+            "purchase_missing_params": list(ga4.purchase_missing_params),
+            "missing_events": list(ga4.missing_events),
+            "login_missing_user_id": ga4.login_missing_user_id,
         },
         "gsc": {
-            "score": data.gsc.score,
-            "status": _score_status(data.gsc.score),
-            "valid_pages": data.gsc.valid_pages,
-            "excluded_pages": data.gsc.excluded_pages,
+            "score": gsc.score,
+            "status": _score_status(gsc.score),
+            "valid_pages": gsc.valid_pages,
+            "excluded_pages": gsc.excluded_pages,
+            "noindex_pages": gsc.noindex_pages,
+            "noindex_on_products": gsc.noindex_on_products,
+            "connection_stale_days": gsc.connection_stale_days,
         },
         "cwv": {
-            "score": data.cwv.score,
-            "status": _score_status(data.cwv.score),
-            "lcp_ms": data.cwv.lcp_ms,
-            "inp_ms": data.cwv.inp_ms,
-            "cls": data.cwv.cls,
+            "score": cwv.score,
+            "status": _score_status(cwv.score),
+            "lcp_ms": cwv.lcp_ms,
+            "inp_ms": cwv.inp_ms,
+            "cls": cwv.cls,
+            "field_data": cwv.field_data,
+            "js_execution_ms": cwv.js_execution_ms,
+            "total_blocking_time_ms": cwv.total_blocking_time_ms,
+            "lcp_element": cwv.lcp_element,
+            "blocking_scripts": list(cwv.blocking_scripts),
+            "costly_entities": [asdict(entity) for entity in cwv.costly_entities],
+            "lcp_assets": [asdict(asset) for asset in cwv.lcp_assets],
+            "shift_elements": [asdict(element) for element in cwv.shift_elements],
         },
     }
 
