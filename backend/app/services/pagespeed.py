@@ -4,16 +4,63 @@
 `parse_pagespeed` est pur et testé sur des fixtures JSON réelles. Les deux
 retournent un dict de kwargs pour `CwvSignals`. Échec réseau / quota -> dict
 dégradé ``{"score": 0}``.
+
+Les diagnostics structurés (`CostlyEntity`, `HeavyAsset`, `ShiftElement`) sont
+définis ici pour éviter un cycle d'import avec `audit_probe` (qui importe ce
+module, jamais l'inverse).
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
 PAGESPEED_URL = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
 _TIMEOUT = httpx.Timeout(30.0)
+
+# Entité tierce connue -> catégorie lisible (fallback : « Script tiers »).
+_ENTITY_CATEGORY: dict[str, str] = {
+    "Google Tag Manager": "Tag manager",
+    "Google Analytics": "Analytics",
+    "Google/Doubleclick Ads": "Publicité",
+    "Hotjar": "Enregistrement de session",
+    "Intercom": "Chat support",
+    "Zendesk": "Chat support",
+    "Facebook": "Réseau social",
+    "YouTube": "Vidéo",
+    "Stripe": "Paiement",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class CostlyEntity:
+    """Acteur tiers qui occupe le thread principal (diagnostic INP)."""
+
+    name: str
+    category: str
+    main_thread_ms: int
+    blocking_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class HeavyAsset:
+    """Image non optimisée pesant sur le LCP."""
+
+    name: str
+    current_format: str
+    size_kb: int
+    estimated_saving_kb: int
+
+
+@dataclass(frozen=True, slots=True)
+class ShiftElement:
+    """Nœud DOM responsable d'un décalage de mise en page (diagnostic CLS)."""
+
+    selector: str
+    impact: float
+    note: str
 
 
 def _short_url(url: str) -> str:
@@ -26,9 +73,19 @@ def _short_url(url: str) -> str:
     return tail or parsed.host or url[:60]
 
 
+def _asset_format(name: str) -> str:
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    return {"jpg": "JPEG", "jpeg": "JPEG"}.get(ext, ext.upper()) or "—"
+
+
 def _audit(audits: dict, key: str) -> dict:
     value = audits.get(key)
     return value if isinstance(value, dict) else {}
+
+
+def _audit_items(audits: dict, key: str) -> list[dict]:
+    items = _audit(audits, key).get("details", {}).get("items", [])
+    return [item for item in items if isinstance(item, dict)]
 
 
 def _audit_numeric(audits: dict, key: str) -> float | None:
@@ -41,29 +98,75 @@ def _audit_ms(audits: dict, key: str) -> int | None:
     return round(value) if value is not None else None
 
 
+def _num(value: object) -> float:
+    return float(value) if isinstance(value, int | float) else 0.0
+
+
 def _audit_item_urls(audits: dict, key: str) -> list[str]:
-    items = _audit(audits, key).get("details", {}).get("items", [])
-    return [_short_url(item["url"]) for item in items if isinstance(item, dict) and item.get("url")]
+    return [_short_url(item["url"]) for item in _audit_items(audits, key) if item.get("url")]
 
 
-def _third_party_entities(audits: dict) -> list[str]:
-    items = _audit(audits, "third-party-summary").get("details", {}).get("items", [])
-    names: list[str] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
+def _costly_entities(audits: dict) -> list[CostlyEntity]:
+    entities: list[CostlyEntity] = []
+    for item in _audit_items(audits, "third-party-summary"):
         entity = item.get("entity")
         name = entity.get("text") if isinstance(entity, dict) else entity
-        if isinstance(name, str) and name:
-            names.append(name)
-    return names
+        if not isinstance(name, str) or not name:
+            continue
+        entities.append(
+            CostlyEntity(
+                name=name,
+                category=_ENTITY_CATEGORY.get(name, "Script tiers"),
+                main_thread_ms=round(_num(item.get("mainThreadTime"))),
+                blocking_ms=round(_num(item.get("blockingTime"))),
+            )
+        )
+    entities.sort(key=lambda e: e.main_thread_ms, reverse=True)
+    return entities[:5]
+
+
+def _heavy_image_assets(audits: dict) -> list[HeavyAsset]:
+    assets: list[HeavyAsset] = []
+    seen: set[str] = set()
+    for key in ("modern-image-formats", "uses-optimized-images"):
+        for item in _audit_items(audits, key):
+            url = item.get("url")
+            if not isinstance(url, str) or not url:
+                continue
+            name = _short_url(url)
+            if name in seen:
+                continue
+            seen.add(name)
+            assets.append(
+                HeavyAsset(
+                    name=name,
+                    current_format=_asset_format(name),
+                    size_kb=round(_num(item.get("totalBytes")) / 1024),
+                    estimated_saving_kb=round(_num(item.get("wastedBytes")) / 1024),
+                )
+            )
+    return assets[:5]
+
+
+def _shift_elements(audits: dict) -> list[ShiftElement]:
+    elements: list[ShiftElement] = []
+    for item in _audit_items(audits, "layout-shift-elements"):
+        node = item.get("node") if isinstance(item.get("node"), dict) else {}
+        selector = node.get("selector") or node.get("snippet")
+        if not isinstance(selector, str) or not selector:
+            continue
+        elements.append(
+            ShiftElement(
+                selector=selector[:120],
+                impact=round(_num(item.get("score")), 3),
+                note="Décalage de mise en page mesuré sur cet élément.",
+            )
+        )
+    return elements[:5]
 
 
 def _lcp_element(audits: dict) -> str | None:
-    items = _audit(audits, "largest-contentful-paint-element").get("details", {}).get("items", [])
-    for item in items:
-        if not isinstance(item, dict):
-            continue
+    for item in _audit_items(audits, "largest-contentful-paint-element"):
         for node in item.get("items") or [item]:
             snippet = (node.get("node") or {}).get("snippet") if isinstance(node, dict) else None
             if isinstance(snippet, str) and snippet:
@@ -108,9 +211,10 @@ def parse_pagespeed(payload: dict[str, Any]) -> dict[str, Any]:
         else _audit_numeric(audits, "cumulative-layout-shift")
     )
 
+    entities = _costly_entities(audits)
+    lcp_assets = _heavy_image_assets(audits)
     heavy = (
-        _audit_item_urls(audits, "modern-image-formats")
-        + _audit_item_urls(audits, "uses-optimized-images")
+        [asset.name for asset in lcp_assets]
         + _audit_item_urls(audits, "unminified-javascript")
         + _audit_item_urls(audits, "unused-javascript")
     )
@@ -123,7 +227,10 @@ def parse_pagespeed(payload: dict[str, Any]) -> dict[str, Any]:
         "cls": round(cls or 0.0, 3),
         "heavy_assets": tuple(dict.fromkeys(heavy))[:5],
         "blocking_scripts": tuple(dict.fromkeys(blocking))[:5],
-        "third_party_scripts": tuple(dict.fromkeys(_third_party_entities(audits)))[:5],
+        "third_party_scripts": tuple(entity.name for entity in entities),
+        "costly_entities": tuple(entities),
+        "lcp_assets": tuple(lcp_assets),
+        "shift_elements": tuple(_shift_elements(audits)),
         "js_execution_ms": _audit_ms(audits, "bootup-time") or 0,
         "total_blocking_time_ms": _audit_ms(audits, "total-blocking-time") or 0,
         "lcp_element": _lcp_element(audits),

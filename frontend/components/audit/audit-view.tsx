@@ -3,7 +3,8 @@
 import { useState } from "react";
 
 import { PageShell } from "@/components/shell/page-shell";
-import { getAudit, periodLabel, type AuditPeriod } from "@/lib/mock/audit";
+import { useAudit } from "@/lib/api/hooks";
+import { periodLabel, type AuditPeriod } from "@/lib/mock/audit";
 import { useShell } from "@/lib/shell/shell-context";
 
 import { AuditHeader } from "./audit-header";
@@ -14,7 +15,7 @@ import { WebVitals } from "./web-vitals";
 export function AuditView() {
   const { workspace } = useShell();
   const [period, setPeriod] = useState<AuditPeriod>("7d");
-  const data = getAudit(workspace, period);
+  const { data } = useAudit(workspace, period);
 
   return (
     <PageShell
