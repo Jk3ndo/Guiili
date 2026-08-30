@@ -10,7 +10,10 @@ from app.db.session import get_session
 from app.models.user import User
 from app.security.session import read_session
 from app.security.token_crypto import TokenCipher, load_token_cipher
+from app.services.audit_engine import Detector
+from app.services.audit_probe import AuditProbe, MockAuditProbe, RealAuditProbe
 from app.services.google_oauth import GoogleOAuthClient, get_google_oauth_client
+from app.services.stack_detector import detect_stack
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
@@ -24,8 +27,18 @@ def get_google_client(settings: SettingsDep) -> GoogleOAuthClient:
     return get_google_oauth_client(settings)
 
 
+def get_audit_probe(settings: SettingsDep) -> AuditProbe:
+    return MockAuditProbe() if settings.audit_probe_mock else RealAuditProbe()
+
+
+def get_stack_detector() -> Detector:
+    return detect_stack
+
+
 TokenCipherDep = Annotated[TokenCipher, Depends(get_token_cipher)]
 GoogleClientDep = Annotated[GoogleOAuthClient, Depends(get_google_client)]
+AuditProbeDep = Annotated[AuditProbe, Depends(get_audit_probe)]
+StackDetectorDep = Annotated[Detector, Depends(get_stack_detector)]
 
 
 def _session_user_id(request: Request, settings: Settings):

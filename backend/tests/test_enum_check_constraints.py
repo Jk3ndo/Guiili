@@ -31,6 +31,7 @@ from app.models.enums import (
     IssueStatus,
     ResourceType,
     SnapshotSource,
+    StackKind,
 )
 from tests.test_migrations import _alembic, clean_migrations_db  # noqa: F401 — fixtures
 
@@ -45,6 +46,7 @@ ENUM_CHECKS = [
     ("issue_items", "ck_issue_items_issue_severity", IssueSeverity),
     ("issue_items", "ck_issue_items_issue_status", IssueStatus),
     ("audit_log", "ck_audit_log_audit_result", AuditResult),
+    ("websites", "ck_websites_stack_kind", StackKind),
 ]
 
 _CONSTRAINTDEF_SQL = text(
@@ -69,9 +71,7 @@ async def test_enum_check_matches_python_values(
 ) -> None:
     async with engine.connect() as conn:
         row = (
-            await conn.execute(
-                _CONSTRAINTDEF_SQL, {"table": table, "name": constraint_name}
-            )
+            await conn.execute(_CONSTRAINTDEF_SQL, {"table": table, "name": constraint_name})
         ).first()
 
     assert row is not None, f"CHECK {constraint_name} introuvable sur {table}"
@@ -98,9 +98,7 @@ async def test_enum_check_matches_after_migration(
     try:
         async with mig_engine.connect() as conn:
             row = (
-                await conn.execute(
-                    _CONSTRAINTDEF_SQL, {"table": table, "name": constraint_name}
-                )
+                await conn.execute(_CONSTRAINTDEF_SQL, {"table": table, "name": constraint_name})
             ).first()
     finally:
         await mig_engine.dispose()
