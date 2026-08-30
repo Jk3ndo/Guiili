@@ -74,3 +74,53 @@ export interface SnippetsDto {
   resolved_stack: string;
   entries: SnippetEntryDto[];
 }
+
+/* -------------------------------------------------------------------------- */
+/*  Audit — detailed Core Web Vitals diagnostics (PageSpeed probe, P2)        */
+/* -------------------------------------------------------------------------- */
+
+export interface CwvEntityDto {
+  name: string;
+  category: string;
+  main_thread_ms: number;
+  blocking_ms: number;
+}
+
+export interface CwvAssetDto {
+  name: string;
+  current_format: string;
+  size_kb: number;
+  estimated_saving_kb: number;
+}
+
+export interface CwvShiftElementDto {
+  selector: string;
+  impact: number;
+  note: string;
+}
+
+export interface CwvDiagnosticDto {
+  metric: "lcp" | "inp" | "cls";
+  /** "field" = CrUX real-user data, "lab" = synthetic Lighthouse audit. */
+  source: "field" | "lab";
+  total_blocking_time_ms?: number;
+  js_execution_ms?: number;
+  entities?: CwvEntityDto[];
+  element_snippet?: string;
+  assets?: CwvAssetDto[];
+  preload_hint?: string;
+  shift_elements?: CwvShiftElementDto[];
+  recommendations: string[];
+}
+
+export interface AuditVitalDto {
+  id: "lcp" | "inp" | "cls";
+  label: string;
+  value: string;
+  raw: number;
+  rating: "good" | "warn" | "bad";
+  target: string;
+  thresholds: [number, number];
+  hint: string;
+  diagnostic: CwvDiagnosticDto | null;
+}
