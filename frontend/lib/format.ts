@@ -16,6 +16,16 @@ export function relativeDays(days: number): string {
   return `il y a ${Math.round(days / 30)} mois`;
 }
 
+/** Compact French count: 48200 → "48,2 k", 412 → "412", 0 → "—". */
+export function formatCount(value: number): string {
+  if (value <= 0) return "—";
+  if (value < 1000) return String(value);
+  return new Intl.NumberFormat("fr-FR", {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
 /** "+3 pts" / "−4 pts" / "stable" */
 export function formatDelta(delta: number): string {
   if (delta === 0) return "stable";
