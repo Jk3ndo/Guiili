@@ -4,18 +4,24 @@
 `parse_pagespeed` est pur et testé sur des fixtures JSON réelles. Les deux
 retournent un dict de kwargs pour `CwvSignals`. Échec réseau / quota -> dict
 dégradé ``{"score": 0}``.
-
-Les diagnostics structurés (`CostlyEntity`, `HeavyAsset`, `ShiftElement`) sont
-définis ici pour éviter un cycle d'import avec `audit_probe` (qui importe ce
-module, jamais l'inverse).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
 import httpx
+
+from app.services.audit_signals import CostlyEntity, HeavyAsset, ShiftElement
+
+__all__ = [
+    "PAGESPEED_URL",
+    "CostlyEntity",
+    "HeavyAsset",
+    "ShiftElement",
+    "fetch_pagespeed",
+    "parse_pagespeed",
+]
 
 PAGESPEED_URL = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
 _TIMEOUT = httpx.Timeout(30.0)
@@ -32,35 +38,6 @@ _ENTITY_CATEGORY: dict[str, str] = {
     "YouTube": "Vidéo",
     "Stripe": "Paiement",
 }
-
-
-@dataclass(frozen=True, slots=True)
-class CostlyEntity:
-    """Acteur tiers qui occupe le thread principal (diagnostic INP)."""
-
-    name: str
-    category: str
-    main_thread_ms: int
-    blocking_ms: int
-
-
-@dataclass(frozen=True, slots=True)
-class HeavyAsset:
-    """Image non optimisée pesant sur le LCP."""
-
-    name: str
-    current_format: str
-    size_kb: int
-    estimated_saving_kb: int
-
-
-@dataclass(frozen=True, slots=True)
-class ShiftElement:
-    """Nœud DOM responsable d'un décalage de mise en page (diagnostic CLS)."""
-
-    selector: str
-    impact: float
-    note: str
 
 
 def _short_url(url: str) -> str:

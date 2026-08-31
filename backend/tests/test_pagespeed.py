@@ -6,6 +6,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from app.models.website import Website
 from app.services.audit_probe import CwvSignals, RealAuditProbe
 from app.services.pagespeed import PAGESPEED_URL, fetch_pagespeed, parse_pagespeed
 
@@ -141,13 +142,16 @@ async def test_real_probe_returns_probe_data_with_cwv_from_pagespeed() -> None:
         return httpx.Response(200, json=_FIXTURE)
 
     async with _transport(handler) as client:
-        probe = RealAuditProbe(client=client)
-        data = await probe.collect(domain="boutique-verte.fr", stack=None)  # type: ignore[arg-type]
+        probe = RealAuditProbe(http_client=client)
+        data = await probe.collect(
+            website=Website(domain="boutique-verte.fr"),
+            stack=None,  # type: ignore[arg-type]
+        )
 
     assert data.cwv.lcp_ms == 3400
     assert data.cwv.field_data is True
     assert "hero-banner.jpg" in data.cwv.heavy_assets
-    # GA4 / GSC neutres jusqu'a P3
+    # GA4 / GSC neutres sans session ni ressources associees
     assert data.ga4.score == 0
     assert data.gsc.score == 0
 
@@ -157,8 +161,8 @@ async def test_real_probe_degraded_still_returns_probe_data() -> None:
         raise httpx.ConnectError("offline")
 
     async with _transport(handler) as client:
-        data = await RealAuditProbe(client=client).collect(
-            domain="x.test",
+        data = await RealAuditProbe(http_client=client).collect(
+            website=Website(domain="x.test"),
             stack=None,  # type: ignore[arg-type]
         )
     assert data.cwv.score == 0

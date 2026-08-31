@@ -228,6 +228,7 @@ def _build_metrics(detection: StackDetection, data: ProbeData) -> dict:
             "purchase_missing_params": list(ga4.purchase_missing_params),
             "missing_events": list(ga4.missing_events),
             "login_missing_user_id": ga4.login_missing_user_id,
+            "degraded": ga4.degraded,
         },
         "gsc": {
             "score": gsc.score,
@@ -238,6 +239,7 @@ def _build_metrics(detection: StackDetection, data: ProbeData) -> dict:
             "noindex_on_products": gsc.noindex_on_products,
             "connection_stale_days": gsc.connection_stale_days,
             "sample_urls": [asdict(sample) for sample in gsc.sample_urls],
+            "degraded": gsc.degraded,
         },
         "cwv": {
             "score": cwv.score,
@@ -272,7 +274,7 @@ async def run_audit(
     detection = await run_detector(f"https://{website.domain}")
     website.detected_stack = detection.stack
 
-    data = await probe.collect(domain=website.domain, stack=detection.stack)
+    data = await probe.collect(website=website, stack=detection.stack, session=session)
     metrics = _build_metrics(detection, data)
 
     snapshot = AuditSnapshot(

@@ -30,8 +30,10 @@ class _StubProbe(AuditProbe):
     def __init__(self, data: ProbeData) -> None:
         self._data = data
 
-    async def collect(self, *, domain: str, stack: StackKind) -> ProbeData:
-        _ = (domain, stack)
+    async def collect(
+        self, *, website: Website, stack: StackKind, session: AsyncSession | None = None
+    ) -> ProbeData:
+        _ = (website, stack, session)
         return self._data
 
 

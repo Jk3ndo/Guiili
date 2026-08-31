@@ -1,8 +1,12 @@
 """Source de signaux d'audit (GA4 / GSC / Core Web Vitals).
 
 `MockAuditProbe` : fixtures alignees avec les mocks frontend.
-`RealAuditProbe` : Core Web Vitals reels via PageSpeed Insights (P2) ; GA4 / GSC
-restent neutres jusqu'a l'integration GA4 Data API + Search Console (P3).
+`RealAuditProbe` : Core Web Vitals via PageSpeed Insights + GA4 Data API +
+Search Console (P3), pour les ressources associees au site. Chaque sonde
+degrade proprement (signaux a 0) si son appel echoue.
+
+Les types de signaux vivent dans `audit_signals` (evite tout cycle d'import) ;
+ils sont re-exportes ici pour compat.
 """
 
 from __future__ import annotations
@@ -10,14 +14,31 @@ from __future__ import annotations
 import abc
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+from uuid import UUID
 
-from app.models.enums import StackKind
-from app.services.pagespeed import (
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.enums import ConnectionStatus, ResourceType, StackKind
+from app.models.google_connection import GoogleConnection
+from app.models.website import Website
+from app.models.website_google_link import WebsiteGoogleLink
+from app.security.token_crypto import TokenCipher, TokenCryptoError
+from app.services.audit_signals import (
     CostlyEntity,
+    CwvSignals,
+    Ga4Signals,
+    GscSignals,
+    GscUrlSample,
     HeavyAsset,
+    ProbeData,
     ShiftElement,
-    fetch_pagespeed,
 )
+from app.services.connections import decrypt_refresh_token
+from app.services.ga4 import fetch_event_metrics
+from app.services.google_oauth import GoogleOAuthClient, GoogleOAuthError, InvalidGrantError
+from app.services.gsc import fetch_search_analytics
+from app.services.pagespeed import fetch_pagespeed
 
 if TYPE_CHECKING:
     import httpx
@@ -37,65 +58,15 @@ __all__ = [
 ]
 
 
-@dataclass(frozen=True, slots=True)
-class Ga4Signals:
-    score: int
-    purchase_missing_params: tuple[str, ...] = ()
-    missing_events: tuple[str, ...] = ()
-    login_missing_user_id: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class GscUrlSample:
-    """URL echantillon Search Console (30 j glissants)."""
-
-    path: str  # chemin relatif, ex. "/collections/vetements-homme"
-    status: str  # "Indexee" | "Exclue noindex" | "Redirection 301" | "Decouverte non indexee"
-    clicks: int
-    impressions: int
-
-
-@dataclass(frozen=True, slots=True)
-class GscSignals:
-    score: int
-    valid_pages: int = 0
-    excluded_pages: int = 0
-    noindex_pages: int = 0
-    noindex_on_products: bool = False
-    connection_stale_days: int = 0
-    sample_urls: tuple[GscUrlSample, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class CwvSignals:
-    score: int
-    lcp_ms: int = 0
-    inp_ms: int = 0
-    cls: float = 0.0
-    # Diagnostics PageSpeed (vides = pas de rapport / mode degrade).
-    heavy_assets: tuple[str, ...] = ()  # images / JS non optimises
-    blocking_scripts: tuple[str, ...] = ()  # ressources bloquant le rendu
-    third_party_scripts: tuple[str, ...] = ()  # entites tierces couteuses (INP)
-    js_execution_ms: int = 0
-    total_blocking_time_ms: int = 0
-    lcp_element: str | None = None
-    field_data: bool = False  # True = CrUX terrain, False = labo / degrade
-    # Diagnostics structures (INP / LCP / CLS).
-    costly_entities: tuple[CostlyEntity, ...] = ()
-    lcp_assets: tuple[HeavyAsset, ...] = ()
-    shift_elements: tuple[ShiftElement, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class ProbeData:
-    ga4: Ga4Signals
-    gsc: GscSignals
-    cwv: CwvSignals
-
-
 class AuditProbe(abc.ABC):
     @abc.abstractmethod
-    async def collect(self, *, domain: str, stack: StackKind) -> ProbeData: ...
+    async def collect(
+        self,
+        *,
+        website: Website,
+        stack: StackKind,
+        session: AsyncSession | None = None,
+    ) -> ProbeData: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -314,31 +285,116 @@ _NEUTRAL = _Fixture(
 
 
 class MockAuditProbe(AuditProbe):
-    async def collect(self, *, domain: str, stack: StackKind) -> ProbeData:
-        _ = stack
-        key = domain.lower().removeprefix("www.")
+    async def collect(
+        self,
+        *,
+        website: Website,
+        stack: StackKind,
+        session: AsyncSession | None = None,
+    ) -> ProbeData:
+        _ = (stack, session)
+        key = website.domain.lower().removeprefix("www.")
         fixture = next((f for f in _FIXTURES if key in f.domains), _NEUTRAL)
         return ProbeData(ga4=fixture.ga4, gsc=fixture.gsc, cwv=fixture.cwv)
 
 
+_GOOGLE_RESOURCE_TYPES = (ResourceType.GA4_PROPERTY, ResourceType.GSC_SITE)
+
+
 class RealAuditProbe(AuditProbe):
-    """Core Web Vitals via PageSpeed Insights. GA4 / GSC : signaux neutres
-    (score 0) jusqu'a l'integration GA4 Data API + Search Console (P3)."""
+    """Signaux reels : Core Web Vitals (PageSpeed) toujours ; GA4 Data API et
+    Search Console des qu'une ressource est associee au site (via
+    `website_google_links` + `google_connections`). Chaque appel Google degrade
+    proprement (signaux a 0, `degraded=True`) sur token revoque / quota."""
 
     def __init__(
         self,
         *,
         api_key: str | None = None,
-        client: httpx.AsyncClient | None = None,
+        http_client: httpx.AsyncClient | None = None,
+        oauth_client: GoogleOAuthClient | None = None,
+        cipher: TokenCipher | None = None,
     ) -> None:
         self._api_key = api_key or None
-        self._client = client
+        self._http = http_client
+        self._oauth = oauth_client
+        self._cipher = cipher
 
-    async def collect(self, *, domain: str, stack: StackKind) -> ProbeData:
+    async def collect(
+        self,
+        *,
+        website: Website,
+        stack: StackKind,
+        session: AsyncSession | None = None,
+    ) -> ProbeData:
         _ = stack
-        cwv_kwargs = await fetch_pagespeed(domain, api_key=self._api_key, client=self._client)
-        return ProbeData(
-            ga4=Ga4Signals(score=0),
-            gsc=GscSignals(score=0),
-            cwv=CwvSignals(**cwv_kwargs),
+        cwv_kwargs = await fetch_pagespeed(website.domain, api_key=self._api_key, client=self._http)
+
+        ga4, gsc = Ga4Signals(score=0), GscSignals(score=0)
+        if session is not None and self._oauth is not None and self._cipher is not None:
+            ga4, gsc = await self._google_signals(session, website.id)
+
+        return ProbeData(ga4=ga4, gsc=gsc, cwv=CwvSignals(**cwv_kwargs))
+
+    async def _google_signals(
+        self, session: AsyncSession, website_id: UUID
+    ) -> tuple[Ga4Signals, GscSignals]:
+        rows = (
+            (
+                await session.execute(
+                    select(WebsiteGoogleLink, GoogleConnection)
+                    .join(
+                        GoogleConnection,
+                        WebsiteGoogleLink.google_connection_id == GoogleConnection.id,
+                    )
+                    .where(
+                        WebsiteGoogleLink.website_id == website_id,
+                        WebsiteGoogleLink.resource_type.in_(_GOOGLE_RESOURCE_TYPES),
+                    )
+                )
+            )
+            .tuples()
+            .all()
         )
+
+        ga4, gsc = Ga4Signals(score=0), GscSignals(score=0)
+        token_cache: dict[UUID, str | None] = {}
+        for link, connection in rows:
+            token = await self._access_token(connection, token_cache)
+            if token is None:
+                if link.resource_type == ResourceType.GSC_SITE:
+                    gsc = GscSignals(score=0, connection_stale_days=30, degraded=True)
+                else:
+                    ga4 = Ga4Signals(score=0, degraded=True)
+                continue
+            if link.resource_type == ResourceType.GA4_PROPERTY:
+                ga4 = await fetch_event_metrics(token, link.resource_id, days=30, client=self._http)
+            else:
+                gsc = await fetch_search_analytics(
+                    token, link.resource_id, days=30, client=self._http
+                )
+        return ga4, gsc
+
+    async def _access_token(
+        self, connection: GoogleConnection, cache: dict[UUID, str | None]
+    ) -> str | None:
+        if connection.id in cache:
+            return cache[connection.id]
+
+        token: str | None = None
+        if (
+            connection.status == ConnectionStatus.ACTIVE
+            and self._cipher is not None
+            and self._oauth is not None
+        ):
+            try:
+                refresh_token = decrypt_refresh_token(connection, cipher=self._cipher)
+                response = await self._oauth.refresh_access_token(refresh_token=refresh_token)
+                token = response.access_token
+            except InvalidGrantError:
+                connection.status = ConnectionStatus.NEEDS_REAUTH
+            except (GoogleOAuthError, TokenCryptoError):
+                token = None
+
+        cache[connection.id] = token
+        return token
