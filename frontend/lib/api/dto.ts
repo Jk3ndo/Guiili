@@ -7,6 +7,31 @@ export interface DevWorkspaceDto {
   detected_stack: string | null;
 }
 
+export interface WebsiteDto {
+  id: string;
+  domain: string;
+  display_name: string;
+  detected_stack: string | null;
+}
+
+export interface StackDetectionDto {
+  stack: string;
+  confidence: number;
+  signals: string[];
+}
+
+export interface CreateWebsiteDto {
+  id: string;
+  domain: string;
+  display_name: string;
+  detected_stack: string | null;
+  detection: StackDetectionDto;
+  snapshot_id: string;
+  captured_at: string;
+  metrics: Record<string, unknown>;
+  issues: { created: number; updated: number; resolved: number };
+}
+
 export interface OverviewMetricDto {
   id: "ga4" | "gsc" | "cwv";
   label: string;

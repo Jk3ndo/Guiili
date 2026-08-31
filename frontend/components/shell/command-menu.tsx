@@ -14,14 +14,18 @@ import {
   CommandList,
   CommandSeparator,
 } from "@/components/ui/command";
-import { MOCK_WORKSPACES } from "@/lib/mock/workspaces";
 import { NAV_ROUTES } from "@/lib/shell/routes";
 import { useShell } from "@/lib/shell/shell-context";
 
 export function CommandMenu() {
   const router = useRouter();
-  const { commandOpen, setCommandOpen, setActiveWorkspace, workspace } =
-    useShell();
+  const {
+    commandOpen,
+    setCommandOpen,
+    setActiveWorkspace,
+    workspace,
+    workspaces,
+  } = useShell();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -91,7 +95,7 @@ export function CommandMenu() {
         <CommandSeparator />
 
         <CommandGroup heading="Changer d'espace">
-          {MOCK_WORKSPACES.map((ws) => (
+          {workspaces.map((ws) => (
             <CommandItem
               key={ws.id}
               value={`espace ${ws.name} ${ws.domain}`}

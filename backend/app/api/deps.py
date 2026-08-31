@@ -42,10 +42,17 @@ def get_stack_detector(settings: SettingsDep) -> Detector:
     return demo_detector if settings.google_oauth_mock else detect_stack
 
 
+def get_live_stack_detector() -> Detector:
+    # Toujours la vraie detection HTTP : l'ajout d'un domaine par l'utilisateur
+    # sonde reellement le site, meme quand la demo tourne en mode mock.
+    return detect_stack
+
+
 TokenCipherDep = Annotated[TokenCipher, Depends(get_token_cipher)]
 GoogleClientDep = Annotated[GoogleOAuthClient, Depends(get_google_client)]
 AuditProbeDep = Annotated[AuditProbe, Depends(get_audit_probe)]
 StackDetectorDep = Annotated[Detector, Depends(get_stack_detector)]
+LiveStackDetectorDep = Annotated[Detector, Depends(get_live_stack_detector)]
 
 
 def _session_user_id(request: Request, settings: Settings):

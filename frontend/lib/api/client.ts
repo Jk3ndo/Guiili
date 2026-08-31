@@ -33,7 +33,15 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
     throw new ApiError(0, "backend injoignable");
   }
   if (!response.ok) {
-    throw new ApiError(response.status, `${response.status} ${response.statusText}`);
+    let detail = `${response.status} ${response.statusText}`;
+    try {
+      const payload = (await response.clone().json()) as { detail?: unknown };
+      if (typeof payload.detail === "string" && payload.detail)
+        detail = payload.detail;
+    } catch {
+      // corps non-JSON : on garde le statut brut
+    }
+    throw new ApiError(response.status, detail);
   }
   return response;
 }
@@ -63,7 +71,10 @@ export async function apiDownload(path: string): Promise<DownloadedFile> {
   const response = await request(path);
   const disposition = response.headers.get("Content-Disposition") ?? "";
   const match = /filename="([^"]+)"/.exec(disposition);
-  return { blob: await response.blob(), filename: match?.[1] ?? "download.json" };
+  return {
+    blob: await response.blob(),
+    filename: match?.[1] ?? "download.json",
+  };
 }
 
 /** Déclenche un téléchargement navigateur pour un Blob déjà en mémoire. */
