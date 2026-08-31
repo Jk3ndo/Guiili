@@ -30,7 +30,11 @@ def get_google_client(settings: SettingsDep) -> GoogleOAuthClient:
 def get_audit_probe(settings: SettingsDep) -> AuditProbe:
     if settings.audit_probe_mock:
         return MockAuditProbe()
-    return RealAuditProbe(api_key=settings.pagespeed_api_key.get_secret_value() or None)
+    return RealAuditProbe(
+        api_key=settings.pagespeed_api_key.get_secret_value() or None,
+        oauth_client=get_google_oauth_client(settings),
+        cipher=load_token_cipher(settings),
+    )
 
 
 def get_stack_detector(settings: SettingsDep) -> Detector:
