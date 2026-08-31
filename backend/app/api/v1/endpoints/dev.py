@@ -88,9 +88,13 @@ async def dev_workspaces(
                 .limit(1)
             )
         ).scalar_one_or_none()
-        # Re-scanne si jamais scanne ou si le snapshot precede les diagnostics
-        # structures (montee de version de la sonde) — self-healing en dev.
-        if latest is None or "costly_entities" not in latest.metrics.get("cwv", {}):
+        # Re-scanne si jamais scanne ou si le snapshot precede la derniere
+        # montee de version de la sonde (diagnostics CWV structures, echantillon
+        # d'URLs GSC...) — self-healing en dev.
+        metrics = latest.metrics if latest is not None else {}
+        cwv, gsc = metrics.get("cwv", {}), metrics.get("gsc", {})
+        stale = "costly_entities" not in cwv or "sample_urls" not in gsc
+        if latest is None or stale:
             await run_audit(
                 session,
                 website=site,

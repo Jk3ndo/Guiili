@@ -28,6 +28,7 @@ __all__ = [
     "CwvSignals",
     "Ga4Signals",
     "GscSignals",
+    "GscUrlSample",
     "HeavyAsset",
     "MockAuditProbe",
     "ProbeData",
@@ -45,6 +46,16 @@ class Ga4Signals:
 
 
 @dataclass(frozen=True, slots=True)
+class GscUrlSample:
+    """URL echantillon Search Console (30 j glissants)."""
+
+    path: str  # chemin relatif, ex. "/collections/vetements-homme"
+    status: str  # "Indexee" | "Exclue noindex" | "Redirection 301" | "Decouverte non indexee"
+    clicks: int
+    impressions: int
+
+
+@dataclass(frozen=True, slots=True)
 class GscSignals:
     score: int
     valid_pages: int = 0
@@ -52,6 +63,7 @@ class GscSignals:
     noindex_pages: int = 0
     noindex_on_products: bool = False
     connection_stale_days: int = 0
+    sample_urls: tuple[GscUrlSample, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +116,17 @@ _FIXTURES: list[_Fixture] = [
             excluded_pages=37,
             noindex_pages=12,
             noindex_on_products=True,
+            sample_urls=(
+                GscUrlSample("/collections/vetements-homme", "Indexée", 320, 8400),
+                GscUrlSample("/collections/accessoires", "Indexée", 45, 6200),
+                GscUrlSample("/produits/edition-limitee", "Indexée", 5, 5200),
+                GscUrlSample("/blog/guide-coton-bio", "Indexée", 210, 3100),
+                GscUrlSample("/produits/pull-marin", "Indexée", 88, 1900),
+                GscUrlSample("/blog/entretien-laine", "Indexée", 12, 240),
+                GscUrlSample("/collections/soldes-ete", "Découverte non indexée", 0, 30),
+                GscUrlSample("/produits/vieux-modele-2024", "Redirection 301", 0, 0),
+                GscUrlSample("/panier", "Exclue noindex", 0, 0),
+            ),
         ),
         cwv=CwvSignals(
             score=61,
@@ -142,7 +165,18 @@ _FIXTURES: list[_Fixture] = [
     _Fixture(
         domains=("atelier-nord.com",),
         ga4=Ga4Signals(score=64, missing_events=("generate_lead",)),
-        gsc=GscSignals(score=0, connection_stale_days=6),
+        gsc=GscSignals(
+            score=0,
+            connection_stale_days=6,
+            sample_urls=(
+                GscUrlSample("/realisations/cuisine-chene", "Indexée", 64, 1500),
+                GscUrlSample("/realisations/bibliotheque-sur-mesure", "Indexée", 40, 980),
+                GscUrlSample("/blog/choisir-son-bois", "Indexée", 18, 620),
+                GscUrlSample("/services/pose", "Découverte non indexée", 0, 45),
+                GscUrlSample("/realisations/ancienne-galerie", "Redirection 301", 0, 0),
+                GscUrlSample("/devis", "Exclue noindex", 0, 0),
+            ),
+        ),
         cwv=CwvSignals(
             score=73,
             lcp_ms=2100,
@@ -177,7 +211,20 @@ _FIXTURES: list[_Fixture] = [
     _Fixture(
         domains=("studiolumen.io",),
         ga4=Ga4Signals(score=88),
-        gsc=GscSignals(score=95, valid_pages=142, excluded_pages=7),
+        gsc=GscSignals(
+            score=95,
+            valid_pages=142,
+            excluded_pages=7,
+            sample_urls=(
+                GscUrlSample("/blog/design-system-2026", "Indexée", 340, 4200),
+                GscUrlSample("/fonctionnalites", "Indexée", 260, 5400),
+                GscUrlSample("/tarifs", "Indexée", 95, 7800),
+                GscUrlSample("/docs/demarrage", "Indexée", 70, 1100),
+                GscUrlSample("/demo", "Découverte non indexée", 0, 60),
+                GscUrlSample("/old-pricing", "Redirection 301", 0, 0),
+                GscUrlSample("/legal/cgu", "Exclue noindex", 0, 0),
+            ),
+        ),
         cwv=CwvSignals(
             score=79,
             lcp_ms=1900,
@@ -204,7 +251,20 @@ _FIXTURES: list[_Fixture] = [
     _Fixture(
         domains=("cap-horizon.co",),
         ga4=Ga4Signals(score=71, login_missing_user_id=True),
-        gsc=GscSignals(score=84, valid_pages=168, excluded_pages=32),
+        gsc=GscSignals(
+            score=84,
+            valid_pages=168,
+            excluded_pages=32,
+            sample_urls=(
+                GscUrlSample("/destinations/islande", "Indexée", 180, 4900),
+                GscUrlSample("/blog/preparer-trek-hiver", "Indexée", 140, 2600),
+                GscUrlSample("/destinations/patagonie", "Indexée", 30, 5100),
+                GscUrlSample("/a-propos", "Indexée", 8, 190),
+                GscUrlSample("/offres/derniere-minute", "Découverte non indexée", 0, 80),
+                GscUrlSample("/destinations/norvege-2024", "Redirection 301", 0, 0),
+                GscUrlSample("/reserver", "Exclue noindex", 0, 0),
+            ),
+        ),
         cwv=CwvSignals(
             score=58,
             lcp_ms=4100,
@@ -238,7 +298,17 @@ _FIXTURES: list[_Fixture] = [
 
 _NEUTRAL = _Fixture(
     ga4=Ga4Signals(score=55),
-    gsc=GscSignals(score=60, valid_pages=40, excluded_pages=6),
+    gsc=GscSignals(
+        score=60,
+        valid_pages=40,
+        excluded_pages=6,
+        sample_urls=(
+            GscUrlSample("/", "Indexée", 120, 3200),
+            GscUrlSample("/services", "Indexée", 24, 900),
+            GscUrlSample("/blog/premier-article", "Indexée", 6, 210),
+            GscUrlSample("/mentions-legales", "Exclue noindex", 0, 0),
+        ),
+    ),
     cwv=CwvSignals(score=70, lcp_ms=2300, inp_ms=180, cls=0.05),
 )
 

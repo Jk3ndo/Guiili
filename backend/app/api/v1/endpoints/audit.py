@@ -316,12 +316,22 @@ class AuditIndexOut(BaseModel):
     reasons: list[AuditIndexReasonOut]
 
 
+class AuditUrlOut(BaseModel):
+    url: str
+    status: str
+    clicks: int
+    impressions: int
+    ctr: float
+    marketing_action: str
+
+
 class AuditResponse(BaseModel):
     site_name: str
     domain: str
     captured_at: datetime | None
     ga4: AuditGa4Out
     index: AuditIndexOut
+    urls: list[AuditUrlOut]
     vitals: list[AuditVitalOut]
 
 
@@ -507,6 +517,62 @@ def _build_ga4(ga4: dict) -> AuditGa4Out:
     )
 
 
+_LOW_CTR = 1.5  # %
+
+
+def _url_marketing_action(status: str, clicks: int, impressions: int, ctr: float) -> str:
+    if status == "Exclue noindex":
+        return (
+            "Retirer la balise noindex si la page doit ranker, sinon la sortir "
+            "du sitemap pour ne plus gaspiller de budget de crawl."
+        )
+    if status == "Redirection 301":
+        return (
+            "Mettre a jour les liens internes et externes pointant vers l'ancienne "
+            "URL pour transmettre le signal directement a la cible."
+        )
+    if status == "Découverte non indexée":
+        return (
+            "Ajouter 3 a 5 liens internes depuis des pages fortes (accueil, articles "
+            "phares) et soumettre l'URL a l'inspection pour declencher l'indexation."
+        )
+    # Indexée
+    if impressions >= 500 and ctr < _LOW_CTR:
+        return (
+            f"Reecrire le Title et la meta-description autour du mot-cle principal : "
+            f"CTR {ctr:.1f} % tres en dessous du potentiel (< {_LOW_CTR:.1f} %)."
+        )
+    if clicks < 20 and impressions < 300:
+        return (
+            "Renforcer le maillage interne : viser au moins 3 liens contextualises "
+            "depuis les articles a fort trafic pour faire remonter la page."
+        )
+    return (
+        "Page performante : construire un cluster de contenu autour du sujet et lier "
+        "cette page en pilier pour capter les requetes voisines."
+    )
+
+
+def _build_urls(gsc: dict) -> list[AuditUrlOut]:
+    out: list[AuditUrlOut] = []
+    for sample in gsc.get("sample_urls", []):
+        clicks = int(sample.get("clicks", 0))
+        impressions = int(sample.get("impressions", 0))
+        ctr = round(clicks / impressions * 100, 1) if impressions else 0.0
+        status = str(sample.get("status", "Indexée"))
+        out.append(
+            AuditUrlOut(
+                url=str(sample.get("path", "/")),
+                status=status,
+                clicks=clicks,
+                impressions=impressions,
+                ctr=ctr,
+                marketing_action=_url_marketing_action(status, clicks, impressions, ctr),
+            )
+        )
+    return out
+
+
 def _build_index(gsc: dict) -> AuditIndexOut:
     valid = int(gsc.get("valid_pages", 0))
     excluded = int(gsc.get("excluded_pages", 0))
@@ -552,6 +618,7 @@ async def website_audit(
         captured_at=snapshot.captured_at,
         ga4=_build_ga4(metrics.get("ga4", {})),
         index=_build_index(metrics.get("gsc", {})),
+        urls=_build_urls(metrics.get("gsc", {})),
         vitals=_build_vitals(metrics.get("cwv", {})),
     )
 

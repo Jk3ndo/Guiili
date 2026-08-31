@@ -152,11 +152,21 @@ export interface AuditIndexDto {
   reasons: AuditIndexReasonDto[];
 }
 
+export interface AuditUrlDto {
+  url: string;
+  status: string;
+  clicks: number;
+  impressions: number;
+  ctr: number;
+  marketing_action: string;
+}
+
 export interface AuditDto {
   site_name: string;
   domain: string;
   captured_at: string | null;
   ga4: AuditGa4Dto;
   index: AuditIndexDto;
+  urls: AuditUrlDto[];
   vitals: AuditVitalDto[];
 }

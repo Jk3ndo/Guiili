@@ -10,6 +10,7 @@ import { useShell } from "@/lib/shell/shell-context";
 import { AuditHeader } from "./audit-header";
 import { Ga4Observability } from "./ga4-observability";
 import { IndexHealthBlock } from "./index-health";
+import { UrlExplorerTable } from "./url-explorer-table";
 import { WebVitals } from "./web-vitals";
 
 export function AuditView() {
@@ -24,6 +25,7 @@ export function AuditView() {
     >
       <Ga4Observability stream={data.ga4} periodLabel={periodLabel(period)} />
       <IndexHealthBlock index={data.index} />
+      <UrlExplorerTable urls={data.urls} />
       <WebVitals vitals={data.vitals} />
     </PageShell>
   );
