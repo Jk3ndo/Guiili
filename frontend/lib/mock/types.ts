@@ -17,6 +17,8 @@ export interface Workspace {
   stack: StackId;
   /** Health of the Google connection(s) backing this site. */
   tokenStatus: TokenStatus;
+  /** Backend UUID for a real site added by the user (undefined for demo sites). */
+  websiteId?: string;
 }
 
 /* -------------------------------------------------------------------------- */

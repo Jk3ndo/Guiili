@@ -1,6 +1,7 @@
 "use client";
 
 import { Check, ChevronsUpDown, Plus } from "lucide-react";
+import { useState } from "react";
 
 import {
   DropdownMenu,
@@ -16,16 +17,17 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { MOCK_WORKSPACES } from "@/lib/mock/workspaces";
 import { useShell } from "@/lib/shell/shell-context";
 import { cn } from "@/lib/utils";
 
+import { AddWebsiteDialog } from "./add-website-dialog";
 import { StackBadge } from "./stack-badge";
 import { StatusDot } from "./status-dot";
 
 export function WorkspaceSwitcher() {
-  const { workspace, setActiveWorkspace } = useShell();
+  const { workspace, workspaces, setActiveWorkspace } = useShell();
   const { isMobile } = useSidebar();
+  const [addOpen, setAddOpen] = useState(false);
 
   return (
     <SidebarMenu>
@@ -65,7 +67,7 @@ export function WorkspaceSwitcher() {
             <DropdownMenuLabel className="text-2xs text-ink-faint">
               Sites suivis
             </DropdownMenuLabel>
-            {MOCK_WORKSPACES.map((ws) => (
+            {workspaces.map((ws) => (
               <DropdownMenuItem
                 key={ws.id}
                 onSelect={() => setActiveWorkspace(ws.id)}
@@ -83,14 +85,21 @@ export function WorkspaceSwitcher() {
               </DropdownMenuItem>
             ))}
             <DropdownMenuSeparator />
-            <DropdownMenuItem disabled className="gap-2 text-ink-faint">
+            <DropdownMenuItem
+              onSelect={(event) => {
+                event.preventDefault();
+                setAddOpen(true);
+              }}
+              className="gap-2 text-ink-muted"
+            >
               <Plus className="size-4" />
-              Ajouter un site
-              <span className="ml-auto text-2xs">bientôt</span>
+              Ajouter un domaine
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </SidebarMenuItem>
+
+      <AddWebsiteDialog open={addOpen} onOpenChange={setAddOpen} />
     </SidebarMenu>
   );
 }
