@@ -12,12 +12,31 @@ export interface WebsiteDto {
   domain: string;
   display_name: string;
   detected_stack: string | null;
+  stack_label: string | null;
+  allow_insecure_probe: boolean;
+  ssl_status: string | null;
+  ssl_expires_at: string | null;
+  ssl_checked_at: string | null;
+  archived_at: string | null;
+}
+
+export interface StackGuessDto {
+  label: string;
+  reason: string;
 }
 
 export interface StackDetectionDto {
   stack: string;
   confidence: number;
   signals: string[];
+  candidates: StackGuessDto[];
+  error: string | null;
+}
+
+export interface SslDto {
+  status: string | null;
+  expires_at: string | null;
+  checked_at: string | null;
 }
 
 export interface CreateWebsiteDto {
@@ -25,11 +44,27 @@ export interface CreateWebsiteDto {
   domain: string;
   display_name: string;
   detected_stack: string | null;
+  stack_label: string | null;
   detection: StackDetectionDto;
+  ssl: SslDto;
   snapshot_id: string;
   captured_at: string;
   metrics: Record<string, unknown>;
   issues: { created: number; updated: number; resolved: number };
+}
+
+export interface StackHintDto {
+  detected_stack: string | null;
+  stack_label: string | null;
+  confidence: number;
+  candidates: StackGuessDto[];
+  error: string | null;
+  needs_confirmation: boolean;
+}
+
+export interface RedetectDto {
+  detected_stack: string | null;
+  detection: StackDetectionDto;
 }
 
 export interface OverviewMetricDto {

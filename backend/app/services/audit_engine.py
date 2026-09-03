@@ -32,8 +32,10 @@ from app.models.issue_item import IssueItem
 from app.models.website import Website
 from app.services.audit_probe import AuditProbe, ProbeData
 from app.services.stack_detector import StackDetection, detect_stack
+from app.services.tls_check import TlsStatus
 
 Detector = Callable[[str], Awaitable[StackDetection]]
+TlsChecker = Callable[[str], Awaitable[TlsStatus]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,9 +82,51 @@ def _cwv_anomaly(
     )
 
 
-def detect_anomalies(data: ProbeData) -> list[DetectedAnomaly]:
+_TLS_CRITICAL_DAYS = 7
+_TLS_HIGH_DAYS = 14
+
+
+def _tls_anomaly(tls: TlsStatus) -> DetectedAnomaly | None:
+    if tls.status in ("valid", "unreachable"):
+        return None
+
+    days = tls.days_remaining
+    if tls.status == "expired":
+        severity = IssueSeverity.CRITICAL
+        detail = "Le certificat HTTPS est expire : les navigateurs bloquent l'acces au site."
+    elif tls.status == "expiring_soon":
+        if days is not None and days <= _TLS_CRITICAL_DAYS:
+            severity = IssueSeverity.CRITICAL
+        elif days is not None and days <= _TLS_HIGH_DAYS:
+            severity = IssueSeverity.HIGH
+        else:
+            severity = IssueSeverity.MEDIUM
+        detail = f"Le certificat HTTPS expire dans {days} jour(s). Planifier le renouvellement."
+    else:  # hostname_mismatch | self_signed | untrusted
+        severity = IssueSeverity.HIGH
+        detail = (
+            "Le certificat HTTPS n'est pas fiable "
+            f"({tls.status.replace('_', ' ')}) : avertissement navigateur a chaque visite."
+        )
+    if tls.expires_at is not None:
+        detail += f" Expiration : {tls.expires_at.date().isoformat()}."
+
+    return DetectedAnomaly(
+        "ssl_certificate",
+        "certificate",
+        IssueCategory.SEO,
+        severity,
+        "Certificat HTTPS a renouveler",
+        detail,
+    )
+
+
+def detect_anomalies(data: ProbeData, *, tls: TlsStatus | None = None) -> list[DetectedAnomaly]:
     out: list[DetectedAnomaly] = []
     ga4, gsc, cwv = data.ga4, data.gsc, data.cwv
+
+    if tls is not None and (anomaly := _tls_anomaly(tls)) is not None:
+        out.append(anomaly)
 
     if ga4.purchase_missing_params:
         params = ", ".join(ga4.purchase_missing_params)
@@ -218,10 +262,36 @@ def _fingerprint(website_id: UUID, anomaly: DetectedAnomaly) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _build_metrics(detection: StackDetection, data: ProbeData) -> dict:
+def _stack_block(detection: StackDetection) -> dict:
+    return {
+        "stack": detection.stack.value,
+        "confidence": detection.confidence,
+        "signals": list(detection.signals),
+        "candidates": [asdict(guess) for guess in detection.candidates],
+        "error": detection.error,
+    }
+
+
+def _tls_block(tls: TlsStatus | None) -> dict | None:
+    if tls is None:
+        return None
+    return {
+        "status": tls.status,
+        "expires_at": tls.expires_at.isoformat() if tls.expires_at else None,
+        "checked_at": tls.checked_at.isoformat(),
+        "days_remaining": tls.days_remaining,
+        "issuer": tls.issuer,
+    }
+
+
+def _build_metrics(
+    detection: StackDetection, data: ProbeData, tls: TlsStatus | None = None
+) -> dict:
     ga4, gsc, cwv = data.ga4, data.gsc, data.cwv
     return {
         "stack": detection.stack.value,
+        "stack_detection": _stack_block(detection),
+        "ssl": _tls_block(tls),
         "ga4": {
             "score": ga4.score,
             "status": _score_status(ga4.score),
@@ -259,6 +329,12 @@ def _build_metrics(detection: StackDetection, data: ProbeData) -> dict:
     }
 
 
+def apply_tls_status(website: Website, tls: TlsStatus) -> None:
+    website.ssl_status = tls.status
+    website.ssl_expires_at = tls.expires_at
+    website.ssl_checked_at = tls.checked_at
+
+
 async def run_audit(
     session: AsyncSession,
     *,
@@ -267,6 +343,7 @@ async def run_audit(
     user_id: UUID | None = None,
     ip_address: str | None = None,
     detector: Detector | None = None,
+    tls_checker: TlsChecker | None = None,
 ) -> AuditRunResult:
     now = datetime.now(UTC)
     run_detector = detector or detect_stack
@@ -274,8 +351,14 @@ async def run_audit(
     detection = await run_detector(f"https://{website.domain}")
     website.detected_stack = detection.stack
 
+    # tls_checker=None -> on saute la verif TLS (seed dev, tests unitaires).
+    tls: TlsStatus | None = None
+    if tls_checker is not None:
+        tls = await tls_checker(website.domain)
+        apply_tls_status(website, tls)
+
     data = await probe.collect(website=website, stack=detection.stack, session=session)
-    metrics = _build_metrics(detection, data)
+    metrics = _build_metrics(detection, data, tls)
 
     snapshot = AuditSnapshot(
         website_id=website.id,
@@ -286,7 +369,7 @@ async def run_audit(
     session.add(snapshot)
     await session.flush()
 
-    anomalies = detect_anomalies(data)
+    anomalies = detect_anomalies(data, tls=tls)
     result = AuditRunResult(snapshot=snapshot, detected_stack=detection.stack, metrics=metrics)
 
     seen: set[str] = set()

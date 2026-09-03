@@ -15,6 +15,7 @@ from app.api.deps import (
     CurrentUserDep,
     SessionDep,
     StackDetectorDep,
+    TlsCheckerDep,
 )
 from app.models.audit_log import AuditLog
 from app.models.audit_snapshot import AuditSnapshot
@@ -78,6 +79,7 @@ async def scan_website(
     session: SessionDep,
     probe: AuditProbeDep,
     detector: StackDetectorDep,
+    tls_checker: TlsCheckerDep,
 ) -> ScanResponse:
     site = await _owned_website(session, website_id, user)
     result = await run_audit(
@@ -87,6 +89,7 @@ async def scan_website(
         user_id=user.id,
         ip_address=request.client.host if request.client else None,
         detector=detector,
+        tls_checker=tls_checker,
     )
     await session.commit()
     return ScanResponse(

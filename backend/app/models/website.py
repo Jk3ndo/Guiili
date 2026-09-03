@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import ForeignKey, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -28,6 +29,17 @@ class Website(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     detected_stack: Mapped[StackKind | None] = mapped_column(
         pg_enum(StackKind, "stack_kind"), nullable=True
     )
+    # Stack saisie / confirmee par l'utilisateur (texte libre : preset ou « Autre »).
+    # Prime sur `detected_stack` a l'affichage.
+    stack_label: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Sonder le site en ignorant les erreurs de certificat TLS (choix explicite).
+    allow_insecure_probe: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Etat du certificat HTTPS, rafraichi a chaque scan / check a la demande.
+    ssl_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    ssl_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ssl_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Site archive : exclu des listes, conserve pour l'historique (purge explicite).
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     user: Mapped[User] = relationship(back_populates="websites")
     google_links: Mapped[list[WebsiteGoogleLink]] = relationship(

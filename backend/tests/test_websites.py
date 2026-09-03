@@ -1,4 +1,6 @@
-"""POST/GET /websites : creation + premier diagnostic + normalisation + isolation."""
+"""POST/GET /websites : creation, normalisation, stack, SSL, archivage."""
+
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
@@ -6,25 +8,43 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_live_stack_detector
+from app.api.deps import get_live_stack_detector, get_tls_checker
 from app.api.v1.endpoints.websites import normalize_domain
 from app.main import app
 from app.models.audit_snapshot import AuditSnapshot
 from app.models.enums import StackKind
+from app.models.issue_item import IssueItem
 from app.models.user import User
 from app.models.website import Website
-from app.services.stack_detector import StackDetection
+from app.services.stack_detector import StackDetection, StackGuess
+from app.services.tls_check import TlsStatus
 
 
 @pytest_asyncio.fixture
 def fake_detector():
-    async def _fake(url: str) -> StackDetection:
-        _ = url
-        return StackDetection(StackKind.NEXTJS, ("next-static", "next-data"), 0.85)
+    async def _fake(url: str, *, allow_insecure: bool = False) -> StackDetection:
+        _ = (url, allow_insecure)
+        return StackDetection(
+            StackKind.NEXTJS,
+            ("next-static", "next-data"),
+            0.85,
+            candidates=(StackGuess("Vercel", "en-tetes Vercel"),),
+        )
+
+    async def _fake_tls(domain: str) -> TlsStatus:
+        _ = domain
+        return TlsStatus(
+            host=domain,
+            status="valid",
+            checked_at=datetime.now(UTC),
+            expires_at=datetime.now(UTC) + timedelta(days=80),
+        )
 
     app.dependency_overrides[get_live_stack_detector] = lambda: _fake
+    app.dependency_overrides[get_tls_checker] = lambda: _fake_tls
     yield
     app.dependency_overrides.pop(get_live_stack_detector, None)
+    app.dependency_overrides.pop(get_tls_checker, None)
 
 
 @pytest.mark.parametrize(
@@ -60,11 +80,15 @@ async def test_create_runs_first_audit_and_returns_snapshot(
     assert body["detected_stack"] == "nextjs"
     assert body["detection"]["stack"] == "nextjs"
     assert "next-static" in body["detection"]["signals"]
+    assert body["detection"]["candidates"][0]["label"] == "Vercel"
+    assert body["ssl"]["status"] == "valid"
     assert body["captured_at"] is not None
 
     site = (await db_session.execute(select(Website).where(Website.id == body["id"]))).scalar_one()
     assert site.user_id == user.id
     assert site.detected_stack is StackKind.NEXTJS
+    assert site.ssl_status == "valid"
+    assert site.ssl_checked_at is not None
 
     snap = (
         await db_session.execute(
@@ -118,8 +142,127 @@ async def test_create_rejects_invalid_domain(
     assert resp.status_code == 422
 
 
+async def _create(client: AsyncClient, domain: str, name: str = "Site") -> dict:
+    resp = await client.post("/api/v1/websites", json={"name": name, "domain": domain})
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+async def test_set_stack_label_overrides_detection(
+    authed_client: tuple[AsyncClient, User], db_session: AsyncSession, fake_detector: None
+) -> None:
+    client, _user = authed_client
+    site_id = (await _create(client, "libre.example"))["id"]
+
+    resp = await client.patch(
+        f"/api/v1/websites/{site_id}/stack", json={"stack_label": "  Symfony 7 (maison)  "}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["stack_label"] == "Symfony 7 (maison)"
+    assert resp.json()["detected_stack"] == "nextjs"  # la detection auto reste
+
+    site = await db_session.get(Website, site_id)
+    await db_session.refresh(site)
+    assert site.stack_label == "Symfony 7 (maison)"
+
+    bad = await client.patch(f"/api/v1/websites/{site_id}/stack", json={"stack_label": "   "})
+    assert bad.status_code == 422
+
+
+async def test_stack_hint_from_last_snapshot(
+    authed_client: tuple[AsyncClient, User], fake_detector: None
+) -> None:
+    client, _user = authed_client
+    site_id = (await _create(client, "hint.example"))["id"]
+
+    hint = (await client.get(f"/api/v1/websites/{site_id}/stack-hint")).json()
+    assert hint["detected_stack"] == "nextjs"
+    assert hint["needs_confirmation"] is False  # nextjs, confiance 0.85
+
+    await client.patch(f"/api/v1/websites/{site_id}/stack", json={"stack_label": "Astro"})
+    hint2 = (await client.get(f"/api/v1/websites/{site_id}/stack-hint")).json()
+    assert hint2["stack_label"] == "Astro"
+    assert hint2["needs_confirmation"] is False
+
+
+async def test_redetect_updates_stack(
+    authed_client: tuple[AsyncClient, User], fake_detector: None
+) -> None:
+    client, _user = authed_client
+    site_id = (await _create(client, "redetect.example"))["id"]
+    resp = await client.post(f"/api/v1/websites/{site_id}/redetect", json={"allow_insecure": True})
+    assert resp.status_code == 200
+    assert resp.json()["detected_stack"] == "nextjs"
+    assert resp.json()["detection"]["candidates"][0]["label"] == "Vercel"
+
+
+async def test_ssl_endpoint_refreshes_status(
+    authed_client: tuple[AsyncClient, User], db_session: AsyncSession, fake_detector: None
+) -> None:
+    client, _user = authed_client
+    site_id = (await _create(client, "ssl.example"))["id"]
+
+    resp = await client.get(f"/api/v1/websites/{site_id}/ssl")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "valid"
+    assert resp.json()["expires_at"] is not None
+
+    site = await db_session.get(Website, site_id)
+    await db_session.refresh(site)
+    assert site.ssl_status == "valid"
+
+
+async def test_archive_hides_site_and_purge_deletes_it(
+    authed_client: tuple[AsyncClient, User], db_session: AsyncSession, fake_detector: None
+) -> None:
+    client, _user = authed_client
+    keep = (await _create(client, "keep.example", "Keep"))["id"]
+    gone = await _create(client, "gone.example", "Gone")
+    gone_id, snap_id = gone["id"], gone["snapshot_id"]
+
+    # archivage doux : exclu de la liste, toujours en base
+    assert (await client.delete(f"/api/v1/websites/{gone_id}")).status_code == 204
+    domains = {w["domain"] for w in (await client.get("/api/v1/websites")).json()}
+    assert domains == {"keep.example"}
+    assert (await client.get("/api/v1/websites?include_archived=true")).json().__len__() == 2
+    assert await db_session.get(Website, gone_id) is not None
+
+    # purge : suppression definitive en cascade (snapshot + issues)
+    assert (await client.delete(f"/api/v1/websites/{gone_id}?purge=true")).status_code == 204
+    await db_session.commit()
+    assert await db_session.get(Website, gone_id) is None
+    assert await db_session.get(AuditSnapshot, snap_id) is None
+    orphans = (
+        (await db_session.execute(select(IssueItem).where(IssueItem.website_id == gone_id)))
+        .scalars()
+        .all()
+    )
+    assert orphans == []
+    _ = keep
+
+
+async def test_allow_insecure_persisted_on_creation(
+    authed_client: tuple[AsyncClient, User], db_session: AsyncSession, fake_detector: None
+) -> None:
+    client, _user = authed_client
+    body = await client.post(
+        "/api/v1/websites",
+        json={"name": "Insecure", "domain": "expired-cert.example", "allow_insecure": True},
+    )
+    assert body.status_code == 201
+    site = await db_session.get(Website, body.json()["id"])
+    await db_session.refresh(site)
+    assert site.allow_insecure_probe is True
+
+
 async def test_endpoints_require_auth(db_client: AsyncClient) -> None:
+    fake = "00000000-0000-0000-0000-000000000000"
     assert (await db_client.get("/api/v1/websites")).status_code == 401
     assert (
         await db_client.post("/api/v1/websites", json={"name": "X", "domain": "x.fr"})
+    ).status_code == 401
+    assert (await db_client.get(f"/api/v1/websites/{fake}/ssl")).status_code == 401
+    assert (await db_client.delete(f"/api/v1/websites/{fake}")).status_code == 401
+    assert (
+        await db_client.patch(f"/api/v1/websites/{fake}/stack", json={"stack_label": "x"})
     ).status_code == 401

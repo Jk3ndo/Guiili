@@ -23,6 +23,10 @@ interface ShellContextValue {
   setActiveWorkspace: (id: string) => void;
   /** Register a freshly created site and switch to it. */
   addWorkspace: (workspace: Workspace) => void;
+  /** Patch a real site in place (stack confirmed, SSL re-checked…). */
+  updateWorkspace: (id: string, patch: Partial<Workspace>) => void;
+  /** Drop an archived site and fall back to the first workspace. */
+  removeWorkspace: (id: string) => void;
   commandOpen: boolean;
   setCommandOpen: (open: boolean) => void;
 }
@@ -63,7 +67,14 @@ export function ShellProvider({
     const merged = MOCK_WORKSPACES.map((mock) => {
       const real = realByDomain.get(mock.domain);
       return real
-        ? { ...mock, websiteId: real.websiteId, stack: real.stack }
+        ? {
+            ...mock,
+            websiteId: real.websiteId,
+            stack: real.stack,
+            stackLabel: real.stackLabel,
+            sslStatus: real.sslStatus,
+            sslExpiresAt: real.sslExpiresAt,
+          }
         : mock;
     });
     const mockDomains = new Set(MOCK_WORKSPACES.map((mock) => mock.domain));
@@ -89,6 +100,22 @@ export function ShellProvider({
     [setActiveWorkspace],
   );
 
+  const updateWorkspace = useCallback(
+    (id: string, patch: Partial<Workspace>) => {
+      setRealWorkspaces((current) =>
+        current.map((ws) => (ws.id === id ? { ...ws, ...patch } : ws)),
+      );
+    },
+    [],
+  );
+
+  const removeWorkspace = useCallback((id: string) => {
+    setRealWorkspaces((current) => current.filter((ws) => ws.id !== id));
+    setWorkspaceId((activeId) =>
+      activeId === id ? MOCK_WORKSPACES[0].id : activeId,
+    );
+  }, []);
+
   const value = useMemo<ShellContextValue>(
     () => ({
       workspace:
@@ -96,10 +123,20 @@ export function ShellProvider({
       workspaces,
       setActiveWorkspace,
       addWorkspace,
+      updateWorkspace,
+      removeWorkspace,
       commandOpen,
       setCommandOpen,
     }),
-    [workspaces, workspaceId, setActiveWorkspace, addWorkspace, commandOpen],
+    [
+      workspaces,
+      workspaceId,
+      setActiveWorkspace,
+      addWorkspace,
+      updateWorkspace,
+      removeWorkspace,
+      commandOpen,
+    ],
   );
 
   return <ShellContext value={value}>{children}</ShellContext>;

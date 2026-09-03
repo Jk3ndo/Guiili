@@ -8,6 +8,7 @@ import { MetricCard } from "./metric-card";
 import { OverviewHeader } from "./overview-header";
 import { PriorityRecommendation } from "./priority-recommendation";
 import { RecentEvents } from "./recent-events";
+import { StackConfirmPrompt } from "./stack-confirm-prompt";
 
 export function OverviewView() {
   const { workspace } = useShell();
@@ -15,6 +16,8 @@ export function OverviewView() {
 
   return (
     <PageShell header={<OverviewHeader data={data} onRescan={rescan} />}>
+      <StackConfirmPrompt />
+
       <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {data.metrics.map((metric) => (
           <MetricCard key={metric.id} metric={metric} />

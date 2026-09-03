@@ -68,5 +68,8 @@ class StackKind(StrEnum):
     NUXT = "nuxt"
     VUE = "vue"
     ANGULAR = "angular"
+    REACT = "react"  # SPA React nu (CRA / build maison)
+    VITE = "vite"  # bundle Vite (React/Vue/Svelte non discrimine)
+    PHP = "php"  # PHP nu / Twig / framework non discrimine
     GENERIC = "generic"
     UNKNOWN = "unknown"

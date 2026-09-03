@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request, status
@@ -10,10 +11,14 @@ from app.db.session import get_session
 from app.models.user import User
 from app.security.session import read_session
 from app.security.token_crypto import TokenCipher, load_token_cipher
-from app.services.audit_engine import Detector
+from app.services.audit_engine import Detector, TlsChecker
 from app.services.audit_probe import AuditProbe, MockAuditProbe, RealAuditProbe
 from app.services.google_oauth import GoogleOAuthClient, get_google_oauth_client
-from app.services.stack_detector import demo_detector, detect_stack
+from app.services.stack_detector import StackDetection, demo_detector, detect_stack
+from app.services.tls_check import check_certificate
+
+# Detecteur qui accepte `allow_insecure=` (contrairement a `Detector`, 1-arg).
+LiveDetector = Callable[..., Awaitable[StackDetection]]
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
@@ -42,17 +47,22 @@ def get_stack_detector(settings: SettingsDep) -> Detector:
     return demo_detector if settings.google_oauth_mock else detect_stack
 
 
-def get_live_stack_detector() -> Detector:
+def get_live_stack_detector() -> LiveDetector:
     # Toujours la vraie detection HTTP : l'ajout d'un domaine par l'utilisateur
     # sonde reellement le site, meme quand la demo tourne en mode mock.
     return detect_stack
+
+
+def get_tls_checker() -> TlsChecker:
+    return check_certificate
 
 
 TokenCipherDep = Annotated[TokenCipher, Depends(get_token_cipher)]
 GoogleClientDep = Annotated[GoogleOAuthClient, Depends(get_google_client)]
 AuditProbeDep = Annotated[AuditProbe, Depends(get_audit_probe)]
 StackDetectorDep = Annotated[Detector, Depends(get_stack_detector)]
-LiveStackDetectorDep = Annotated[Detector, Depends(get_live_stack_detector)]
+LiveStackDetectorDep = Annotated[LiveDetector, Depends(get_live_stack_detector)]
+TlsCheckerDep = Annotated[TlsChecker, Depends(get_tls_checker)]
 
 
 def _session_user_id(request: Request, settings: Settings):

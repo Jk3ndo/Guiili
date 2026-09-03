@@ -20,24 +20,31 @@ import { useShell } from "@/lib/shell/shell-context";
 export function AddWebsiteDialog({
   open,
   onOpenChange,
+  onNeedsStackConfirmation,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Called with the new website id when the stack could not be pinned down. */
+  onNeedsStackConfirmation?: (websiteId: string) => void;
 }) {
   const { addWorkspace } = useShell();
   const router = useRouter();
   const [name, setName] = useState("");
   const [domain, setDomain] = useState("");
+  const [insecure, setInsecure] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  function reset() {
+    setName("");
+    setDomain("");
+    setInsecure(false);
+    setError(null);
+  }
+
   function handleOpenChange(next: boolean) {
     if (busy) return;
-    if (!next) {
-      setName("");
-      setDomain("");
-      setError(null);
-    }
+    if (!next) reset();
     onOpenChange(next);
   }
 
@@ -47,18 +54,41 @@ export function AddWebsiteDialog({
     setBusy(true);
     setError(null);
     try {
-      const { workspace, detectedStackLabel } = await createWebsite({
+      const created = await createWebsite({
         name: name.trim(),
         domain: domain.trim(),
+        allow_insecure: insecure,
       });
+      const {
+        workspace,
+        detectedStackLabel,
+        detectionError,
+        candidates,
+        sslStatus,
+      } = created;
+
+      const uncertain =
+        detectionError === "ssl_verification_failed" ||
+        ["site générique", "stack non identifiée"].includes(detectedStackLabel);
+
       toast(`${workspace.name} ajouté`, {
-        description: `${detectedStackLabel} détecté · premier diagnostic exécuté.`,
+        description: uncertain
+          ? "Premier diagnostic exécuté · stack à confirmer."
+          : `${detectedStackLabel} détecté · premier diagnostic exécuté.`,
       });
+      if (sslStatus && sslStatus !== "valid") {
+        toast.warning("Certificat HTTPS à surveiller", {
+          description: sslStatus,
+        });
+      }
+
       addWorkspace(workspace);
       onOpenChange(false);
-      setName("");
-      setDomain("");
+      reset();
       router.push("/overview");
+      if (uncertain && (candidates.length > 0 || detectionError)) {
+        onNeedsStackConfirmation?.(workspace.id);
+      }
     } catch (cause) {
       setError(
         cause instanceof ApiError
@@ -105,6 +135,17 @@ export function AddWebsiteDialog({
               spellCheck={false}
               autoCapitalize="off"
             />
+          </label>
+
+          <label className="flex items-start gap-2 text-2xs leading-relaxed text-ink-faint">
+            <input
+              type="checkbox"
+              checked={insecure}
+              onChange={(event) => setInsecure(event.target.checked)}
+              className="mt-0.5 accent-zinc-300"
+            />
+            Sonder même si le certificat HTTPS est invalide ou expiré (le
+            contenu ne sera pas authentifié).
           </label>
 
           {error && (

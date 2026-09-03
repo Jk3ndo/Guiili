@@ -46,6 +46,9 @@ const STACK: Record<string, StackId> = {
   nuxt: "vue",
   vue: "vue",
   angular: "angular",
+  react: "react",
+  vite: "vite",
+  php: "php",
   generic: "other",
   unknown: "other",
 };

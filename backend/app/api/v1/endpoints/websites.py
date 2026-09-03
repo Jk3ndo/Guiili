@@ -1,25 +1,29 @@
-"""Gestion des sites suivis par l'utilisateur : liste + creation avec premier
-diagnostic immediat (detection de stack reelle + `run_audit` synchrone)."""
+"""Gestion des sites suivis : liste, creation (detection + 1er diagnostic),
+confirmation de stack, verification SSL a la demande, archivage / purge."""
 
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
     AuditProbeDep,
     CurrentUserDep,
     LiveStackDetectorDep,
     SessionDep,
+    TlsCheckerDep,
 )
+from app.models.audit_snapshot import AuditSnapshot
 from app.models.enums import StackKind
+from app.models.user import User
 from app.models.website import Website
-from app.services.audit_engine import run_audit
+from app.services.audit_engine import apply_tls_status, run_audit
 from app.services.stack_detector import StackDetection
 
 router = APIRouter(tags=["websites"])
@@ -42,6 +46,24 @@ def normalize_domain(raw: str) -> str:
     return value
 
 
+async def _owned_website(session: AsyncSession, website_id: UUID, user: User) -> Website:
+    site = await session.get(Website, website_id)
+    if site is None or site.user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="site introuvable")
+    return site
+
+
+# --------------------------------------------------------------------------- #
+#  Schemas                                                                     #
+# --------------------------------------------------------------------------- #
+
+
+class SslOut(BaseModel):
+    status: str | None
+    expires_at: datetime | None
+    checked_at: datetime | None
+
+
 class WebsiteOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -49,11 +71,38 @@ class WebsiteOut(BaseModel):
     domain: str
     display_name: str
     detected_stack: StackKind | None
+    stack_label: str | None
+    allow_insecure_probe: bool
+    ssl_status: str | None
+    ssl_expires_at: datetime | None
+    ssl_checked_at: datetime | None
+    archived_at: datetime | None
+
+
+class StackGuessOut(BaseModel):
+    label: str
+    reason: str
+
+
+class StackDetectionOut(BaseModel):
+    stack: StackKind
+    confidence: float
+    signals: list[str]
+    candidates: list[StackGuessOut]
+    error: str | None
+
+
+class IssueDelta(BaseModel):
+    created: int
+    updated: int
+    resolved: int
 
 
 class CreateWebsiteRequest(BaseModel):
     name: str
     domain: str
+    # Sonder malgre une erreur de certificat (choix explicite de l'utilisateur).
+    allow_insecure: bool = False
 
     @field_validator("name")
     @classmethod
@@ -72,35 +121,76 @@ class CreateWebsiteRequest(BaseModel):
         return domain
 
 
-class StackDetectionOut(BaseModel):
-    stack: StackKind
-    confidence: float
-    signals: list[str]
-
-
-class IssueDelta(BaseModel):
-    created: int
-    updated: int
-    resolved: int
-
-
 class CreateWebsiteResponse(BaseModel):
     id: UUID
     domain: str
     display_name: str
     detected_stack: StackKind | None
+    stack_label: str | None
     detection: StackDetectionOut
+    ssl: SslOut
     snapshot_id: UUID
     captured_at: datetime
     metrics: dict
     issues: IssueDelta
 
 
-@router.get("/websites", response_model=list[WebsiteOut])
-async def list_websites(user: CurrentUserDep, session: SessionDep) -> list[Website]:
-    rows = await session.execute(
-        select(Website).where(Website.user_id == user.id).order_by(Website.created_at)
+class SetStackRequest(BaseModel):
+    stack_label: str
+
+    @field_validator("stack_label")
+    @classmethod
+    def _clean(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("stack_label vide")
+        return cleaned[:100]
+
+
+class RedetectRequest(BaseModel):
+    allow_insecure: bool = False
+
+
+class RedetectResponse(BaseModel):
+    detected_stack: StackKind | None
+    detection: StackDetectionOut
+
+
+class StackHintResponse(BaseModel):
+    detected_stack: StackKind | None
+    stack_label: str | None
+    confidence: float
+    candidates: list[StackGuessOut]
+    error: str | None
+    # True -> l'UI invite l'utilisateur a confirmer / choisir sa stack.
+    needs_confirmation: bool
+
+
+def _detection_out(detection: StackDetection) -> StackDetectionOut:
+    return StackDetectionOut(
+        stack=detection.stack,
+        confidence=detection.confidence,
+        signals=list(detection.signals),
+        candidates=[StackGuessOut(label=g.label, reason=g.reason) for g in detection.candidates],
+        error=detection.error,
     )
+
+
+# --------------------------------------------------------------------------- #
+#  Endpoints                                                                   #
+# --------------------------------------------------------------------------- #
+
+
+@router.get("/websites", response_model=list[WebsiteOut])
+async def list_websites(
+    user: CurrentUserDep,
+    session: SessionDep,
+    include_archived: bool = False,
+) -> list[Website]:
+    stmt = select(Website).where(Website.user_id == user.id)
+    if not include_archived:
+        stmt = stmt.where(Website.archived_at.is_(None))
+    rows = await session.execute(stmt.order_by(Website.created_at))
     return list(rows.scalars().all())
 
 
@@ -116,6 +206,7 @@ async def create_website(
     session: SessionDep,
     probe: AuditProbeDep,
     detector: LiveStackDetectorDep,
+    tls_checker: TlsCheckerDep,
 ) -> CreateWebsiteResponse:
     existing = (
         await session.execute(
@@ -128,11 +219,18 @@ async def create_website(
             detail=f"le domaine « {body.domain} » est déjà suivi",
         )
 
-    site = Website(user_id=user.id, domain=body.domain, display_name=body.name)
+    site = Website(
+        user_id=user.id,
+        domain=body.domain,
+        display_name=body.name,
+        allow_insecure_probe=body.allow_insecure,
+    )
     session.add(site)
     await session.flush()
 
-    detection: StackDetection = await detector(f"https://{body.domain}")
+    detection: StackDetection = await detector(
+        f"https://{body.domain}", allow_insecure=body.allow_insecure
+    )
 
     async def _fixed(_url: str) -> StackDetection:
         return detection
@@ -144,6 +242,7 @@ async def create_website(
         user_id=user.id,
         ip_address=request.client.host if request.client else None,
         detector=_fixed,
+        tls_checker=tls_checker,
     )
     await session.commit()
 
@@ -152,10 +251,12 @@ async def create_website(
         domain=site.domain,
         display_name=site.display_name,
         detected_stack=site.detected_stack,
-        detection=StackDetectionOut(
-            stack=detection.stack,
-            confidence=detection.confidence,
-            signals=list(detection.signals),
+        stack_label=site.stack_label,
+        detection=_detection_out(detection),
+        ssl=SslOut(
+            status=site.ssl_status,
+            expires_at=site.ssl_expires_at,
+            checked_at=site.ssl_checked_at,
         ),
         snapshot_id=result.snapshot.id,
         captured_at=result.snapshot.captured_at,
@@ -166,3 +267,108 @@ async def create_website(
             resolved=len(result.resolved),
         ),
     )
+
+
+@router.patch("/websites/{website_id}/stack", response_model=WebsiteOut)
+async def set_website_stack(
+    website_id: UUID, body: SetStackRequest, user: CurrentUserDep, session: SessionDep
+) -> Website:
+    site = await _owned_website(session, website_id, user)
+    site.stack_label = body.stack_label
+    await session.commit()
+    return site
+
+
+@router.post("/websites/{website_id}/redetect", response_model=RedetectResponse)
+async def redetect_website_stack(
+    website_id: UUID,
+    body: RedetectRequest,
+    user: CurrentUserDep,
+    session: SessionDep,
+    detector: LiveStackDetectorDep,
+) -> RedetectResponse:
+    site = await _owned_website(session, website_id, user)
+    detection: StackDetection = await detector(
+        f"https://{site.domain}", allow_insecure=body.allow_insecure
+    )
+    site.detected_stack = detection.stack
+    site.allow_insecure_probe = body.allow_insecure
+    await session.commit()
+    return RedetectResponse(detected_stack=site.detected_stack, detection=_detection_out(detection))
+
+
+@router.get("/websites/{website_id}/stack-hint", response_model=StackHintResponse)
+async def website_stack_hint(
+    website_id: UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+    detector: LiveStackDetectorDep,
+) -> StackHintResponse:
+    site = await _owned_website(session, website_id, user)
+    snapshot = (
+        await session.execute(
+            select(AuditSnapshot)
+            .where(AuditSnapshot.website_id == website_id)
+            .order_by(AuditSnapshot.captured_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    block = (snapshot.metrics.get("stack_detection") or {}) if snapshot else {}
+    confidence = float(block.get("confidence", 0.0))
+    error = block.get("error")
+    candidates = [
+        StackGuessOut(label=item["label"], reason=item["reason"])
+        for item in block.get("candidates", [])
+    ]
+
+    # Pas d'hypotheses stockees (snapshot anterieur a la v4) -> sonde en direct.
+    if not candidates:
+        live: StackDetection = await detector(
+            f"https://{site.domain}", allow_insecure=site.allow_insecure_probe
+        )
+        site.detected_stack = live.stack
+        confidence = live.confidence
+        error = live.error
+        candidates = [StackGuessOut(label=g.label, reason=g.reason) for g in live.candidates]
+        await session.commit()
+
+    vague = site.detected_stack in (None, StackKind.GENERIC, StackKind.UNKNOWN)
+    low_confidence = confidence and confidence < 0.6
+    return StackHintResponse(
+        detected_stack=site.detected_stack,
+        stack_label=site.stack_label,
+        confidence=confidence,
+        candidates=candidates,
+        error=error,
+        needs_confirmation=site.stack_label is None and (vague or bool(low_confidence)),
+    )
+
+
+@router.get("/websites/{website_id}/ssl", response_model=SslOut)
+async def website_ssl(
+    website_id: UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+    tls_checker: TlsCheckerDep,
+) -> SslOut:
+    site = await _owned_website(session, website_id, user)
+    tls = await tls_checker(site.domain)
+    apply_tls_status(site, tls)
+    await session.commit()
+    return SslOut(status=tls.status, expires_at=tls.expires_at, checked_at=tls.checked_at)
+
+
+@router.delete("/websites/{website_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_website(
+    website_id: UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+    purge: bool = Query(False, description="Suppression definitive en cascade au lieu d'archiver"),
+) -> None:
+    site = await _owned_website(session, website_id, user)
+    if purge:
+        await session.delete(site)  # cascade : snapshots, issues, liens Google
+    else:
+        site.archived_at = datetime.now(UTC)
+    await session.commit()

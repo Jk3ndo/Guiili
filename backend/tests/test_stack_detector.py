@@ -104,3 +104,90 @@ async def test_detect_stack_handles_transport_failure() -> None:
     async with _client(handler) as client:
         result = await detect_stack("https://nope.example/", client=client)
     assert result.stack is StackKind.UNKNOWN
+    assert result.error == "fetch_error"
+
+
+# --------------------------------------------------------------------------- #
+#  P4 : React / Vite / PHP + hypotheses + erreurs SSL                          #
+# --------------------------------------------------------------------------- #
+
+_CRA_HTML = """<!doctype html><html><head><title>App</title></head>
+<body><div id="root"></div>
+<script src="/static/js/main.4f2a1b.chunk.js"></script>
+<script src="/static/js/2.abc.chunk.js"></script></body></html>"""
+
+_VITE_HTML = """<!doctype html><html><head>
+<script type="module" src="/assets/index-Bx3k9.js"></script>
+<link rel="stylesheet" href="/assets/index-9aa.css"></head>
+<body><div id="app"></div></body></html>"""
+
+_PHP_LOGIN_HTML = """<!doctype html><html lang="en"><head><title>Se connecter</title>
+<link rel="stylesheet" href="assets/bootstrap/bootstrap.min.css"></head>
+<body><form action="index.php" method="post"><input name="user"></form>
+<script src="assets/jquery.min.js"></script></body></html>"""
+
+_LANDING_HTML = """<!doctype html><html lang="fr"><head><title>QR Nyama</title>
+<script src="https://cdn.tailwindcss.com"></script></head>
+<body><nav>menu</nav><a href="https://app.qrnyama.com/signin">Se connecter</a>
+<script>document.querySelector('nav')</script></body></html>"""
+
+
+def test_react_bare_detected_with_bundle() -> None:
+    detection = analyze_response(_CRA_HTML)
+    assert detection.stack is StackKind.REACT
+    assert "react-root-static" in detection.signals
+
+
+def test_react_root_without_bundle_stays_generic() -> None:
+    thin = '<!doctype html><html><body><div id="root"></div></body></html>'
+    assert analyze_response(thin).stack is StackKind.GENERIC
+
+
+def test_vite_module_assets_detected() -> None:
+    assert analyze_response(_VITE_HTML).stack is StackKind.VITE
+
+
+def test_php_from_session_cookie() -> None:
+    detection = analyze_response(_PLAIN_HTML, cookies=["PHPSESSID=abc123; path=/; HttpOnly"])
+    assert detection.stack is StackKind.PHP
+    assert detection.signals == ("cookie-phpsessid",)
+
+
+def test_php_from_x_powered_by_header() -> None:
+    assert analyze_response(_PLAIN_HTML, headers={"X-Powered-By": "PHP/8.2"}).stack is StackKind.PHP
+
+
+def test_php_login_page_gives_php_and_candidates() -> None:
+    detection = analyze_response(_PHP_LOGIN_HTML, cookies=["PHPSESSID=x"])
+    assert detection.stack is StackKind.PHP
+    labels = {g.label for g in detection.candidates}
+    assert "PHP" in labels
+
+
+def test_static_landing_page_candidates() -> None:
+    detection = analyze_response(_LANDING_HTML)
+    assert detection.stack is StackKind.GENERIC
+    labels = {g.label for g in detection.candidates}
+    assert "Tailwind CSS (CDN)" in labels
+    # chaque hypothese porte une raison lisible
+    assert all(g.reason for g in detection.candidates)
+
+
+async def test_detect_stack_flags_ssl_error_when_verifying() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate has expired")
+
+    async with _client(handler) as client:
+        result = await detect_stack("https://expired.example/", client=client)
+    assert result.stack is StackKind.UNKNOWN
+    assert result.error == "ssl_verification_failed"
+    assert result.signals == ("ssl-verify-failed",)
+
+
+async def test_detect_stack_allow_insecure_treats_ssl_error_as_fetch_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate has expired")
+
+    async with _client(handler) as client:
+        result = await detect_stack("https://expired.example/", client=client, allow_insecure=True)
+    assert result.error == "fetch_error"

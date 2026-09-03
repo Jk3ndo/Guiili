@@ -1,5 +1,8 @@
 """Moteur d'audit : regles de detection + dedup via fingerprint + auto-resolution."""
 
+from datetime import UTC, datetime, timedelta
+
+import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,6 +21,7 @@ from app.services.audit_probe import (
     ProbeData,
 )
 from app.services.stack_detector import StackDetection
+from app.services.tls_check import TlsStatus
 from tests.conftest import UserFactory
 
 
@@ -88,6 +92,40 @@ def test_rules_for_studio_lumen() -> None:
 
 def test_clean_site_has_no_anomaly() -> None:
     assert detect_anomalies(_CLEAN) == []
+
+
+def _tls(status: str, days: int | None = None) -> TlsStatus:
+    expires = datetime.now(UTC) + timedelta(days=days) if days is not None else None
+    return TlsStatus(
+        host="x.fr",
+        status=status,
+        checked_at=datetime.now(UTC),
+        expires_at=expires,
+        days_remaining=days,
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "days", "expected_severity"),
+    [
+        ("expired", -3, IssueSeverity.CRITICAL),
+        ("expiring_soon", 5, IssueSeverity.CRITICAL),
+        ("expiring_soon", 12, IssueSeverity.HIGH),
+        ("expiring_soon", 25, IssueSeverity.MEDIUM),
+        ("hostname_mismatch", 100, IssueSeverity.HIGH),
+        ("self_signed", 100, IssueSeverity.HIGH),
+    ],
+)
+def test_ssl_rule_severity(status: str, days: int, expected_severity: IssueSeverity) -> None:
+    out = detect_anomalies(_CLEAN, tls=_tls(status, days))
+    ssl = next(a for a in out if a.rule_id == "ssl_certificate")
+    assert ssl.severity is expected_severity
+    assert ssl.subject == "certificate"
+
+
+def test_ssl_rule_silent_when_valid_or_unreachable() -> None:
+    assert detect_anomalies(_CLEAN, tls=_tls("valid", 90)) == []
+    assert detect_anomalies(_CLEAN, tls=_tls("unreachable")) == []
 
 
 def test_lcp_rule_lists_heavy_assets_from_pagespeed() -> None:
