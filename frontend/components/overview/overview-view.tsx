@@ -15,7 +15,16 @@ export function OverviewView() {
   const { data, rescan } = useOverview(workspace);
 
   return (
-    <PageShell header={<OverviewHeader data={data} onRescan={rescan} />}>
+    <PageShell
+      header={
+        <OverviewHeader
+          data={data}
+          stack={workspace.stack}
+          stackLabel={workspace.stackLabel}
+          onRescan={rescan}
+        />
+      }
+    >
       <StackConfirmPrompt />
 
       <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
