@@ -1,15 +1,18 @@
 """Endpoints d'audit : scan, overview, issues, patch de statut."""
 
+from datetime import UTC, datetime
+
 import pytest_asyncio
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_stack_detector
+from app.api.deps import get_stack_detector, get_tls_checker
 from app.main import app
 from app.models.enums import StackKind
 from app.models.user import User
 from app.models.website import Website
 from app.services.stack_detector import StackDetection
+from app.services.tls_check import TlsStatus
 
 
 @pytest_asyncio.fixture
@@ -18,9 +21,14 @@ async def mock_detector():
         _ = url
         return StackDetection(StackKind.NEXTJS, ("test",), 0.9)
 
+    async def _fake_tls(domain: str) -> TlsStatus:
+        return TlsStatus(host=domain, status="valid", checked_at=datetime.now(UTC))
+
     app.dependency_overrides[get_stack_detector] = lambda: _fake
+    app.dependency_overrides[get_tls_checker] = lambda: _fake_tls
     yield
     app.dependency_overrides.pop(get_stack_detector, None)
+    app.dependency_overrides.pop(get_tls_checker, None)
 
 
 async def _website(session: AsyncSession, *, user: User, domain: str) -> Website:

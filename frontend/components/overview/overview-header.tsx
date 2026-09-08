@@ -4,13 +4,18 @@ import { ExternalLink, RefreshCw } from "lucide-react";
 
 import { StackBadge } from "@/components/shell/stack-badge";
 import { relativeHours } from "@/lib/format";
-import type { OverviewData } from "@/lib/mock/types";
+import type { OverviewData, StackId } from "@/lib/mock/types";
 
 export function OverviewHeader({
   data,
+  stack,
+  stackLabel,
   onRescan,
 }: {
   data: OverviewData;
+  /** Stack identity from the shell workspace — same source as the sidebar. */
+  stack: StackId;
+  stackLabel?: string | null;
   onRescan?: () => void | Promise<void>;
 }) {
   return (
@@ -20,7 +25,7 @@ export function OverviewHeader({
           <h1 className="text-xl font-semibold tracking-tight text-ink">
             {data.siteName}
           </h1>
-          <StackBadge stack={data.stack} />
+          <StackBadge stack={stack} label={stackLabel} />
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-ink-muted">
           <a

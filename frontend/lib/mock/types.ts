@@ -3,9 +3,26 @@
  * only `lib/mock/*` gets swapped — components import from here, not from fetch.
  */
 
-export type StackId = "nextjs" | "wordpress" | "angular" | "vue" | "other";
+export type StackId =
+  | "nextjs"
+  | "wordpress"
+  | "angular"
+  | "vue"
+  | "react"
+  | "vite"
+  | "php"
+  | "other";
 
 export type TokenStatus = "connected" | "needs_reauth";
+
+export type SslStatus =
+  | "valid"
+  | "expiring_soon"
+  | "expired"
+  | "self_signed"
+  | "hostname_mismatch"
+  | "untrusted"
+  | "unreachable";
 
 export interface Workspace {
   id: string;
@@ -19,6 +36,11 @@ export interface Workspace {
   tokenStatus: TokenStatus;
   /** Backend UUID for a real site added by the user (undefined for demo sites). */
   websiteId?: string;
+  /** User-confirmed stack (free text) — overrides the badge when set. */
+  stackLabel?: string | null;
+  /** Latest HTTPS certificate status (real sites only). */
+  sslStatus?: SslStatus | null;
+  sslExpiresAt?: string | null;
 }
 
 /* -------------------------------------------------------------------------- */

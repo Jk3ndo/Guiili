@@ -6,15 +6,21 @@ export const STACK_LABEL: Record<StackId, string> = {
   wordpress: "WordPress",
   angular: "Angular",
   vue: "Vue",
+  react: "React",
+  vite: "Vite",
+  php: "PHP",
   other: "Autre",
 };
 
 /** Uniform, colourless — the label carries the meaning, not a tint. */
 export function StackBadge({
   stack,
+  label,
   className,
 }: {
   stack: StackId;
+  /** User-confirmed free-text stack — wins over the detected one. */
+  label?: string | null;
   className?: string;
 }) {
   return (
@@ -24,7 +30,7 @@ export function StackBadge({
         className,
       )}
     >
-      {STACK_LABEL[stack]}
+      {label?.trim() || STACK_LABEL[stack]}
     </span>
   );
 }

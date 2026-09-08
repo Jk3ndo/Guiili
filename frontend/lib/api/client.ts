@@ -62,6 +62,11 @@ export async function apiPatch<T>(path: string, body: unknown): Promise<T> {
   ).json() as Promise<T>;
 }
 
+/** DELETE — le backend renvoie 204 sans corps. */
+export async function apiDelete(path: string): Promise<void> {
+  await request(path, { method: "DELETE" });
+}
+
 export interface DownloadedFile {
   blob: Blob;
   filename: string;
