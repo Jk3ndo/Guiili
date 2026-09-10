@@ -331,11 +331,11 @@ def _build_findings(
             GtmFinding(
                 "gtm_query_stripped",
                 "low",
-                "Une redirection supprime les parametres d'URL",
-                "La page redirige en retirant la query string. Les parametres "
-                "?gtm_debug / ?gtm_auth / ?gtm_preview utilises par le mode "
-                "previsualisation peuvent etre perdus sur ce trajet — a verifier "
-                "manuellement.",
+                "La page redirige : verifier que les parametres de previsualisation survivent",
+                "L'URL redirige avant de servir le contenu. Le mode previsualisation "
+                "de GTM ajoute ?gtm_debug / ?gtm_auth / ?gtm_preview a l'URL : si la "
+                "redirection les retire, la previsualisation ne peut pas s'accrocher. "
+                "A verifier manuellement en ouvrant la preview.",
             )
         )
 
