@@ -34,6 +34,13 @@ PERSONA_PRESETS: dict[str, str] = {
     ),
 }
 
+PERSONA_LABELS: dict[str, str] = {
+    "consultant": "Consultant senior",
+    "pedagogue": "Pédagogue",
+    "growth": "Growth / acquisition",
+    "technique": "Technique",
+}
+
 SYSTEM_BASE = """\
 Tu es l'agent conseiller d'une plateforme d'audit marketing (SEO, GA4, Core Web \
 Vitals, tag manager). On te fournit un instantane du diagnostic d'un site sous \
