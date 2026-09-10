@@ -3,6 +3,7 @@ import {
   Gauge,
   LayoutDashboard,
   ListChecks,
+  MessageSquareText,
   Plug,
   type LucideIcon,
 } from "lucide-react";
@@ -40,6 +41,12 @@ export const NAV_ROUTES: AppRoute[] = [
     label: "Backlog Correctifs",
     crumb: "Backlog Correctifs",
     icon: ListChecks,
+  },
+  {
+    href: "/conseiller",
+    label: "Conseiller",
+    crumb: "Conseiller",
+    icon: MessageSquareText,
   },
   {
     href: "/connections",
