@@ -212,11 +212,39 @@ export interface WebVital {
   diagnostic?: VitalDiagnostic;
 }
 
+/* -------------------------------------------------------------------------- */
+/*  Block 5 — Tag manager health                                             */
+/* -------------------------------------------------------------------------- */
+
+export type GtmSeverity = "low" | "medium" | "high";
+
+export interface GtmFinding {
+  code: string;
+  severity: GtmSeverity;
+  title: string;
+  detail: string;
+}
+
+export interface GtmHealth {
+  containers: string[];
+  /** "standard" | "custom_loader" | "noscript_only" | "absent". */
+  snippetForm: string;
+  snippetInHead: boolean | null;
+  dataLayerName: string;
+  consentPlatform: string | null;
+  serverSide: boolean;
+  cspBlocksPreview: boolean | null;
+  findings: GtmFinding[];
+  /** The site was actually probed (checked_at set, no fetch error). */
+  checked: boolean;
+}
+
 export interface AuditData {
   ga4: Ga4Stream;
   index: IndexHealth;
   urls: SearchUrl[];
   vitals: WebVital[];
+  gtm: GtmHealth | null;
 }
 
 const FIXTURES: Record<string, AuditData> = {
@@ -319,6 +347,25 @@ const FIXTURES: Record<string, AuditData> = {
         hint: "Mise en page stable au chargement",
       },
     ],
+    gtm: {
+      containers: ["GTM-BV20261"],
+      snippetForm: "standard",
+      snippetInHead: true,
+      dataLayerName: "dataLayer",
+      consentPlatform: "axeptio",
+      serverSide: false,
+      cspBlocksPreview: false,
+      findings: [
+        {
+          code: "ga4_hardcoded_alongside_gtm",
+          severity: "low",
+          title: "GA4 est câblé en dur sur la page en plus de GTM (G-BV77PLK21Q)",
+          detail:
+            "Un tag gtag.js GA4 est présent dans le code de la page alors qu'un conteneur GTM existe. Risque de double comptage si GA4 est aussi déclenché depuis GTM.",
+        },
+      ],
+      checked: true,
+    },
   },
 
   ws_atelier_nord: {
@@ -410,6 +457,25 @@ const FIXTURES: Record<string, AuditData> = {
         hint: "Bannière de consentement sans réserve d'espace",
       },
     ],
+    gtm: {
+      containers: ["GTM-AN44821"],
+      snippetForm: "standard",
+      snippetInHead: false,
+      dataLayerName: "dataLayer",
+      consentPlatform: "cookiebot",
+      serverSide: false,
+      cspBlocksPreview: false,
+      findings: [
+        {
+          code: "gtm_snippet_not_in_head",
+          severity: "low",
+          title: "Le snippet GTM n'est pas dans <head>",
+          detail:
+            "Le snippet est chargé plus bas dans la page : les événements et tags déclenchés avant son chargement sont perdus. Le placer le plus haut possible dans <head>.",
+        },
+      ],
+      checked: true,
+    },
   },
 
   ws_studio_lumen: {
@@ -501,6 +567,48 @@ const FIXTURES: Record<string, AuditData> = {
         hint: "Aucun décalage mesuré",
       },
     ],
+    gtm: {
+      containers: ["GTM-SL90007", "GTM-SL90008"],
+      snippetForm: "custom_loader",
+      snippetInHead: false,
+      dataLayerName: "sl_dl",
+      consentPlatform: "onetrust",
+      serverSide: false,
+      cspBlocksPreview: true,
+      findings: [
+        {
+          code: "gtm_preview_csp_block",
+          severity: "high",
+          title:
+            "La politique de sécurité de contenu bloque la prévisualisation GTM",
+          detail:
+            "La CSP de la page ne liste pas googletagmanager.com : le mode prévisualisation de Tag Manager (et Tag Assistant) ne peut pas se connecter. Ajouter *.googletagmanager.com et tagassistant.google.com aux directives script-src, connect-src et frame-src.",
+        },
+        {
+          code: "gtm_consent_gated",
+          severity: "medium",
+          title:
+            "GTM est gelé tant que le visiteur n'a pas accepté les cookies",
+          detail:
+            "Le script GTM est chargé en type=\"text/plain\" (onetrust) : il ne s'exécute qu'après accord de consentement. Tant que la bannière n'est pas acceptée, la prévisualisation reste vide.",
+        },
+        {
+          code: "gtm_custom_datalayer",
+          severity: "medium",
+          title: "Le data layer est renommé en « sl_dl »",
+          detail:
+            "Le mode prévisualisation et de nombreux modèles de tags supposent un objet nommé `dataLayer`. Un nom personnalisé casse les intégrations qui poussent vers `dataLayer` sans le savoir.",
+        },
+        {
+          code: "gtm_multiple_containers",
+          severity: "medium",
+          title: "2 conteneurs GTM sur la page (GTM-SL90007, GTM-SL90008)",
+          detail:
+            "Plusieurs conteneurs se chargent simultanément : la prévisualisation peut s'attacher au mauvais, et les tags risquent de se déclencher en double.",
+        },
+      ],
+      checked: true,
+    },
   },
 
   ws_cap_horizon: {
@@ -593,6 +701,25 @@ const FIXTURES: Record<string, AuditData> = {
         hint: "Mise en page stable",
       },
     ],
+    gtm: {
+      containers: ["GTM-CH51120"],
+      snippetForm: "standard",
+      snippetInHead: true,
+      dataLayerName: "dataLayer",
+      consentPlatform: null,
+      serverSide: true,
+      cspBlocksPreview: false,
+      findings: [
+        {
+          code: "gtm_server_side",
+          severity: "low",
+          title: "Conteneur servi en first-party (server-side GTM)",
+          detail:
+            "gtm.js est servi depuis un domaine personnalisé. La prévisualisation d'un conteneur web servi en first-party demande une configuration spécifique (transport_url) — à vérifier si le preview échoue.",
+        },
+      ],
+      checked: true,
+    },
   },
 };
 

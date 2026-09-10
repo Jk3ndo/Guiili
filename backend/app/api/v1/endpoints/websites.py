@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import (
     AuditProbeDep,
     CurrentUserDep,
+    GtmCheckerDep,
     LiveStackDetectorDep,
     SessionDep,
     TlsCheckerDep,
@@ -207,6 +208,7 @@ async def create_website(
     probe: AuditProbeDep,
     detector: LiveStackDetectorDep,
     tls_checker: TlsCheckerDep,
+    gtm_checker: GtmCheckerDep,
 ) -> CreateWebsiteResponse:
     existing = (
         await session.execute(
@@ -243,6 +245,7 @@ async def create_website(
         ip_address=request.client.host if request.client else None,
         detector=_fixed,
         tls_checker=tls_checker,
+        gtm_checker=gtm_checker,
     )
     await session.commit()
 

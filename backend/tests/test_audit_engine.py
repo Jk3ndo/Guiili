@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit_log import AuditLog
 from app.models.audit_snapshot import AuditSnapshot
-from app.models.enums import IssueSeverity, IssueStatus, StackKind
+from app.models.enums import IssueCategory, IssueSeverity, IssueStatus, StackKind
 from app.models.issue_item import IssueItem
 from app.models.website import Website
 from app.services.audit_engine import detect_anomalies, run_audit
@@ -20,6 +20,7 @@ from app.services.audit_probe import (
     MockAuditProbe,
     ProbeData,
 )
+from app.services.gtm_check import GtmCheck, GtmFinding
 from app.services.stack_detector import StackDetection
 from app.services.tls_check import TlsStatus
 from tests.conftest import UserFactory
@@ -169,6 +170,28 @@ def test_inp_rule_lists_third_party_scripts() -> None:
     assert "labo" in inp.description
 
 
+def _gtm(*findings: GtmFinding) -> GtmCheck:
+    return GtmCheck(containers=("GTM-XXXX",), snippet_form="standard", findings=findings)
+
+
+def test_gtm_high_and_medium_findings_become_tracking_anomalies() -> None:
+    gtm = _gtm(
+        GtmFinding("gtm_preview_csp_block", "high", "CSP bloque la previsualisation GTM", "..."),
+        GtmFinding("gtm_consent_gated", "medium", "GTM gele par le consentement", "..."),
+        GtmFinding("gtm_snippet_not_in_head", "low", "Snippet hors <head>", "..."),
+    )
+    out = {a.rule_id: a for a in detect_anomalies(_CLEAN, gtm=gtm)}
+    assert out["gtm_preview_csp_block"].category is IssueCategory.TRACKING
+    assert out["gtm_preview_csp_block"].severity is IssueSeverity.HIGH
+    assert out["gtm_consent_gated"].severity is IssueSeverity.MEDIUM
+    assert "gtm_snippet_not_in_head" not in out  # low => pas d'issue
+
+
+def test_gtm_none_or_clean_adds_nothing() -> None:
+    assert detect_anomalies(_CLEAN, gtm=None) == []
+    assert detect_anomalies(_CLEAN, gtm=_gtm()) == []
+
+
 # --------------------------------------------------------------------------- #
 #  run_audit                                                                   #
 # --------------------------------------------------------------------------- #
@@ -206,6 +229,46 @@ async def test_run_audit_writes_snapshot_and_issues(
     ).scalar_one()
     assert log.action == "website.scan"
     assert len(log.request_payload_hash) == 64
+
+
+async def test_run_audit_persists_gtm_block_and_tracking_issue(
+    db_session: AsyncSession, make_user: UserFactory
+) -> None:
+    user = await make_user(sub="au-gtm")
+    site = await _website(db_session, user.id, domain="gtm-site.test")
+
+    async def gtm_checker(domain: str) -> GtmCheck:
+        _ = domain
+        return GtmCheck(
+            containers=("GTM-AAA1111",),
+            snippet_form="standard",
+            findings=(
+                GtmFinding("gtm_consent_gated", "medium", "GTM gele par le consentement", "detail"),
+            ),
+        )
+
+    result = await run_audit(
+        db_session,
+        website=site,
+        probe=MockAuditProbe(),
+        detector=_detector,
+        gtm_checker=gtm_checker,
+    )
+
+    assert result.metrics["gtm"]["snippet_form"] == "standard"
+    assert result.metrics["gtm"]["containers"] == ["GTM-AAA1111"]
+    assert any(i.category is IssueCategory.TRACKING for i in result.created)
+
+
+async def test_run_audit_without_gtm_checker_has_null_block(
+    db_session: AsyncSession, make_user: UserFactory
+) -> None:
+    user = await make_user(sub="au-nogtm")
+    site = await _website(db_session, user.id, domain="plain.test")
+    result = await run_audit(
+        db_session, website=site, probe=MockAuditProbe(), detector=_detector
+    )
+    assert result.metrics["gtm"] is None
 
 
 async def test_rescan_does_not_duplicate_issues(

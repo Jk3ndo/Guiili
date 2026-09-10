@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import (
     AuditProbeDep,
     CurrentUserDep,
+    GtmCheckerDep,
     SessionDep,
     StackDetectorDep,
     TlsCheckerDep,
@@ -80,6 +81,7 @@ async def scan_website(
     probe: AuditProbeDep,
     detector: StackDetectorDep,
     tls_checker: TlsCheckerDep,
+    gtm_checker: GtmCheckerDep,
 ) -> ScanResponse:
     site = await _owned_website(session, website_id, user)
     result = await run_audit(
@@ -90,6 +92,7 @@ async def scan_website(
         ip_address=request.client.host if request.client else None,
         detector=detector,
         tls_checker=tls_checker,
+        gtm_checker=gtm_checker,
     )
     await session.commit()
     return ScanResponse(
@@ -328,6 +331,25 @@ class AuditUrlOut(BaseModel):
     marketing_action: str
 
 
+class AuditGtmFindingOut(BaseModel):
+    code: str
+    severity: str
+    title: str
+    detail: str
+
+
+class AuditGtmOut(BaseModel):
+    containers: list[str]
+    snippet_form: str
+    snippet_in_head: bool | None
+    data_layer_name: str
+    consent_platform: str | None
+    server_side: bool
+    csp_blocks_preview: bool | None
+    findings: list[AuditGtmFindingOut]
+    checked: bool
+
+
 class AuditResponse(BaseModel):
     site_name: str
     domain: str
@@ -336,6 +358,7 @@ class AuditResponse(BaseModel):
     index: AuditIndexOut
     urls: list[AuditUrlOut]
     vitals: list[AuditVitalOut]
+    gtm: AuditGtmOut | None
 
 
 _VITAL_META: dict[str, tuple[str, str, tuple[float, float], str]] = {
@@ -576,6 +599,22 @@ def _build_urls(gsc: dict) -> list[AuditUrlOut]:
     return out
 
 
+def _build_gtm(gtm: dict | None) -> AuditGtmOut | None:
+    if not gtm:
+        return None
+    return AuditGtmOut(
+        containers=list(gtm.get("containers", [])),
+        snippet_form=str(gtm.get("snippet_form", "absent")),
+        snippet_in_head=gtm.get("snippet_in_head"),
+        data_layer_name=str(gtm.get("data_layer_name", "dataLayer")),
+        consent_platform=gtm.get("consent_platform"),
+        server_side=bool(gtm.get("server_side", False)),
+        csp_blocks_preview=gtm.get("csp_blocks_preview"),
+        findings=[AuditGtmFindingOut(**finding) for finding in gtm.get("findings", [])],
+        checked=bool(gtm.get("checked_at")) and not gtm.get("error"),
+    )
+
+
 def _build_index(gsc: dict) -> AuditIndexOut:
     valid = int(gsc.get("valid_pages", 0))
     excluded = int(gsc.get("excluded_pages", 0))
@@ -623,6 +662,7 @@ async def website_audit(
         index=_build_index(metrics.get("gsc", {})),
         urls=_build_urls(metrics.get("gsc", {})),
         vitals=_build_vitals(metrics.get("cwv", {})),
+        gtm=_build_gtm(metrics.get("gtm")),
     )
 
 

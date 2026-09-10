@@ -1,6 +1,7 @@
 import type {
   AuditData,
   Ga4Stream,
+  GtmHealth,
   UrlIndexStatus,
   VitalDiagnostic,
   WebVital,
@@ -23,6 +24,7 @@ import type {
   AuditDto,
   AuditVitalDto,
   CwvDiagnosticDto,
+  GtmDto,
   IssueDto,
   OverviewDto,
 } from "./dto";
@@ -214,6 +216,26 @@ const GA4_STREAM_STATUS: Record<string, Ga4Stream["status"]> = {
   bad: "down",
 };
 
+function mapGtm(dto: GtmDto | null): GtmHealth | null {
+  if (!dto) return null;
+  return {
+    containers: dto.containers,
+    snippetForm: dto.snippet_form,
+    snippetInHead: dto.snippet_in_head,
+    dataLayerName: dto.data_layer_name,
+    consentPlatform: dto.consent_platform,
+    serverSide: dto.server_side,
+    cspBlocksPreview: dto.csp_blocks_preview,
+    findings: dto.findings.map((f) => ({
+      code: f.code,
+      severity: f.severity,
+      title: f.title,
+      detail: f.detail,
+    })),
+    checked: dto.checked,
+  };
+}
+
 /** Backend `GET /websites/{id}/audit` payload -> the shape `/audit` renders. */
 export function mapAudit(dto: AuditDto): AuditData {
   return {
@@ -246,6 +268,7 @@ export function mapAudit(dto: AuditDto): AuditData {
       marketingAction: entry.marketing_action,
     })),
     vitals: dto.vitals.map(mapAuditVital),
+    gtm: mapGtm(dto.gtm),
   };
 }
 

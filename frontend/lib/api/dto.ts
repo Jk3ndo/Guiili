@@ -221,6 +221,25 @@ export interface AuditUrlDto {
   marketing_action: string;
 }
 
+export interface GtmFindingDto {
+  code: string;
+  severity: "low" | "medium" | "high";
+  title: string;
+  detail: string;
+}
+
+export interface GtmDto {
+  containers: string[];
+  snippet_form: string;
+  snippet_in_head: boolean | null;
+  data_layer_name: string;
+  consent_platform: string | null;
+  server_side: boolean;
+  csp_blocks_preview: boolean | null;
+  findings: GtmFindingDto[];
+  checked: boolean;
+}
+
 export interface AuditDto {
   site_name: string;
   domain: string;
@@ -229,4 +248,5 @@ export interface AuditDto {
   index: AuditIndexDto;
   urls: AuditUrlDto[];
   vitals: AuditVitalDto[];
+  gtm: GtmDto | null;
 }

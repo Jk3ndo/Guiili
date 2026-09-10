@@ -6,9 +6,10 @@ import pytest_asyncio
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_stack_detector, get_tls_checker
+from app.api.deps import get_gtm_checker, get_stack_detector, get_tls_checker
 from app.main import app
-from app.models.enums import StackKind
+from app.models.audit_snapshot import AuditSnapshot
+from app.models.enums import SnapshotSource, StackKind
 from app.models.user import User
 from app.models.website import Website
 from app.services.stack_detector import StackDetection
@@ -24,11 +25,17 @@ async def mock_detector():
     async def _fake_tls(domain: str) -> TlsStatus:
         return TlsStatus(host=domain, status="valid", checked_at=datetime.now(UTC))
 
+    async def _fake_gtm(domain: str) -> None:
+        _ = domain
+        return None
+
     app.dependency_overrides[get_stack_detector] = lambda: _fake
     app.dependency_overrides[get_tls_checker] = lambda: _fake_tls
+    app.dependency_overrides[get_gtm_checker] = lambda: _fake_gtm
     yield
     app.dependency_overrides.pop(get_stack_detector, None)
     app.dependency_overrides.pop(get_tls_checker, None)
+    app.dependency_overrides.pop(get_gtm_checker, None)
 
 
 async def _website(session: AsyncSession, *, user: User, domain: str) -> Website:
@@ -142,6 +149,67 @@ async def test_audit_endpoint_404_before_scan(
     site = await _website(db_session, user=user, domain="fresh-site.com")
     resp = await client.get(f"/api/v1/websites/{site.id}/audit")
     assert resp.status_code == 404
+
+
+async def _snapshot(db_session: AsyncSession, site: Website, metrics: dict) -> None:
+    db_session.add(
+        AuditSnapshot(
+            website_id=site.id,
+            captured_at=datetime.now(UTC),
+            source=SnapshotSource.COMPOSITE,
+            metrics=metrics,
+        )
+    )
+    await db_session.flush()
+
+
+async def test_audit_endpoint_exposes_gtm_block(
+    authed_client: tuple[AsyncClient, User],
+    db_session: AsyncSession,
+    mock_detector: None,
+) -> None:
+    client, user = authed_client
+    site = await _website(db_session, user=user, domain="gtm.test")
+    await _snapshot(
+        db_session,
+        site,
+        {
+            "ga4": {}, "gsc": {}, "cwv": {},
+            "gtm": {
+                "containers": ["GTM-AAA1111"], "ga4_tags": [], "snippet_form": "standard",
+                "snippet_in_head": True, "data_layer_name": "dataLayer",
+                "consent_platform": "onetrust", "gtm_consent_gated": True,
+                "csp_present": True, "csp_allows_gtm": False, "csp_blocks_preview": True,
+                "server_side": False, "query_stripped_on_redirect": False,
+                "findings": [
+                    {"code": "gtm_preview_csp_block", "severity": "high",
+                     "title": "CSP bloque la previsualisation", "detail": "..."},
+                ],
+                "checked_at": datetime.now(UTC).isoformat(), "error": None,
+            },
+        },
+    )
+
+    resp = await client.get(f"/api/v1/websites/{site.id}/audit")
+    assert resp.status_code == 200, resp.text
+    gtm = resp.json()["gtm"]
+    assert gtm["containers"] == ["GTM-AAA1111"]
+    assert gtm["consent_platform"] == "onetrust"
+    assert gtm["findings"][0]["code"] == "gtm_preview_csp_block"
+    assert gtm["checked"] is True
+
+
+async def test_audit_endpoint_gtm_null_when_absent(
+    authed_client: tuple[AsyncClient, User],
+    db_session: AsyncSession,
+    mock_detector: None,
+) -> None:
+    client, user = authed_client
+    site = await _website(db_session, user=user, domain="nogtm.test")
+    await _snapshot(db_session, site, {"ga4": {}, "gsc": {}, "cwv": {}})
+    resp = await client.get(f"/api/v1/websites/{site.id}/audit")
+    assert resp.status_code == 200
+    assert resp.json()["gtm"] is None
 
 
 async def test_issues_list_and_filters(
