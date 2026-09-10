@@ -47,7 +47,7 @@ Permettre à l'utilisateur, pour un site donné :
 | # | Branche | Contenu | Migration |
 |---|---|---|---|
 | 1 | `feat/gtm-check` | Analyse statique GTM → `metrics["gtm"]` + issues `TRACKING` + bloc `/audit`. Aucune IA. | aucune |
-| 2 | `feat/advisor-brief` | SDK Anthropic (ABC+Real+Mock), personas, context builder, le brief (Opus 5, streamé SSE), vue `/conseiller`, cap quotidien de briefs. Pas de chat ni d'outils. | `create_table` ×4 |
+| 2 | `feat/advisor-brief` | SDK Anthropic (ABC+Real+Mock), personas, context builder, le brief (Opus 5, **POST bloquant**), vue `/conseiller`, cap quotidien de briefs. Pas de chat ni d'outils. Streaming SSE repoussé à l'incr. 3. | `create_table` ×4 |
 | 3 | `feat/advisor-chat-tools` | Chat threadé (Sonnet 5, streamé), boucle d'outils lecture+action, vérification headless GTM (Playwright). Cap messages. | `advisor_threads.archived_at` |
 
 Chaque incrément est utile et testable seul. La décision d'ajouter Playwright
@@ -165,26 +165,32 @@ findings `high`/`medium` deviennent des anomalies `TRACKING`, les `low` non.
 
 ### 5.1 Abstraction LLM — `app/services/advisor/llm.py`
 
+> **Décision 2026-09-10 : le brief de l'incrément 2 est un POST bloquant** (le
+> bouton attend ~20-40 s puis affiche le markdown d'un coup). Claude streame en
+> interne (`client.messages.stream` → `get_final_message()`, pas de timeout HTTP)
+> mais l'endpoint renvoie le texte complet. Le vrai streaming SSE token-par-token
+> arrive à l'incrément 3 avec le chat. Ce qui suit est ajusté en conséquence.
+
 ```python
 @dataclass(frozen=True, slots=True)
-class BriefEvent:
-    kind: Literal["thinking", "token", "done", "error"]
-    text: str = ""
-    usage: dict | None = None      # {input, output, cache_read, cache_creation}
+class BriefResult:
+    text: str
+    usage: dict           # {input, output, cache_read, cache_creation}
 
 class AdvisorLLM(Protocol):
-    def stream_brief(self, *, system: list[dict], context: str,
-                     max_tokens: int = 8000) -> AsyncIterator[BriefEvent]: ...
-    # incr. 3 :
+    async def generate_brief(self, *, system: list[dict], context: str,
+                             max_tokens: int = 8000) -> BriefResult: ...
+    # incr. 3 (streaming) :
     def stream_reply(self, *, system: list[dict], messages: list[dict],
                      tools: list[dict], max_tokens: int = 4000
-                     ) -> AsyncIterator[ReplyEvent]: ...
+                     ) -> AsyncIterator["ReplyEvent"]: ...
 ```
 
 - `RealAdvisorLLM(api_key)` : wrappe `anthropic.AsyncAnthropic`. Brief =
-  `claude-opus-5`, `thinking={"type":"adaptive","display":"summarized"}`,
-  `output_config={"effort":"high"}`, streaming (`client.messages.stream`),
-  `max_tokens=8000`. Chat = `claude-sonnet-5`, `effort` `medium`.
+  `claude-opus-5`, `thinking={"type":"adaptive"}`,
+  `output_config={"effort":"high"}`, `async with client.messages.stream(...) as
+  s: msg = await s.get_final_message()`, `max_tokens=8000`. Chat (incr. 3) =
+  `claude-sonnet-5`, `effort` `medium`.
 - `MockAdvisorLLM` : événements déterministes scriptés, zéro réseau.
 - `app/api/deps.py::get_advisor_llm()` → Real/Mock selon `settings.advisor_mock`
   (défaut `True`, comme `audit_probe_mock`). `AdvisorLLMDep`.
@@ -323,12 +329,9 @@ briefs atteinte (5). Réessaie demain. »). Incrémenté après succès (dans le
 |---|---|---|
 | `GET` | `/advisor/settings` | persona courante de l'utilisateur |
 | `PUT` | `/advisor/settings` | `{persona_key, custom_prompt?}` — 422 si custom vide |
-| `POST` | `/websites/{id}/advisor/brief` | **SSE**. Ownership + cap. Crée thread + message `streaming`. Événements : `thinking`, `token`, `done` (`{thread_id, message_id, usage}`), `error`. Accumule et persiste dans un `finally` (survit à une déconnexion client). |
+| `POST` | `/websites/{id}/advisor/brief` | **POST bloquant** (~20-40 s). Ownership + cap. `generate_brief` → crée le thread + le message assistant `complete` → incrémente `advisor_usage` → commit. Renvoie `{thread_id, message_id, content, usage}`. Erreur LLM → rien de persisté, `502` + message clair. Cap atteint → `429`. |
 | `GET` | `/websites/{id}/advisor/threads` | liste `{id, title, created_at, message_count, archived_at}` |
 | `GET` | `/advisor/threads/{id}` | thread + messages (ownership via `website_id`) |
-
-SSE : `fastapi.responses.StreamingResponse`, `media_type="text/event-stream"`,
-`X-Accel-Buffering: no`. Format `data: {json}\n\n` par événement.
 
 ### 5.9 Config
 
@@ -348,12 +351,11 @@ advisor_tool_iteration_cap: int = 6      # utilisé en incr. 3
   6ᵉ entrée « Conseiller » dans `nav-main.tsx` (icône `Sparkles` interdite par
   la DA — utiliser `MessageSquareText` ou `Compass`).
 - **Nouvelle dép** : `react-markdown` + `remark-gfm` (aucun renderer markdown
-  aujourd'hui). Rendu du brief streamé.
+  aujourd'hui). Rendu du brief.
 - Sélecteur de persona : `<select>` presets + option « Personnalisé » →
   `<textarea>` ; `PUT /advisor/settings` au blur. `lib/api/advisor.ts`.
-- Bouton « Générer le plan d'action » → `fetch` + lecture de `response.body`
-  (`ReadableStream`, parse SSE), accumulation, rendu live. Zone « réflexion »
-  repliée pendant les événements `thinking`.
+- Bouton « Générer le plan d'action » → `apiPost` (attend ~20-40 s), spinner +
+  « Analyse en cours… », puis rendu markdown. Timeout client généreux (90 s).
 - Liste des briefs passés (`GET /threads`) ; clic → brief stocké.
 - `PriorityRecommendation` (`/overview`) : lien « Voir le plan complet → » vers
   `/conseiller`. La reco codée en dur reste pour l'instant.
@@ -369,10 +371,9 @@ advisor_tool_iteration_cap: int = 6      # utilisé en incr. 3
   (longueur, vide+custom → 422).
 - `test_personas.py` — `build_system` : le custom s'ajoute après la base ;
   `SYSTEM_BASE` toujours présent ; `cache_control` sur les 2 blocs.
-- `test_advisor_brief.py` — SSE consommé → thread + message `complete`
-  persistés, `usage` écrit, `advisor_usage.brief_count` incrémenté ; cap
-  atteint → 429 ; auth/ownership ; déconnexion mid-stream → message persiste
-  en `complete` ou `error` (jamais `streaming` orphelin).
+- `test_advisor_brief.py` — POST → thread + message `complete` persistés,
+  `usage` écrit, `advisor_usage.brief_count` incrémenté ; cap atteint → 429 ;
+  erreur `MockAdvisorLLM` → 502 et rien de persisté ; auth/ownership.
 
 ---
 
