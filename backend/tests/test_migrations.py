@@ -20,6 +20,10 @@ EXPECTED_TABLES = {
     "issue_items",
     "audit_log",
     "oauth_states",
+    "advisor_threads",
+    "advisor_messages",
+    "advisor_usage",
+    "user_advisor_settings",
 }
 
 
