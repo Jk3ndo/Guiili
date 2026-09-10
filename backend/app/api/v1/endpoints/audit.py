@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import (
     AuditProbeDep,
     CurrentUserDep,
+    GtmCheckerDep,
     SessionDep,
     StackDetectorDep,
     TlsCheckerDep,
@@ -80,6 +81,7 @@ async def scan_website(
     probe: AuditProbeDep,
     detector: StackDetectorDep,
     tls_checker: TlsCheckerDep,
+    gtm_checker: GtmCheckerDep,
 ) -> ScanResponse:
     site = await _owned_website(session, website_id, user)
     result = await run_audit(
@@ -90,6 +92,7 @@ async def scan_website(
         ip_address=request.client.host if request.client else None,
         detector=detector,
         tls_checker=tls_checker,
+        gtm_checker=gtm_checker,
     )
     await session.commit()
     return ScanResponse(

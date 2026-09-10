@@ -6,7 +6,7 @@ import pytest_asyncio
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_stack_detector, get_tls_checker
+from app.api.deps import get_gtm_checker, get_stack_detector, get_tls_checker
 from app.main import app
 from app.models.enums import StackKind
 from app.models.user import User
@@ -24,11 +24,17 @@ async def mock_detector():
     async def _fake_tls(domain: str) -> TlsStatus:
         return TlsStatus(host=domain, status="valid", checked_at=datetime.now(UTC))
 
+    async def _fake_gtm(domain: str) -> None:
+        _ = domain
+        return None
+
     app.dependency_overrides[get_stack_detector] = lambda: _fake
     app.dependency_overrides[get_tls_checker] = lambda: _fake_tls
+    app.dependency_overrides[get_gtm_checker] = lambda: _fake_gtm
     yield
     app.dependency_overrides.pop(get_stack_detector, None)
     app.dependency_overrides.pop(get_tls_checker, None)
+    app.dependency_overrides.pop(get_gtm_checker, None)
 
 
 async def _website(session: AsyncSession, *, user: User, domain: str) -> Website:
