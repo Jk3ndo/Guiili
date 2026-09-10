@@ -11,9 +11,10 @@ from app.db.session import get_session
 from app.models.user import User
 from app.security.session import read_session
 from app.security.token_crypto import TokenCipher, load_token_cipher
-from app.services.audit_engine import Detector, TlsChecker
+from app.services.audit_engine import Detector, GtmChecker, TlsChecker
 from app.services.audit_probe import AuditProbe, MockAuditProbe, RealAuditProbe
 from app.services.google_oauth import GoogleOAuthClient, get_google_oauth_client
+from app.services.gtm_check import check_gtm
 from app.services.stack_detector import StackDetection, demo_detector, detect_stack
 from app.services.tls_check import check_certificate
 
@@ -57,12 +58,23 @@ def get_tls_checker() -> TlsChecker:
     return check_certificate
 
 
+async def _skip_gtm(domain: str) -> None:
+    # Mode mock : les domaines de démo n'ont pas de vrai site à sonder.
+    _ = domain
+    return None
+
+
+def get_gtm_checker(settings: SettingsDep) -> GtmChecker:
+    return _skip_gtm if settings.google_oauth_mock else check_gtm
+
+
 TokenCipherDep = Annotated[TokenCipher, Depends(get_token_cipher)]
 GoogleClientDep = Annotated[GoogleOAuthClient, Depends(get_google_client)]
 AuditProbeDep = Annotated[AuditProbe, Depends(get_audit_probe)]
 StackDetectorDep = Annotated[Detector, Depends(get_stack_detector)]
 LiveStackDetectorDep = Annotated[LiveDetector, Depends(get_live_stack_detector)]
 TlsCheckerDep = Annotated[TlsChecker, Depends(get_tls_checker)]
+GtmCheckerDep = Annotated[GtmChecker, Depends(get_gtm_checker)]
 
 
 def _session_user_id(request: Request, settings: Settings):

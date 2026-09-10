@@ -31,11 +31,13 @@ from app.models.enums import (
 from app.models.issue_item import IssueItem
 from app.models.website import Website
 from app.services.audit_probe import AuditProbe, ProbeData
+from app.services.gtm_check import GtmCheck
 from app.services.stack_detector import StackDetection, detect_stack
 from app.services.tls_check import TlsStatus
 
 Detector = Callable[[str], Awaitable[StackDetection]]
 TlsChecker = Callable[[str], Awaitable[TlsStatus]]
+GtmChecker = Callable[[str], Awaitable[GtmCheck | None]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +87,34 @@ def _cwv_anomaly(
 _TLS_CRITICAL_DAYS = 7
 _TLS_HIGH_DAYS = 14
 
+_GTM_ISSUE_SEVERITIES: dict[str, IssueSeverity] = {
+    "high": IssueSeverity.HIGH,
+    "medium": IssueSeverity.MEDIUM,
+}
+
+
+def _gtm_anomalies(gtm: GtmCheck) -> list[DetectedAnomaly]:
+    """Les findings GTM `high`/`medium` deviennent des issues `TRACKING` (1 par code).
+
+    Les findings `low` restent visibles seulement dans le bloc `/audit`.
+    """
+    out: list[DetectedAnomaly] = []
+    for finding in gtm.findings:
+        severity = _GTM_ISSUE_SEVERITIES.get(finding.severity)
+        if severity is None:
+            continue
+        out.append(
+            DetectedAnomaly(
+                finding.code,
+                "gtm",
+                IssueCategory.TRACKING,
+                severity,
+                finding.title,
+                finding.detail,
+            )
+        )
+    return out
+
 
 def _tls_anomaly(tls: TlsStatus) -> DetectedAnomaly | None:
     if tls.status in ("valid", "unreachable"):
@@ -121,12 +151,17 @@ def _tls_anomaly(tls: TlsStatus) -> DetectedAnomaly | None:
     )
 
 
-def detect_anomalies(data: ProbeData, *, tls: TlsStatus | None = None) -> list[DetectedAnomaly]:
+def detect_anomalies(
+    data: ProbeData, *, tls: TlsStatus | None = None, gtm: GtmCheck | None = None
+) -> list[DetectedAnomaly]:
     out: list[DetectedAnomaly] = []
     ga4, gsc, cwv = data.ga4, data.gsc, data.cwv
 
     if tls is not None and (anomaly := _tls_anomaly(tls)) is not None:
         out.append(anomaly)
+
+    if gtm is not None:
+        out.extend(_gtm_anomalies(gtm))
 
     if ga4.purchase_missing_params:
         params = ", ".join(ga4.purchase_missing_params)
@@ -284,14 +319,43 @@ def _tls_block(tls: TlsStatus | None) -> dict | None:
     }
 
 
+def _gtm_block(gtm: GtmCheck | None) -> dict | None:
+    if gtm is None:
+        return None
+    return {
+        "containers": list(gtm.containers),
+        "ga4_tags": list(gtm.ga4_tags),
+        "snippet_in_head": gtm.snippet_in_head,
+        "snippet_form": gtm.snippet_form,
+        "data_layer_name": gtm.data_layer_name,
+        "consent_platform": gtm.consent_platform,
+        "gtm_consent_gated": gtm.gtm_consent_gated,
+        "csp_present": gtm.csp_present,
+        "csp_allows_gtm": gtm.csp_allows_gtm,
+        "csp_blocks_preview": gtm.csp_blocks_preview,
+        "server_side": gtm.server_side,
+        "query_stripped_on_redirect": gtm.query_stripped_on_redirect,
+        "findings": [
+            {"code": f.code, "severity": f.severity, "title": f.title, "detail": f.detail}
+            for f in gtm.findings
+        ],
+        "checked_at": gtm.checked_at.isoformat() if gtm.checked_at else None,
+        "error": gtm.error,
+    }
+
+
 def _build_metrics(
-    detection: StackDetection, data: ProbeData, tls: TlsStatus | None = None
+    detection: StackDetection,
+    data: ProbeData,
+    tls: TlsStatus | None = None,
+    gtm: GtmCheck | None = None,
 ) -> dict:
     ga4, gsc, cwv = data.ga4, data.gsc, data.cwv
     return {
         "stack": detection.stack.value,
         "stack_detection": _stack_block(detection),
         "ssl": _tls_block(tls),
+        "gtm": _gtm_block(gtm),
         "ga4": {
             "score": ga4.score,
             "status": _score_status(ga4.score),
@@ -344,6 +408,7 @@ async def run_audit(
     ip_address: str | None = None,
     detector: Detector | None = None,
     tls_checker: TlsChecker | None = None,
+    gtm_checker: GtmChecker | None = None,
 ) -> AuditRunResult:
     now = datetime.now(UTC)
     run_detector = detector or detect_stack
@@ -357,8 +422,13 @@ async def run_audit(
         tls = await tls_checker(website.domain)
         apply_tls_status(website, tls)
 
+    # gtm_checker=None (ou renvoyant None en mode mock) -> pas de check GTM.
+    gtm: GtmCheck | None = None
+    if gtm_checker is not None:
+        gtm = await gtm_checker(website.domain)
+
     data = await probe.collect(website=website, stack=detection.stack, session=session)
-    metrics = _build_metrics(detection, data, tls)
+    metrics = _build_metrics(detection, data, tls, gtm)
 
     snapshot = AuditSnapshot(
         website_id=website.id,
@@ -369,7 +439,7 @@ async def run_audit(
     session.add(snapshot)
     await session.flush()
 
-    anomalies = detect_anomalies(data, tls=tls)
+    anomalies = detect_anomalies(data, tls=tls, gtm=gtm)
     result = AuditRunResult(snapshot=snapshot, detected_stack=detection.stack, metrics=metrics)
 
     seen: set[str] = set()
