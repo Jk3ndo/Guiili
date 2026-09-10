@@ -27,6 +27,16 @@ class Settings(BaseSettings):
     # public limité ; sur échec -> mode dégradé (scores CWV à 0).
     pagespeed_api_key: SecretStr = SecretStr("")
 
+    # --- Agent conseiller (advisor) ---
+    # Clé API Anthropic. Vide OU advisor_mock=true -> MockAdvisorLLM (zéro réseau).
+    anthropic_api_key: SecretStr = SecretStr("")
+    advisor_mock: bool = True
+    advisor_brief_model: str = "claude-opus-5"
+    advisor_chat_model: str = "claude-sonnet-5"
+    advisor_daily_brief_cap: int = 5
+    advisor_daily_message_cap: int = 40  # incr. 3
+    advisor_tool_iteration_cap: int = 6  # incr. 3
+
     # Où renvoyer le navigateur après le callback OAuth (défaut = dev front).
     frontend_base_url: str = "http://localhost:4000"
     session_cookie_name: str = "cc_session"
