@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Loader2, ShieldCheck } from "lucide-react";
 
+import { verifyGtmHeadless } from "@/lib/api/actions";
 import type { GtmHealth as Gtm, GtmSeverity } from "@/lib/mock/audit";
 import { cn } from "@/lib/utils";
 
@@ -19,8 +20,18 @@ const SNIPPET_LABEL: Record<string, string> = {
   absent: "Aucun conteneur détecté",
 };
 
-export function GtmHealth({ gtm }: { gtm: Gtm | null }) {
+export function GtmHealth({ gtm, domain }: { gtm: Gtm | null; domain: string }) {
   const [open, setOpen] = useState<string | null>(null);
+  const [verifying, setVerifying] = useState(false);
+
+  async function onVerify() {
+    setVerifying(true);
+    try {
+      await verifyGtmHeadless(domain);
+    } finally {
+      setVerifying(false);
+    }
+  }
 
   if (!gtm || !gtm.checked) {
     return (
@@ -36,8 +47,29 @@ export function GtmHealth({ gtm }: { gtm: Gtm | null }) {
 
   return (
     <section className="overflow-hidden rounded-xl border border-white/[0.08] bg-surface/60 backdrop-blur-sm">
-      <header className="border-b border-white/[0.05] px-5 py-3">
-        <h2 className="text-sm font-medium text-ink">Santé du tag manager</h2>
+      <header className="flex items-center justify-between gap-3 border-b border-white/[0.05] px-5 py-3">
+        <div>
+          <h2 className="text-sm font-medium text-ink">Santé du tag manager</h2>
+          {gtm.headlessCheckedAt ? (
+            <p className="mt-0.5 text-[11px] text-ink-faint">
+              Vérifié en conditions réelles le{" "}
+              {new Date(gtm.headlessCheckedAt).toLocaleString("fr-FR")}
+            </p>
+          ) : null}
+        </div>
+        <button
+          type="button"
+          onClick={() => void onVerify()}
+          disabled={verifying}
+          className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 text-xs font-medium text-ink-muted transition-colors hover:bg-white/[0.06] hover:text-ink disabled:opacity-60"
+        >
+          {verifying ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <ShieldCheck className="size-3.5" />
+          )}
+          {verifying ? "Vérification…" : "Vérifier en conditions réelles"}
+        </button>
       </header>
 
       <dl className="grid grid-cols-2 gap-x-6 gap-y-3 px-5 py-4 text-xs sm:grid-cols-4">

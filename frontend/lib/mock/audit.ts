@@ -237,6 +237,8 @@ export interface GtmHealth {
   findings: GtmFinding[];
   /** The site was actually probed (checked_at set, no fetch error). */
   checked: boolean;
+  /** ISO date of the last headless (real-browser) verification, if any. */
+  headlessCheckedAt: string | null;
 }
 
 export interface AuditData {
@@ -365,6 +367,7 @@ const FIXTURES: Record<string, AuditData> = {
         },
       ],
       checked: true,
+      headlessCheckedAt: null,
     },
   },
 
@@ -475,6 +478,7 @@ const FIXTURES: Record<string, AuditData> = {
         },
       ],
       checked: true,
+      headlessCheckedAt: null,
     },
   },
 
@@ -608,6 +612,7 @@ const FIXTURES: Record<string, AuditData> = {
         },
       ],
       checked: true,
+      headlessCheckedAt: null,
     },
   },
 
@@ -719,6 +724,7 @@ const FIXTURES: Record<string, AuditData> = {
         },
       ],
       checked: true,
+      headlessCheckedAt: null,
     },
   },
 };

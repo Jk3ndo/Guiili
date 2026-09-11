@@ -26,7 +26,7 @@ export function AuditView() {
     >
       <Ga4Observability stream={data.ga4} periodLabel={periodLabel(period)} />
       <IndexHealthBlock index={data.index} />
-      <GtmHealth gtm={data.gtm} />
+      <GtmHealth gtm={data.gtm} domain={workspace.domain} />
       <UrlExplorerTable urls={data.urls} />
       <WebVitals vitals={data.vitals} />
     </PageShell>

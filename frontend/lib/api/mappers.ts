@@ -233,6 +233,7 @@ function mapGtm(dto: GtmDto | null): GtmHealth | null {
       detail: f.detail,
     })),
     checked: dto.checked,
+    headlessCheckedAt: dto.headless_checked_at,
   };
 }
 
