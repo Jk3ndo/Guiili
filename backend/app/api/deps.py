@@ -11,6 +11,7 @@ from app.db.session import get_session
 from app.models.user import User
 from app.security.session import read_session
 from app.security.token_crypto import TokenCipher, load_token_cipher
+from app.services.advisor.llm import AdvisorLLM, MockAdvisorLLM, RealAdvisorLLM
 from app.services.audit_engine import Detector, GtmChecker, TlsChecker
 from app.services.audit_probe import AuditProbe, MockAuditProbe, RealAuditProbe
 from app.services.google_oauth import GoogleOAuthClient, get_google_oauth_client
@@ -58,14 +59,18 @@ def get_tls_checker() -> TlsChecker:
     return check_certificate
 
 
-async def _skip_gtm(domain: str) -> None:
-    # Mode mock : les domaines de démo n'ont pas de vrai site à sonder.
-    _ = domain
-    return None
+def get_gtm_checker() -> GtmChecker:
+    # Toujours le vrai check : il n'est cable que sur les vraies routes
+    # (create/scan d'un site reel) ; le seed de demo ne le passe jamais.
+    # `check_gtm` ne leve jamais et degrade proprement si le site est injoignable.
+    return check_gtm
 
 
-def get_gtm_checker(settings: SettingsDep) -> GtmChecker:
-    return _skip_gtm if settings.google_oauth_mock else check_gtm
+def get_advisor_llm(settings: SettingsDep) -> AdvisorLLM:
+    key = settings.anthropic_api_key.get_secret_value()
+    if settings.advisor_mock or not key:
+        return MockAdvisorLLM()
+    return RealAdvisorLLM(api_key=key, model=settings.advisor_brief_model)
 
 
 TokenCipherDep = Annotated[TokenCipher, Depends(get_token_cipher)]
@@ -75,6 +80,7 @@ StackDetectorDep = Annotated[Detector, Depends(get_stack_detector)]
 LiveStackDetectorDep = Annotated[LiveDetector, Depends(get_live_stack_detector)]
 TlsCheckerDep = Annotated[TlsChecker, Depends(get_tls_checker)]
 GtmCheckerDep = Annotated[GtmChecker, Depends(get_gtm_checker)]
+AdvisorLLMDep = Annotated[AdvisorLLM, Depends(get_advisor_llm)]
 
 
 def _session_user_id(request: Request, settings: Settings):

@@ -240,6 +240,54 @@ export interface GtmDto {
   checked: boolean;
 }
 
+export interface AdvisorUsageDto {
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_creation: number;
+}
+
+export interface AdvisorPresetDto {
+  key: string;
+  label: string;
+}
+
+export interface AdvisorSettingsDto {
+  persona_key: string;
+  custom_prompt: string | null;
+  presets: AdvisorPresetDto[];
+}
+
+export interface AdvisorBriefDto {
+  thread_id: string;
+  message_id: string;
+  content: string;
+  usage: AdvisorUsageDto;
+}
+
+export interface AdvisorThreadSummaryDto {
+  id: string;
+  title: string;
+  created_at: string;
+  message_count: number;
+}
+
+export interface AdvisorMessageDto {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  usage: AdvisorUsageDto | null;
+  created_at: string;
+}
+
+export interface AdvisorThreadDto {
+  id: string;
+  title: string;
+  persona_key: string;
+  created_at: string;
+  messages: AdvisorMessageDto[];
+}
+
 export interface AuditDto {
   site_name: string;
   domain: string;

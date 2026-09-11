@@ -62,6 +62,23 @@ export async function apiPatch<T>(path: string, body: unknown): Promise<T> {
   ).json() as Promise<T>;
 }
 
+export async function apiPut<T>(path: string, body: unknown): Promise<T> {
+  return (
+    await request(path, { method: "PUT", body: JSON.stringify(body) })
+  ).json() as Promise<T>;
+}
+
+/** POST avec un timeout client explicite (le brief conseiller peut durer ~40 s). */
+export async function apiPostSlow<T>(
+  path: string,
+  body: unknown,
+  timeoutMs = 90_000,
+): Promise<T> {
+  const init: RequestInit = { method: "POST", signal: AbortSignal.timeout(timeoutMs) };
+  if (body !== undefined) init.body = JSON.stringify(body);
+  return (await request(path, init)).json() as Promise<T>;
+}
+
 /** DELETE — le backend renvoie 204 sans corps. */
 export async function apiDelete(path: string): Promise<void> {
   await request(path, { method: "DELETE" });

@@ -6,12 +6,13 @@ import pytest_asyncio
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_gtm_checker, get_stack_detector, get_tls_checker
+from app.api.deps import get_audit_probe, get_gtm_checker, get_stack_detector, get_tls_checker
 from app.main import app
 from app.models.audit_snapshot import AuditSnapshot
 from app.models.enums import SnapshotSource, StackKind
 from app.models.user import User
 from app.models.website import Website
+from app.services.audit_probe import MockAuditProbe
 from app.services.stack_detector import StackDetection
 from app.services.tls_check import TlsStatus
 
@@ -32,10 +33,14 @@ async def mock_detector():
     app.dependency_overrides[get_stack_detector] = lambda: _fake
     app.dependency_overrides[get_tls_checker] = lambda: _fake_tls
     app.dependency_overrides[get_gtm_checker] = lambda: _fake_gtm
+    # Independant de AUDIT_PROBE_MOCK dans .env : la suite reste deterministe
+    # meme quand le dev bascule son environnement local en mode reel.
+    app.dependency_overrides[get_audit_probe] = MockAuditProbe
     yield
     app.dependency_overrides.pop(get_stack_detector, None)
     app.dependency_overrides.pop(get_tls_checker, None)
     app.dependency_overrides.pop(get_gtm_checker, None)
+    app.dependency_overrides.pop(get_audit_probe, None)
 
 
 async def _website(session: AsyncSession, *, user: User, domain: str) -> Website:

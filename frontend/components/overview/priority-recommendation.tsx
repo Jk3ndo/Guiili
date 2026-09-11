@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { toast } from "sonner";
 
 import type { PriorityRecommendation as Reco } from "@/lib/mock/types";
@@ -51,6 +52,13 @@ export function PriorityRecommendation({ reco }: { reco: Reco }) {
       >
         {reco.cta.label}
       </button>
+
+      <Link
+        href="/conseiller"
+        className="mt-3 block text-xs text-ink-faint transition-colors hover:text-ink-muted"
+      >
+        Voir le plan d&apos;action complet →
+      </Link>
     </div>
   );
 }
