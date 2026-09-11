@@ -1,8 +1,8 @@
 import { toast } from "sonner";
 
-import { apiDownload, apiPost, saveBlob } from "./client";
+import { apiDownload, apiPost, apiPostSlow, saveBlob } from "./client";
 import { notifyDemoMode } from "./demo";
-import type { ScanDto } from "./dto";
+import type { GtmHeadlessDto, ScanDto } from "./dto";
 import { emitDiagnosticComplete } from "./events";
 import { resolveWebsiteId } from "./workspaces";
 
@@ -21,6 +21,33 @@ export async function runDiagnostic(domain: string): Promise<void> {
     toast("Diagnostic lancé (mode démo)", {
       description: `Analyse de ${domain} en file d'attente.`,
     });
+  }
+}
+
+/** Verifie la configuration GTM dans un vrai navigateur (Chromium headless).
+ *  Peut prendre jusqu'à ~20 s (navigation + networkidle) ; timeout client 30 s. */
+export async function verifyGtmHeadless(domain: string): Promise<boolean> {
+  try {
+    const websiteId = await resolveWebsiteId(domain);
+    const result = await apiPostSlow<GtmHeadlessDto>(
+      `/websites/${websiteId}/gtm/headless`,
+      undefined,
+      30_000,
+    );
+    if (result.error) {
+      toast.error("Vérification impossible", { description: result.error });
+      return false;
+    }
+    toast.success("Vérification headless terminée", {
+      description: result.gtm_js_loaded
+        ? "GTM se charge bien dans un vrai navigateur."
+        : "GTM ne s'est pas chargé — voir les nouveaux résultats.",
+    });
+    emitDiagnosticComplete();
+    return true;
+  } catch {
+    notifyDemoMode();
+    return false;
   }
 }
 

@@ -1,6 +1,7 @@
 from app.models.advisor import (
     AdvisorMessage,
     AdvisorThread,
+    AdvisorToolCall,
     AdvisorUsage,
     UserAdvisorSettings,
 )
@@ -16,6 +17,7 @@ from app.models.website_google_link import WebsiteGoogleLink
 __all__ = [
     "AdvisorMessage",
     "AdvisorThread",
+    "AdvisorToolCall",
     "AdvisorUsage",
     "AuditLog",
     "AuditSnapshot",

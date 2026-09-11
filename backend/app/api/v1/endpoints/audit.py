@@ -14,6 +14,7 @@ from app.api.deps import (
     AuditProbeDep,
     CurrentUserDep,
     GtmCheckerDep,
+    GtmHeadlessVerifierDep,
     SessionDep,
     StackDetectorDep,
     TlsCheckerDep,
@@ -30,6 +31,7 @@ from app.models.issue_item import IssueItem
 from app.models.user import User
 from app.models.website import Website
 from app.services.audit_engine import run_audit
+from app.services.gtm_headless import headless_result_to_dict
 
 router = APIRouter(tags=["audit"])
 
@@ -348,6 +350,7 @@ class AuditGtmOut(BaseModel):
     csp_blocks_preview: bool | None
     findings: list[AuditGtmFindingOut]
     checked: bool
+    headless_checked_at: datetime | None = None
 
 
 class AuditResponse(BaseModel):
@@ -602,6 +605,9 @@ def _build_urls(gsc: dict) -> list[AuditUrlOut]:
 def _build_gtm(gtm: dict | None) -> AuditGtmOut | None:
     if not gtm:
         return None
+    headless = gtm.get("headless") or {}
+    findings = [AuditGtmFindingOut(**finding) for finding in gtm.get("findings", [])]
+    findings += [AuditGtmFindingOut(**finding) for finding in headless.get("findings", [])]
     return AuditGtmOut(
         containers=list(gtm.get("containers", [])),
         snippet_form=str(gtm.get("snippet_form", "absent")),
@@ -610,8 +616,9 @@ def _build_gtm(gtm: dict | None) -> AuditGtmOut | None:
         consent_platform=gtm.get("consent_platform"),
         server_side=bool(gtm.get("server_side", False)),
         csp_blocks_preview=gtm.get("csp_blocks_preview"),
-        findings=[AuditGtmFindingOut(**finding) for finding in gtm.get("findings", [])],
+        findings=findings,
         checked=bool(gtm.get("checked_at")) and not gtm.get("error"),
+        headless_checked_at=headless.get("checked_at"),
     )
 
 
@@ -663,6 +670,72 @@ async def website_audit(
         urls=_build_urls(metrics.get("gsc", {})),
         vitals=_build_vitals(metrics.get("cwv", {})),
         gtm=_build_gtm(metrics.get("gtm")),
+    )
+
+
+# --------------------------------------------------------------------------- #
+#  POST /websites/{id}/gtm/headless — verification GTM en conditions reelles   #
+# --------------------------------------------------------------------------- #
+
+
+class GtmHeadlessOut(BaseModel):
+    gtm_js_loaded: bool
+    containers_initialised: list[str]
+    datalayer_present: bool
+    gtm_events: list[str]
+    requests_before_consent: bool
+    csp_console_errors: list[str]
+    findings: list[AuditGtmFindingOut]
+    checked_at: datetime
+    error: str | None
+
+
+@router.post("/websites/{website_id}/gtm/headless", response_model=GtmHeadlessOut)
+async def verify_gtm_headless_endpoint(
+    website_id: UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+    verifier: GtmHeadlessVerifierDep,
+) -> GtmHeadlessOut:
+    site = await _owned_website(session, website_id, user)
+
+    snapshot = (
+        await session.execute(
+            select(AuditSnapshot)
+            .where(AuditSnapshot.website_id == website_id)
+            .order_by(AuditSnapshot.captured_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if snapshot is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="aucun audit disponible")
+    if not snapshot.metrics.get("gtm"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="lance d'abord un diagnostic complet (check GTM statique requis)",
+        )
+
+    result = await verifier(f"https://{site.domain}")
+    headless_block = headless_result_to_dict(result)
+    # Reassignation complete (pas de mutation en place) : `metrics` est un
+    # `Mapped[dict]` JSONB simple, sans `MutableDict` — seule la reassignation
+    # de l'attribut marque la ligne comme modifiee pour SQLAlchemy.
+    snapshot.metrics = {
+        **snapshot.metrics,
+        "gtm": {**snapshot.metrics["gtm"], "headless": headless_block},
+    }
+    await session.commit()
+
+    return GtmHeadlessOut(
+        gtm_js_loaded=result.gtm_js_loaded,
+        containers_initialised=list(result.containers_initialised),
+        datalayer_present=result.datalayer_present,
+        gtm_events=list(result.gtm_events),
+        requests_before_consent=result.requests_before_consent,
+        csp_console_errors=list(result.csp_console_errors),
+        findings=[AuditGtmFindingOut(**finding) for finding in headless_block["findings"]],
+        checked_at=result.checked_at,
+        error=result.error,
     )
 
 

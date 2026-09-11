@@ -1,4 +1,4 @@
-import { ApiError, API_BASE, apiGet, apiPostSlow, apiPut } from "./client";
+import { ApiError, API_BASE, apiDelete, apiGet, apiPostSlow, apiPut } from "./client";
 import type {
   AdvisorBriefDto,
   AdvisorSettingsDto,
@@ -35,6 +35,10 @@ export async function fetchThreads(
 
 export async function fetchThread(threadId: string): Promise<AdvisorThreadDto> {
   return apiGet<AdvisorThreadDto>(`/advisor/threads/${threadId}`);
+}
+
+export async function archiveThread(threadId: string): Promise<void> {
+  return apiDelete(`/advisor/threads/${threadId}`);
 }
 
 /** Consomme le flux SSE d'un tour de tchat, un evenement a la fois. */

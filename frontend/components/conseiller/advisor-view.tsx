@@ -1,11 +1,12 @@
 "use client";
 
-import { Loader2, Sparkle } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Archive, Loader2, Sparkle } from "lucide-react";
+import { useEffect, useState, type MouseEvent } from "react";
 import { toast } from "sonner";
 
 import { PageShell } from "@/components/shell/page-shell";
 import {
+  archiveThread,
   fetchAdvisorSettings,
   fetchThread,
   fetchThreads,
@@ -116,6 +117,21 @@ function AdvisorPanel({ websiteId }: { websiteId: string }) {
       setMessages(deriveChatMessages(thread.messages));
     } catch {
       toast.error("Impossible d'ouvrir ce plan");
+    }
+  }
+
+  async function onArchive(id: string, event: MouseEvent) {
+    event.stopPropagation();
+    try {
+      await archiveThread(id);
+      setThreads((current) => current.filter((t) => t.id !== id));
+      if (activeThreadId === id) {
+        setActiveThreadId(null);
+        setMessages([]);
+      }
+      toast.success("Plan archivé");
+    } catch {
+      toast.error("Impossible d'archiver ce plan");
     }
   }
 
@@ -251,14 +267,23 @@ function AdvisorPanel({ websiteId }: { websiteId: string }) {
             {threads.map((thread) => (
               <li
                 key={thread.id}
-                className="border-b border-white/[0.05] last:border-0"
+                className="group flex items-center border-b border-white/[0.05] last:border-0"
               >
                 <button
                   type="button"
                   onClick={() => void openThread(thread.id)}
-                  className="w-full px-5 py-3 text-left text-sm text-ink-muted transition-colors hover:bg-white/[0.02] hover:text-ink"
+                  className="flex-1 px-5 py-3 text-left text-sm text-ink-muted transition-colors hover:bg-white/[0.02] hover:text-ink"
                 >
                   {thread.title}
+                </button>
+                <button
+                  type="button"
+                  onClick={(event) => void onArchive(thread.id, event)}
+                  title="Archiver ce plan"
+                  aria-label="Archiver ce plan"
+                  className="mr-3 rounded-md p-1.5 text-ink-faint opacity-0 transition-opacity hover:text-ink group-hover:opacity-100"
+                >
+                  <Archive className="size-3.5" />
                 </button>
               </li>
             ))}

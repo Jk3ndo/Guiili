@@ -17,7 +17,17 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import AdvisorLLMDep, CurrentUserDep, SessionDep, SettingsDep
+from app.api.deps import (
+    AdvisorLLMDep,
+    AuditProbeDep,
+    CurrentUserDep,
+    GtmCheckerDep,
+    GtmHeadlessVerifierDep,
+    SessionDep,
+    SettingsDep,
+    StackDetectorDep,
+    TlsCheckerDep,
+)
 from app.models.advisor import AdvisorMessage, AdvisorThread, AdvisorUsage, UserAdvisorSettings
 from app.models.user import User
 from app.models.website import Website
@@ -198,19 +208,14 @@ async def create_brief_endpoint(
 
 @router.get("/websites/{website_id}/advisor/threads", response_model=list[ThreadSummaryOut])
 async def list_threads_endpoint(
-    website_id: UUID, user: CurrentUserDep, session: SessionDep
+    website_id: UUID, user: CurrentUserDep, session: SessionDep, include_archived: bool = False
 ) -> list[ThreadSummaryOut]:
     await _owned_website(session, website_id, user)
+    stmt = select(AdvisorThread).where(AdvisorThread.website_id == website_id)
+    if not include_archived:
+        stmt = stmt.where(AdvisorThread.archived_at.is_(None))
     threads = list(
-        (
-            await session.execute(
-                select(AdvisorThread)
-                .where(AdvisorThread.website_id == website_id)
-                .order_by(AdvisorThread.created_at.desc())
-            )
-        )
-        .scalars()
-        .all()
+        (await session.execute(stmt.order_by(AdvisorThread.created_at.desc()))).scalars().all()
     )
     out: list[ThreadSummaryOut] = []
     for thread in threads:
@@ -273,6 +278,18 @@ async def get_thread_endpoint(
     )
 
 
+@router.delete("/advisor/threads/{thread_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def archive_thread_endpoint(
+    thread_id: UUID, user: CurrentUserDep, session: SessionDep
+) -> None:
+    thread = await session.get(AdvisorThread, thread_id)
+    if thread is None:
+        raise HTTPException(status_code=404, detail="fil introuvable")
+    await _owned_website(session, thread.website_id, user)
+    thread.archived_at = datetime.now(UTC)
+    await session.commit()
+
+
 @router.post("/advisor/threads/{thread_id}/messages")
 async def post_message_endpoint(
     thread_id: UUID,
@@ -281,6 +298,11 @@ async def post_message_endpoint(
     session: SessionDep,
     llm: AdvisorLLMDep,
     settings: SettingsDep,
+    probe: AuditProbeDep,
+    detector: StackDetectorDep,
+    tls_checker: TlsCheckerDep,
+    gtm_checker: GtmCheckerDep,
+    gtm_headless_verifier: GtmHeadlessVerifierDep,
 ) -> StreamingResponse:
     thread = await session.get(AdvisorThread, thread_id)
     if thread is None:
@@ -310,6 +332,11 @@ async def post_message_endpoint(
                 llm=llm,
                 user_text=body.text,
                 iteration_cap=settings.advisor_tool_iteration_cap,
+                probe=probe,
+                detector=detector,
+                tls_checker=tls_checker,
+                gtm_checker=gtm_checker,
+                gtm_headless_verifier=gtm_headless_verifier,
             ):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             await session.commit()

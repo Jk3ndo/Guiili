@@ -33,6 +33,7 @@ class AdvisorThread(UUIDPrimaryKeyMixin, Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AdvisorMessage(UUIDPrimaryKeyMixin, Base):
@@ -47,6 +48,20 @@ class AdvisorMessage(UUIDPrimaryKeyMixin, Base):
     usage: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False)  # complete | error
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class AdvisorToolCall(UUIDPrimaryKeyMixin, Base):
+    """Une ligne par appel d'outil d'action, pour le rate-limit par fil (fenetre glissante)."""
+
+    __tablename__ = "advisor_tool_calls"
+
+    thread_id: Mapped[UUID] = mapped_column(
+        ForeignKey("advisor_threads.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    tool: Mapped[str] = mapped_column(String(32), nullable=False)
+    called_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 

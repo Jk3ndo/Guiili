@@ -23,6 +23,7 @@ EXPECTED_TABLES = {
     "advisor_threads",
     "advisor_messages",
     "advisor_usage",
+    "advisor_tool_calls",
     "user_advisor_settings",
 }
 

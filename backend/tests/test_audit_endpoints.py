@@ -6,13 +6,20 @@ import pytest_asyncio
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_audit_probe, get_gtm_checker, get_stack_detector, get_tls_checker
+from app.api.deps import (
+    get_audit_probe,
+    get_gtm_checker,
+    get_gtm_headless_verifier,
+    get_stack_detector,
+    get_tls_checker,
+)
 from app.main import app
 from app.models.audit_snapshot import AuditSnapshot
 from app.models.enums import SnapshotSource, StackKind
 from app.models.user import User
 from app.models.website import Website
 from app.services.audit_probe import MockAuditProbe
+from app.services.gtm_headless import GtmHeadlessResult, _derive_findings
 from app.services.stack_detector import StackDetection
 from app.services.tls_check import TlsStatus
 
@@ -288,3 +295,140 @@ async def test_endpoints_require_auth(db_client: AsyncClient) -> None:
     assert (await db_client.get(f"/api/v1/websites/{fake_id}/overview")).status_code == 401
     assert (await db_client.get(f"/api/v1/websites/{fake_id}/issues")).status_code == 401
     assert (await db_client.get(f"/api/v1/websites/{fake_id}/audit")).status_code == 401
+    assert (
+        await db_client.post(f"/api/v1/websites/{fake_id}/gtm/headless")
+    ).status_code == 401
+
+
+def _fake_headless_ok():
+    async def _verify(url: str) -> GtmHeadlessResult:
+        _ = url
+        return GtmHeadlessResult(
+            gtm_js_loaded=True,
+            containers_initialised=("GTM-AAA1111",),
+            datalayer_present=True,
+            gtm_events=("gtm.js", "gtm.load"),
+            requests_before_consent=True,
+            csp_console_errors=(),
+            findings=(),
+            checked_at=datetime.now(UTC),
+        )
+
+    return _verify
+
+
+async def test_gtm_headless_updates_snapshot_and_returns_result(
+    authed_client: tuple[AsyncClient, User],
+    db_session: AsyncSession,
+    mock_detector: None,
+) -> None:
+    client, user = authed_client
+    site = await _website(db_session, user=user, domain="headless.test")
+    await _snapshot(
+        db_session,
+        site,
+        {
+            "ga4": {}, "gsc": {}, "cwv": {},
+            "gtm": {
+                "containers": ["GTM-AAA1111"], "ga4_tags": [], "snippet_form": "standard",
+                "snippet_in_head": True, "data_layer_name": "dataLayer",
+                "consent_platform": None, "gtm_consent_gated": False,
+                "csp_present": False, "csp_allows_gtm": None, "csp_blocks_preview": None,
+                "server_side": False, "query_stripped_on_redirect": False,
+                "findings": [], "checked_at": datetime.now(UTC).isoformat(), "error": None,
+            },
+        },
+    )
+    app.dependency_overrides[get_gtm_headless_verifier] = _fake_headless_ok
+    try:
+        resp = await client.post(f"/api/v1/websites/{site.id}/gtm/headless")
+    finally:
+        app.dependency_overrides.pop(get_gtm_headless_verifier, None)
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["gtm_js_loaded"] is True
+    assert body["containers_initialised"] == ["GTM-AAA1111"]
+
+    # persiste sur le snapshot : relu via /audit
+    audit = (await client.get(f"/api/v1/websites/{site.id}/audit")).json()
+    assert audit["gtm"]["headless_checked_at"] is not None
+
+
+async def test_gtm_headless_merges_findings_into_audit_gtm_block(
+    authed_client: tuple[AsyncClient, User],
+    db_session: AsyncSession,
+    mock_detector: None,
+) -> None:
+    client, user = authed_client
+    site = await _website(db_session, user=user, domain="headless2.test")
+    await _snapshot(
+        db_session,
+        site,
+        {
+            "ga4": {}, "gsc": {}, "cwv": {},
+            "gtm": {
+                "containers": [], "ga4_tags": [], "snippet_form": "standard",
+                "snippet_in_head": True, "data_layer_name": "dataLayer",
+                "consent_platform": None, "gtm_consent_gated": False,
+                "csp_present": False, "csp_allows_gtm": None, "csp_blocks_preview": None,
+                "server_side": False, "query_stripped_on_redirect": False,
+                "findings": [], "checked_at": datetime.now(UTC).isoformat(), "error": None,
+            },
+        },
+    )
+
+    async def _verify_not_loaded(url: str) -> GtmHeadlessResult:
+        _ = url
+        return GtmHeadlessResult(
+            gtm_js_loaded=False,
+            containers_initialised=(),
+            datalayer_present=False,
+            gtm_events=(),
+            requests_before_consent=False,
+            csp_console_errors=(),
+            findings=_derive_findings(
+                gtm_js_loaded=False,
+                containers_initialised=(),
+                datalayer_present=False,
+                csp_console_errors=(),
+            ),
+            checked_at=datetime.now(UTC),
+        )
+
+    app.dependency_overrides[get_gtm_headless_verifier] = lambda: _verify_not_loaded
+    try:
+        await client.post(f"/api/v1/websites/{site.id}/gtm/headless")
+    finally:
+        app.dependency_overrides.pop(get_gtm_headless_verifier, None)
+
+    audit = (await client.get(f"/api/v1/websites/{site.id}/audit")).json()
+    codes = [f["code"] for f in audit["gtm"]["findings"]]
+    assert "headless_gtm_not_loaded" in codes
+
+
+async def test_gtm_headless_409_without_static_check(
+    authed_client: tuple[AsyncClient, User],
+    db_session: AsyncSession,
+    mock_detector: None,
+) -> None:
+    client, user = authed_client
+    site = await _website(db_session, user=user, domain="headless3.test")
+    await _snapshot(db_session, site, {"ga4": {}, "gsc": {}, "cwv": {}})
+
+    app.dependency_overrides[get_gtm_headless_verifier] = _fake_headless_ok
+    try:
+        resp = await client.post(f"/api/v1/websites/{site.id}/gtm/headless")
+    finally:
+        app.dependency_overrides.pop(get_gtm_headless_verifier, None)
+    assert resp.status_code == 409
+
+
+async def test_gtm_headless_404_without_any_scan(
+    authed_client: tuple[AsyncClient, User],
+    db_session: AsyncSession,
+) -> None:
+    client, user = authed_client
+    site = await _website(db_session, user=user, domain="headless4.test")
+    resp = await client.post(f"/api/v1/websites/{site.id}/gtm/headless")
+    assert resp.status_code == 404

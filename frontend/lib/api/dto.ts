@@ -238,6 +238,19 @@ export interface GtmDto {
   csp_blocks_preview: boolean | null;
   findings: GtmFindingDto[];
   checked: boolean;
+  headless_checked_at: string | null;
+}
+
+export interface GtmHeadlessDto {
+  gtm_js_loaded: boolean;
+  containers_initialised: string[];
+  datalayer_present: boolean;
+  gtm_events: string[];
+  requests_before_consent: boolean;
+  csp_console_errors: string[];
+  findings: GtmFindingDto[];
+  checked_at: string;
+  error: string | null;
 }
 
 export interface AdvisorUsageDto {
