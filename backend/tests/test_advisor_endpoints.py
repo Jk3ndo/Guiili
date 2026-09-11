@@ -1,5 +1,6 @@
 """Endpoints du conseiller : reglages persona, brief, fils de discussion."""
 
+import json
 import uuid
 from datetime import UTC, datetime
 
@@ -14,7 +15,19 @@ from app.models.audit_snapshot import AuditSnapshot
 from app.models.enums import SnapshotSource
 from app.models.user import User
 from app.models.website import Website
-from app.services.advisor.llm import MockAdvisorLLM
+from app.services.advisor.llm import MockAdvisorLLM, TurnResult
+
+_ZERO = {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}
+
+
+async def _sse_events(client: AsyncClient, url: str, **kwargs) -> list[dict]:
+    events: list[dict] = []
+    async with client.stream("POST", url, **kwargs) as resp:
+        assert resp.status_code == 200, await resp.aread()
+        async for line in resp.aiter_lines():
+            if line.startswith("data: "):
+                events.append(json.loads(line[len("data: ") :]))
+    return events
 
 
 @pytest_asyncio.fixture
@@ -145,6 +158,113 @@ async def test_brief_404_on_foreign_site(
     ).status_code == 404
 
 
+async def test_chat_message_streams_and_persists(
+    authed_client: tuple[AsyncClient, User],
+    db_session: AsyncSession,
+    mock_advisor: None,
+) -> None:
+    client, user = authed_client
+    site = await _site(db_session, user=user)
+    brief = await client.post(f"/api/v1/websites/{site.id}/advisor/brief")
+    thread_id = brief.json()["thread_id"]
+
+    app.dependency_overrides[get_advisor_llm] = lambda: MockAdvisorLLM(
+        turns=[
+            TurnResult(
+                content=[{"type": "text", "text": "Reponse en direct."}],
+                stop_reason="end_turn",
+                usage=dict(_ZERO),
+            ),
+        ]
+    )
+    try:
+        events = await _sse_events(
+            client,
+            f"/api/v1/advisor/threads/{thread_id}/messages",
+            json={"text": "Une question ?"},
+        )
+    finally:
+        app.dependency_overrides[get_advisor_llm] = MockAdvisorLLM
+
+    assert events[-1]["kind"] == "done"
+    thread = (await client.get(f"/api/v1/advisor/threads/{thread_id}")).json()
+    assert thread["messages"][-1]["text"] == "Reponse en direct."
+
+
+async def test_chat_message_with_tool_use_exposes_blocks_on_reload(
+    authed_client: tuple[AsyncClient, User],
+    db_session: AsyncSession,
+    mock_advisor: None,
+) -> None:
+    client, user = authed_client
+    site = await _site(db_session, user=user)
+    brief = await client.post(f"/api/v1/websites/{site.id}/advisor/brief")
+    thread_id = brief.json()["thread_id"]
+
+    app.dependency_overrides[get_advisor_llm] = lambda: MockAdvisorLLM(
+        turns=[
+            TurnResult(
+                content=[
+                    {"type": "tool_use", "id": "t1", "name": "get_gtm_check", "input": {}}
+                ],
+                stop_reason="tool_use",
+                usage=dict(_ZERO),
+            ),
+            TurnResult(
+                content=[{"type": "text", "text": "Voila."}],
+                stop_reason="end_turn",
+                usage=dict(_ZERO),
+            ),
+        ]
+    )
+    try:
+        events = await _sse_events(
+            client,
+            f"/api/v1/advisor/threads/{thread_id}/messages",
+            json={"text": "Check GTM ?"},
+        )
+    finally:
+        app.dependency_overrides[get_advisor_llm] = MockAdvisorLLM
+
+    assert any(e["kind"] == "tool_call" for e in events)
+    thread = (await client.get(f"/api/v1/advisor/threads/{thread_id}")).json()
+    tool_msgs = [
+        m for m in thread["messages"] if any(b.get("type") == "tool_use" for b in m["blocks"])
+    ]
+    assert tool_msgs, "le tour tool_use doit rester visible via blocks au rechargement"
+
+
+async def test_chat_message_respects_daily_cap(
+    authed_client: tuple[AsyncClient, User],
+    db_session: AsyncSession,
+    mock_advisor: None,
+) -> None:
+    client, user = authed_client
+    site = await _site(db_session, user=user)
+    brief = await client.post(f"/api/v1/websites/{site.id}/advisor/brief")
+    thread_id = brief.json()["thread_id"]
+    cap = get_settings().advisor_daily_message_cap
+
+    for _ in range(cap):
+        await _sse_events(
+            client, f"/api/v1/advisor/threads/{thread_id}/messages", json={"text": "x"}
+        )
+    resp = await client.post(
+        f"/api/v1/advisor/threads/{thread_id}/messages", json={"text": "x"}
+    )
+    assert resp.status_code == 429
+
+
+async def test_chat_message_404_on_unknown_thread(
+    authed_client: tuple[AsyncClient, User],
+) -> None:
+    client, _ = authed_client
+    resp = await client.post(
+        f"/api/v1/advisor/threads/{uuid.uuid4()}/messages", json={"text": "x"}
+    )
+    assert resp.status_code == 404
+
+
 async def test_endpoints_require_auth(db_client: AsyncClient) -> None:
     wid = uuid.uuid4()
     assert (await db_client.get("/api/v1/advisor/settings")).status_code == 401
@@ -158,3 +278,6 @@ async def test_endpoints_require_auth(db_client: AsyncClient) -> None:
         await db_client.get(f"/api/v1/websites/{wid}/advisor/threads")
     ).status_code == 401
     assert (await db_client.get(f"/api/v1/advisor/threads/{wid}")).status_code == 401
+    assert (
+        await db_client.post(f"/api/v1/advisor/threads/{wid}/messages", json={"text": "x"})
+    ).status_code == 401
