@@ -379,6 +379,18 @@ advisor_tool_iteration_cap: int = 6      # utilisé en incr. 3
 
 ## 6. Incrément 3 — chat + outils + headless
 
+> **Décision 2026-09-11, après retours terrain incr. 1-2** : découpé en **3a**
+> (chat threadé + outils de **lecture seule**, sans nouvelle dépendance) puis
+> **3b** (outils d'action + vérification headless Playwright), au lieu d'un
+> bloc unique. Aucun des 2 sites réels testés (skyoptics, qaopscareer) n'a
+> déclenché le cas HIGH que le headless est censé vérifier (CSP bloquant
+> vraiment la preview) — 3b se décide avec plus de recul, pas embarqué à
+> l'aveugle avec 3a. Simplifications qui en découlent pour 3a : **zéro
+> migration** (pas de rate-limit sur des outils en lecture, pas de `tool_log`
+> — le tchat re-dérive l'activité outil depuis les `blocks` déjà stockés) ;
+> `strict: true` sur les schémas d'outils abandonné pour v1 (fiabilité vs.
+> complexité de modélisation nullable/required).
+
 ### 6.1 Chat threadé
 
 `POST /advisor/threads/{id}/messages` `{text}` → SSE, `claude-sonnet-5`.
