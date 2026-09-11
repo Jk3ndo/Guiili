@@ -7,7 +7,10 @@
 #   ./scripts/dev.sh          démarre tout
 #   ./scripts/dev.sh stop     arrête backend + frontend (laisse Docker)
 #
-# Prérequis : docker compose, backend/.venv (uv sync), frontend/node_modules.
+# Prérequis : docker compose, backend/.venv (uv sync), frontend/node_modules,
+# Chromium pour Playwright (backend/.venv : python -m playwright install
+# chromium) — requis par la vérification GTM headless (bouton "/audit" +
+# outil conseiller run_gtm_headless_probe), jamais lancé automatiquement.
 
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

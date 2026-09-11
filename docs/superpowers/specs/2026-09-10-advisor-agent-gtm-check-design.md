@@ -528,6 +528,19 @@ Migration : `advisor_threads.archived_at` + `create_table` `advisor_tool_calls`.
    théorique. **Décision : 3b livré sans le headless** ; `pyproject.toml`
    revert proprement, aucune trace de la dépendance. Le code de `verify_gtm`
    reste designé (ci-dessus) pour une reprise ultérieure hors de ce sandbox.
+   **2026-09-11 (suite), après changement de connexion réseau** : nouvel
+   essai `uv add "playwright>=1.47"` réussi (téléchargement du wheel 36 Mo
+   OK), puis `python -m playwright install chromium` OK, smoke test manuel
+   (`chromium.launch()` + navigation vers `example.com`) concluant. La
+   dépendance est ajoutée pour de bon (branche `feat/advisor-actions`) et
+   `verify_gtm` implémentée telle que designée ci-dessus, avec
+   `_derive_findings` extraite en fonction pure testée isolément. `verify_gtm`
+   elle-même n'est **jamais exercée dans `pytest`** (lance un vrai navigateur) :
+   seule sa logique de derivation de findings + sa sérialisation JSONB sont
+   testées ; le câblage endpoint/outil est testé via une fonction factice
+   injectée par dépendance — même politique que `RealAdvisorLLM`/
+   `RealGoogleOAuthClient` (item 5 ci-dessous). Validé en direct avec un vrai
+   Chromium sur qaopscareer.com (voir plan d'incrément et rapport de session).
 4. **Coût réel** — à surveiller via `usage` persisté ; ajuster les caps après
    quelques semaines d'usage. Prompt caching à vérifier
    (`cache_read_input_tokens` > 0 sur les tours de chat rapprochés).
