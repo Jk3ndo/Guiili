@@ -59,14 +59,11 @@ def get_tls_checker() -> TlsChecker:
     return check_certificate
 
 
-async def _skip_gtm(domain: str) -> None:
-    # Mode mock : les domaines de démo n'ont pas de vrai site à sonder.
-    _ = domain
-    return None
-
-
-def get_gtm_checker(settings: SettingsDep) -> GtmChecker:
-    return _skip_gtm if settings.google_oauth_mock else check_gtm
+def get_gtm_checker() -> GtmChecker:
+    # Toujours le vrai check : il n'est cable que sur les vraies routes
+    # (create/scan d'un site reel) ; le seed de demo ne le passe jamais.
+    # `check_gtm` ne leve jamais et degrade proprement si le site est injoignable.
+    return check_gtm
 
 
 def get_advisor_llm(settings: SettingsDep) -> AdvisorLLM:

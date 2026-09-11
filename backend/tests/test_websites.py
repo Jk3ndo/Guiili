@@ -8,7 +8,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_live_stack_detector, get_tls_checker
+from app.api.deps import get_gtm_checker, get_live_stack_detector, get_tls_checker
 from app.api.v1.endpoints.websites import normalize_domain
 from app.main import app
 from app.models.audit_snapshot import AuditSnapshot
@@ -40,11 +40,17 @@ def fake_detector():
             expires_at=datetime.now(UTC) + timedelta(days=80),
         )
 
+    async def _fake_gtm(domain: str) -> None:
+        _ = domain
+        return None
+
     app.dependency_overrides[get_live_stack_detector] = lambda: _fake
     app.dependency_overrides[get_tls_checker] = lambda: _fake_tls
+    app.dependency_overrides[get_gtm_checker] = lambda: _fake_gtm
     yield
     app.dependency_overrides.pop(get_live_stack_detector, None)
     app.dependency_overrides.pop(get_tls_checker, None)
+    app.dependency_overrides.pop(get_gtm_checker, None)
 
 
 @pytest.mark.parametrize(
