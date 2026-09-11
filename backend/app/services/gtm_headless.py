@@ -19,6 +19,7 @@ chargement initial de la page compte comme "avant interaction utilisateur".
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -30,6 +31,14 @@ from app.services.gtm_check import GtmFinding
 
 _GTM_HOST_HINT = "googletagmanager.com"
 _CSP_HINT = "content security policy"
+# Chrome imprime la ressource bloquee entre apostrophes en tete du message
+# ("Refused to load the script 'https://...'" / "Loading the script '...'
+# violates ..."). Le reste du message cite aussi la directive CSP complete,
+# qui peut *autoriser* googletagmanager.com sans que ce soit lui le bloque
+# (ex : un autre host tiers refuse alors que GTM est dans la liste
+# d'autorisation) — d'ou l'extraction de la ressource plutot qu'un simple
+# `in` sur le message entier.
+_BLOCKED_URL_RE = re.compile(r"'([^']*)'")
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +52,19 @@ class GtmHeadlessResult:
     findings: tuple[GtmFinding, ...]
     checked_at: datetime
     error: str | None = None
+
+
+def _is_gtm_csp_violation(message: str) -> bool:
+    """True si `message` (un log console d'erreur) est un blocage CSP dont
+    la ressource *refusee* est bien googletagmanager.com — pas seulement un
+    message qui mentionne ce host en passant (ex : dans la liste des sources
+    autorisees de la directive, imprimee par Chrome dans le meme message)."""
+    lower = message.lower()
+    if _CSP_HINT not in lower:
+        return False
+    match = _BLOCKED_URL_RE.search(message)
+    blocked_url = match.group(1) if match else message
+    return _GTM_HOST_HINT in blocked_url.lower()
 
 
 def _derive_findings(
@@ -183,9 +205,7 @@ async def verify_gtm(url: str, *, timeout: float = 20.0) -> GtmHeadlessResult:
             error=f"{type(exc).__name__}: {exc}",
         )
 
-    csp_blocked = tuple(
-        e for e in console_errors if _CSP_HINT in e.lower() and _GTM_HOST_HINT in e.lower()
-    )
+    csp_blocked = tuple(e for e in console_errors if _is_gtm_csp_violation(e))
     gtm_js_loaded = bool(requests_gtm)
     findings = _derive_findings(
         gtm_js_loaded=gtm_js_loaded,

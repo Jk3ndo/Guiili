@@ -7,7 +7,12 @@ findings depuis un resultat observe, et la serialisation vers un dict JSONB.
 
 from datetime import UTC, datetime
 
-from app.services.gtm_headless import GtmHeadlessResult, _derive_findings, headless_result_to_dict
+from app.services.gtm_headless import (
+    GtmHeadlessResult,
+    _derive_findings,
+    _is_gtm_csp_violation,
+    headless_result_to_dict,
+)
 
 
 def test_derive_findings_gtm_not_loaded() -> None:
@@ -55,6 +60,32 @@ def test_derive_findings_csp_blocks_gtm() -> None:
     codes = [f.code for f in findings]
     assert "headless_csp_blocks_gtm" in codes
     assert "headless_gtm_not_loaded" in codes  # les 2 co-existent
+
+
+def test_is_gtm_csp_violation_true_when_gtm_itself_blocked() -> None:
+    message = (
+        "Refused to load the script 'https://www.googletagmanager.com/gtm.js?id=GTM-X' "
+        'because it violates the following Content Security Policy directive: '
+        '"script-src \'self\'".'
+    )
+    assert _is_gtm_csp_violation(message) is True
+
+
+def test_is_gtm_csp_violation_false_when_other_resource_blocked_even_if_gtm_mentioned() -> None:
+    # Cas reel observe sur qaopscareer.com : le beacon Cloudflare est bloque,
+    # googletagmanager.com apparait seulement dans la liste des sources
+    # *autorisees* de la directive citee par Chrome — pas la ressource bloquee.
+    message = (
+        "Loading the script 'https://static.cloudflareinsights.com/beacon.min.js' "
+        "violates the following Content Security Policy directive: "
+        "\"script-src 'self' 'unsafe-inline' https://www.googletagmanager.com "
+        'https://www.google-analytics.com". The action has been blocked.'
+    )
+    assert _is_gtm_csp_violation(message) is False
+
+
+def test_is_gtm_csp_violation_false_without_csp_hint() -> None:
+    assert _is_gtm_csp_violation("Uncaught TypeError: x is not a function") is False
 
 
 def test_derive_findings_all_healthy_returns_empty() -> None:
