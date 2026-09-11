@@ -70,7 +70,11 @@ def get_advisor_llm(settings: SettingsDep) -> AdvisorLLM:
     key = settings.anthropic_api_key.get_secret_value()
     if settings.advisor_mock or not key:
         return MockAdvisorLLM()
-    return RealAdvisorLLM(api_key=key, model=settings.advisor_brief_model)
+    return RealAdvisorLLM(
+        api_key=key,
+        brief_model=settings.advisor_brief_model,
+        chat_model=settings.advisor_chat_model,
+    )
 
 
 TokenCipherDep = Annotated[TokenCipher, Depends(get_token_cipher)]
