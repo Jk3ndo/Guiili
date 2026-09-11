@@ -207,19 +207,14 @@ async def create_brief_endpoint(
 
 @router.get("/websites/{website_id}/advisor/threads", response_model=list[ThreadSummaryOut])
 async def list_threads_endpoint(
-    website_id: UUID, user: CurrentUserDep, session: SessionDep
+    website_id: UUID, user: CurrentUserDep, session: SessionDep, include_archived: bool = False
 ) -> list[ThreadSummaryOut]:
     await _owned_website(session, website_id, user)
+    stmt = select(AdvisorThread).where(AdvisorThread.website_id == website_id)
+    if not include_archived:
+        stmt = stmt.where(AdvisorThread.archived_at.is_(None))
     threads = list(
-        (
-            await session.execute(
-                select(AdvisorThread)
-                .where(AdvisorThread.website_id == website_id)
-                .order_by(AdvisorThread.created_at.desc())
-            )
-        )
-        .scalars()
-        .all()
+        (await session.execute(stmt.order_by(AdvisorThread.created_at.desc()))).scalars().all()
     )
     out: list[ThreadSummaryOut] = []
     for thread in threads:
@@ -280,6 +275,18 @@ async def get_thread_endpoint(
             for m in messages
         ],
     )
+
+
+@router.delete("/advisor/threads/{thread_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def archive_thread_endpoint(
+    thread_id: UUID, user: CurrentUserDep, session: SessionDep
+) -> None:
+    thread = await session.get(AdvisorThread, thread_id)
+    if thread is None:
+        raise HTTPException(status_code=404, detail="fil introuvable")
+    await _owned_website(session, thread.website_id, user)
+    thread.archived_at = datetime.now(UTC)
+    await session.commit()
 
 
 @router.post("/advisor/threads/{thread_id}/messages")

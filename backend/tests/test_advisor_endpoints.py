@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_advisor_llm
 from app.config import get_settings
 from app.main import app
+from app.models.advisor import AdvisorThread
 from app.models.audit_snapshot import AuditSnapshot
 from app.models.enums import SnapshotSource
 from app.models.user import User
@@ -265,6 +266,48 @@ async def test_chat_message_404_on_unknown_thread(
     assert resp.status_code == 404
 
 
+async def test_archive_thread_hides_it_from_list(
+    authed_client: tuple[AsyncClient, User],
+    db_session: AsyncSession,
+    mock_advisor: None,
+) -> None:
+    client, user = authed_client
+    site = await _site(db_session, user=user)
+    brief = await client.post(f"/api/v1/websites/{site.id}/advisor/brief")
+    thread_id = brief.json()["thread_id"]
+
+    resp = await client.delete(f"/api/v1/advisor/threads/{thread_id}")
+    assert resp.status_code == 204
+
+    threads = (await client.get(f"/api/v1/websites/{site.id}/advisor/threads")).json()
+    assert threads == []
+
+    with_archived = (
+        await client.get(f"/api/v1/websites/{site.id}/advisor/threads?include_archived=true")
+    ).json()
+    assert len(with_archived) == 1
+
+
+async def test_archive_thread_404_on_foreign_thread(
+    authed_client: tuple[AsyncClient, User],
+    db_session: AsyncSession,
+    mock_advisor: None,
+) -> None:
+    client, _ = authed_client
+    other = User(email="other2@x.com", google_sub="other-adv-2", display_name="Other2")
+    db_session.add(other)
+    await db_session.flush()
+    foreign_site = await _site(db_session, user=other, domain="foreign2.test")
+    foreign_thread = AdvisorThread(
+        website_id=foreign_site.id, persona_key="consultant", title="Fil etranger"
+    )
+    db_session.add(foreign_thread)
+    await db_session.flush()
+
+    resp = await client.delete(f"/api/v1/advisor/threads/{foreign_thread.id}")
+    assert resp.status_code == 404
+
+
 async def test_endpoints_require_auth(db_client: AsyncClient) -> None:
     wid = uuid.uuid4()
     assert (await db_client.get("/api/v1/advisor/settings")).status_code == 401
@@ -281,3 +324,4 @@ async def test_endpoints_require_auth(db_client: AsyncClient) -> None:
     assert (
         await db_client.post(f"/api/v1/advisor/threads/{wid}/messages", json={"text": "x"})
     ).status_code == 401
+    assert (await db_client.delete(f"/api/v1/advisor/threads/{wid}")).status_code == 401
