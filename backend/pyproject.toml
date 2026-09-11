@@ -12,6 +12,7 @@ dependencies = [
     "cryptography>=44.0",
     "httpx>=0.28",
     "anthropic>=0.40",
+    "playwright>=1.47",
 ]
 
 [dependency-groups]
