@@ -519,11 +519,15 @@ Migration : `advisor_threads.archived_at` + `create_table` `advisor_tool_calls`.
    statique suffit peut-être sur les cas réels). Si on garde : `playwright
    install --with-deps chromium` dans l'image, timeout strict, un seul
    contexte navigateur par appel.
-   **2026-09-11** : `uv add playwright` a d'abord échoué en environnement
-   sandbox (`operation timed out` sur le téléchargement du wheel 36 Mo depuis
-   `files.pythonhosted.org`) — confirme empiriquement que la dépendance a un
-   coût d'infra réel, pas juste théorique. Après changement de connexion,
-   retenté ; téléchargement lent mais sans erreur (voir incr. 3b pour l'issue).
+   **2026-09-11** : `uv add playwright` a échoué deux fois de suite en
+   environnement sandbox, avec deux causes différentes — 1ʳᵉ tentative :
+   `operation timed out` sur le téléchargement du wheel (36 Mo) depuis
+   `files.pythonhosted.org` ; 2ᵉ tentative (après changement de connexion) :
+   `dns error — No such host is known`. Confirme empiriquement que la
+   dépendance a un coût d'infra réel dans cet environnement, pas seulement
+   théorique. **Décision : 3b livré sans le headless** ; `pyproject.toml`
+   revert proprement, aucune trace de la dépendance. Le code de `verify_gtm`
+   reste designé (ci-dessus) pour une reprise ultérieure hors de ce sandbox.
 4. **Coût réel** — à surveiller via `usage` persisté ; ajuster les caps après
    quelques semaines d'usage. Prompt caching à vérifier
    (`cache_read_input_tokens` > 0 sur les tours de chat rapprochés).
