@@ -16,6 +16,7 @@ from app.services.audit_engine import Detector, GtmChecker, TlsChecker
 from app.services.audit_probe import AuditProbe, MockAuditProbe, RealAuditProbe
 from app.services.google_oauth import GoogleOAuthClient, get_google_oauth_client
 from app.services.gtm_check import check_gtm
+from app.services.gtm_headless import GtmHeadlessVerifier, verify_gtm
 from app.services.stack_detector import StackDetection, demo_detector, detect_stack
 from app.services.tls_check import check_certificate
 
@@ -66,6 +67,13 @@ def get_gtm_checker() -> GtmChecker:
     return check_gtm
 
 
+def get_gtm_headless_verifier() -> GtmHeadlessVerifier:
+    # Jamais gate sur un flag mock : c'est une action explicite (bouton /
+    # outil agent), jamais declenchee automatiquement par un scan. Les tests
+    # overrident cette dependance pour ne jamais lancer de vrai navigateur.
+    return verify_gtm
+
+
 def get_advisor_llm(settings: SettingsDep) -> AdvisorLLM:
     key = settings.anthropic_api_key.get_secret_value()
     if settings.advisor_mock or not key:
@@ -84,6 +92,7 @@ StackDetectorDep = Annotated[Detector, Depends(get_stack_detector)]
 LiveStackDetectorDep = Annotated[LiveDetector, Depends(get_live_stack_detector)]
 TlsCheckerDep = Annotated[TlsChecker, Depends(get_tls_checker)]
 GtmCheckerDep = Annotated[GtmChecker, Depends(get_gtm_checker)]
+GtmHeadlessVerifierDep = Annotated[GtmHeadlessVerifier, Depends(get_gtm_headless_verifier)]
 AdvisorLLMDep = Annotated[AdvisorLLM, Depends(get_advisor_llm)]
 
 
