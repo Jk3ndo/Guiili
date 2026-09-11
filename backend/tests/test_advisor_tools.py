@@ -10,6 +10,7 @@ from app.models.enums import SnapshotSource, StackKind
 from app.models.website import Website
 from app.services.advisor.tools import ToolContext, _get_page_html, dispatch
 from app.services.audit_probe import MockAuditProbe
+from app.services.gtm_headless import GtmHeadlessResult
 from app.services.stack_detector import StackDetection
 from app.services.tls_check import TlsStatus
 from tests.conftest import UserFactory
@@ -45,6 +46,42 @@ async def _fake_tls(domain: str) -> TlsStatus:
 async def _fake_gtm(domain: str):
     _ = domain
     return None
+
+
+async def _fake_headless_ok(url: str) -> GtmHeadlessResult:
+    _ = url
+    return GtmHeadlessResult(
+        gtm_js_loaded=True,
+        containers_initialised=("GTM-AAA1111",),
+        datalayer_present=True,
+        gtm_events=("gtm.js", "gtm.load"),
+        requests_before_consent=True,
+        csp_console_errors=(),
+        findings=(),
+        checked_at=datetime.now(UTC),
+    )
+
+
+async def _snapshot_with_gtm(db_session, site: Website) -> None:
+    db_session.add(
+        AuditSnapshot(
+            website_id=site.id,
+            captured_at=datetime.now(UTC),
+            source=SnapshotSource.COMPOSITE,
+            metrics={
+                "ga4": {}, "gsc": {}, "cwv": {},
+                "gtm": {
+                    "containers": ["GTM-AAA1111"], "ga4_tags": [], "snippet_form": "standard",
+                    "snippet_in_head": True, "data_layer_name": "dataLayer",
+                    "consent_platform": None, "gtm_consent_gated": False,
+                    "csp_present": False, "csp_allows_gtm": None, "csp_blocks_preview": None,
+                    "server_side": False, "query_stripped_on_redirect": False,
+                    "findings": [], "checked_at": datetime.now(UTC).isoformat(), "error": None,
+                },
+            },
+        )
+    )
+    await db_session.flush()
 
 
 async def test_get_score_history_clamps_days(db_session, make_user: UserFactory) -> None:
@@ -292,4 +329,89 @@ async def test_draft_gtm_snippet_unknown_event_returns_error(
     site = await _site(db_session, user.id, domain="snip2.test")
     ctx = ToolContext(session=db_session, website=site)
     out = await dispatch("draft_gtm_snippet", {"event": "signup"}, ctx)
+    assert "error" in out
+
+
+async def test_run_gtm_headless_probe_updates_snapshot(
+    db_session, make_user: UserFactory
+) -> None:
+    user = await make_user(sub="headless-1")
+    site = await _site(db_session, user.id, domain="headless.test")
+    await _snapshot_with_gtm(db_session, site)
+    thread = await _thread(db_session, site)
+    ctx = ToolContext(
+        session=db_session,
+        website=site,
+        user_id=user.id,
+        thread_id=thread.id,
+        gtm_headless_verifier=_fake_headless_ok,
+    )
+    out = await dispatch("run_gtm_headless_probe", {}, ctx)
+    assert out["gtm_js_loaded"] is True
+    assert out["containers_initialised"] == ["GTM-AAA1111"]
+
+    row = (
+        await db_session.execute(
+            select(AuditSnapshot).where(AuditSnapshot.website_id == site.id)
+        )
+    ).scalars().first()
+    assert row.metrics["gtm"]["headless"]["gtm_js_loaded"] is True
+
+
+async def test_run_gtm_headless_probe_is_rate_limited(
+    db_session, make_user: UserFactory
+) -> None:
+    user = await make_user(sub="headless-2")
+    site = await _site(db_session, user.id, domain="headless2.test")
+    await _snapshot_with_gtm(db_session, site)
+    thread = await _thread(db_session, site)
+    ctx = ToolContext(
+        session=db_session,
+        website=site,
+        user_id=user.id,
+        thread_id=thread.id,
+        gtm_headless_verifier=_fake_headless_ok,
+    )
+    first = await dispatch("run_gtm_headless_probe", {}, ctx)
+    assert first.get("error") is None
+    second = await dispatch("run_gtm_headless_probe", {}, ctx)
+    assert "error" in second
+
+    calls = (
+        await db_session.execute(
+            select(AdvisorToolCall).where(
+                AdvisorToolCall.thread_id == thread.id,
+                AdvisorToolCall.tool == "run_gtm_headless_probe",
+            )
+        )
+    ).scalars().all()
+    assert len(calls) == 1
+
+
+async def test_run_gtm_headless_probe_missing_deps_returns_error(
+    db_session, make_user: UserFactory
+) -> None:
+    user = await make_user(sub="headless-3")
+    site = await _site(db_session, user.id, domain="headless3.test")
+    await _snapshot_with_gtm(db_session, site)
+    thread = await _thread(db_session, site)
+    ctx = ToolContext(session=db_session, website=site, user_id=user.id, thread_id=thread.id)
+    out = await dispatch("run_gtm_headless_probe", {}, ctx)
+    assert "error" in out
+
+
+async def test_run_gtm_headless_probe_no_static_check_returns_error(
+    db_session, make_user: UserFactory
+) -> None:
+    user = await make_user(sub="headless-4")
+    site = await _site(db_session, user.id, domain="headless4.test")
+    thread = await _thread(db_session, site)
+    ctx = ToolContext(
+        session=db_session,
+        website=site,
+        user_id=user.id,
+        thread_id=thread.id,
+        gtm_headless_verifier=_fake_headless_ok,
+    )
+    out = await dispatch("run_gtm_headless_probe", {}, ctx)
     assert "error" in out

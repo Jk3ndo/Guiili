@@ -21,6 +21,7 @@ from app.services.advisor.personas import PERSONA_DEFAULT, build_system
 from app.services.advisor.tools import TOOL_DEFS, ToolContext, dispatch
 from app.services.audit_engine import Detector, GtmChecker, TlsChecker
 from app.services.audit_probe import AuditProbe
+from app.services.gtm_headless import GtmHeadlessVerifier
 
 
 class AdvisorMessageCapReached(Exception):
@@ -72,6 +73,7 @@ async def run_chat_turn(
     detector: Detector | None = None,
     tls_checker: TlsChecker | None = None,
     gtm_checker: GtmChecker | None = None,
+    gtm_headless_verifier: GtmHeadlessVerifier | None = None,
 ) -> AsyncIterator[dict]:
     settings_row = await session.get(UserAdvisorSettings, user_id)
     persona_key = settings_row.persona_key if settings_row else PERSONA_DEFAULT
@@ -105,6 +107,7 @@ async def run_chat_turn(
         detector=detector,
         tls_checker=tls_checker,
         gtm_checker=gtm_checker,
+        gtm_headless_verifier=gtm_headless_verifier,
     )
 
     for _ in range(iteration_cap):

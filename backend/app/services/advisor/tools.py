@@ -21,6 +21,7 @@ from app.models.audit_snapshot import AuditSnapshot
 from app.models.website import Website
 from app.services.audit_engine import Detector, GtmChecker, TlsChecker, run_audit
 from app.services.audit_probe import AuditProbe
+from app.services.gtm_headless import GtmHeadlessVerifier, headless_result_to_dict
 from app.services.snippet_library import SnippetEvent, get_snippets
 
 _MAX_DAYS = 90
@@ -31,7 +32,10 @@ _PRIVATE_HOST_RE = re.compile(
     r"^(127\.|10\.|192\.168\.|169\.254\.|0\.0\.0\.0$|localhost$|\[?::1\]?$)", re.IGNORECASE
 )
 
-_RATE_LIMITS: dict[str, timedelta] = {"trigger_rescan": timedelta(minutes=10)}
+_RATE_LIMITS: dict[str, timedelta] = {
+    "trigger_rescan": timedelta(minutes=10),
+    "run_gtm_headless_probe": timedelta(minutes=5),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +56,7 @@ class ToolContext:
     detector: Detector | None = None
     tls_checker: TlsChecker | None = None
     gtm_checker: GtmChecker | None = None
+    gtm_headless_verifier: GtmHeadlessVerifier | None = None
 
 TOOL_DEFS: list[dict[str, Any]] = [
     {
@@ -104,6 +109,17 @@ TOOL_DEFS: list[dict[str, Any]] = [
             "Relance un diagnostic complet du site (stack, SSL, GTM, CWV, GA4/GSC) "
             "et met a jour les issues. Action reelle qui modifie l'etat du site "
             "suivi — a utiliser seulement si la demande de l'utilisateur le justifie."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "run_gtm_headless_probe",
+        "description": (
+            "Verifie la configuration GTM dans un vrai navigateur (Chromium headless) : "
+            "le script gtm.js se charge-t-il reellement, le conteneur s'initialise-t-il, "
+            "dataLayer existe-t-il, la CSP bloque-t-elle effectivement googletagmanager.com. "
+            "Confirme ou infirme le check statique. Necessite qu'un diagnostic complet ait "
+            "deja ete lance sur ce site."
         ),
         "input_schema": {"type": "object", "properties": {}},
     },
@@ -269,6 +285,32 @@ async def _trigger_rescan(ctx: ToolContext) -> dict:
     }
 
 
+async def _run_gtm_headless_probe(ctx: ToolContext) -> dict:
+    if ctx.session is None or ctx.thread_id is None:
+        return {"error": "contexte insuffisant pour la verification headless"}
+    if ctx.gtm_headless_verifier is None:
+        return {"error": "verification headless indisponible dans ce contexte"}
+    if await _rate_limited(ctx.session, thread_id=ctx.thread_id, tool="run_gtm_headless_probe"):
+        return {"error": "verification headless deja lancee recemment sur ce fil, reessaie plus tard"}
+
+    row = (
+        await ctx.session.execute(
+            select(AuditSnapshot)
+            .where(AuditSnapshot.website_id == ctx.website.id)
+            .order_by(AuditSnapshot.captured_at.desc())
+            .limit(1)
+        )
+    ).scalars().first()
+    if row is None or not row.metrics.get("gtm"):
+        return {"error": "aucun check GTM statique disponible, relance un diagnostic d'abord"}
+
+    result = await ctx.gtm_headless_verifier(f"https://{ctx.website.domain}")
+    headless_block = headless_result_to_dict(result)
+    row.metrics = {**row.metrics, "gtm": {**row.metrics["gtm"], "headless": headless_block}}
+    await _record_tool_call(ctx.session, thread_id=ctx.thread_id, tool="run_gtm_headless_probe")
+    return headless_block
+
+
 async def _draft_gtm_snippet(website: Website, event: str) -> dict:
     try:
         evt = SnippetEvent(event)
@@ -298,6 +340,8 @@ async def dispatch(name: str, tool_input: dict, ctx: ToolContext) -> dict:
         return await _get_gtm_check(ctx.session, ctx.website)
     if name == "trigger_rescan":
         return await _trigger_rescan(ctx)
+    if name == "run_gtm_headless_probe":
+        return await _run_gtm_headless_probe(ctx)
     if name == "draft_gtm_snippet":
         return await _draft_gtm_snippet(ctx.website, str(tool_input.get("event", "")))
     return {"error": f"outil inconnu : {name}"}

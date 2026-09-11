@@ -22,6 +22,7 @@ from app.api.deps import (
     AuditProbeDep,
     CurrentUserDep,
     GtmCheckerDep,
+    GtmHeadlessVerifierDep,
     SessionDep,
     SettingsDep,
     StackDetectorDep,
@@ -301,6 +302,7 @@ async def post_message_endpoint(
     detector: StackDetectorDep,
     tls_checker: TlsCheckerDep,
     gtm_checker: GtmCheckerDep,
+    gtm_headless_verifier: GtmHeadlessVerifierDep,
 ) -> StreamingResponse:
     thread = await session.get(AdvisorThread, thread_id)
     if thread is None:
@@ -334,6 +336,7 @@ async def post_message_endpoint(
                 detector=detector,
                 tls_checker=tls_checker,
                 gtm_checker=gtm_checker,
+                gtm_headless_verifier=gtm_headless_verifier,
             ):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             await session.commit()

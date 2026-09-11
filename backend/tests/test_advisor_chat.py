@@ -10,6 +10,7 @@ from app.models.website import Website
 from app.services.advisor.chat import run_chat_turn
 from app.services.advisor.llm import MockAdvisorLLM, TurnResult
 from app.services.audit_probe import MockAuditProbe
+from app.services.gtm_headless import GtmHeadlessResult
 from app.services.stack_detector import StackDetection
 from app.services.tls_check import TlsStatus
 from tests.conftest import UserFactory
@@ -261,4 +262,86 @@ async def test_chat_can_trigger_rescan_via_tool(
 
     rows = await _messages(db_session, thread.id)
     tool_msg = next(r for r in rows if r.blocks and r.blocks[0].get("name") == "trigger_rescan")
+    assert tool_msg is not None
+
+
+async def test_chat_can_run_gtm_headless_probe_via_tool(
+    db_session: AsyncSession, make_user: UserFactory
+) -> None:
+    user = await make_user(sub="chat-6")
+    site = Website(user_id=user.id, domain="headless-chat.test", display_name="Headless")
+    db_session.add(site)
+    await db_session.flush()
+    db_session.add(
+        AuditSnapshot(
+            website_id=site.id,
+            captured_at=datetime.now(UTC),
+            source=SnapshotSource.COMPOSITE,
+            metrics={
+                "ga4": {"score": 70},
+                "gtm": {
+                    "containers": ["GTM-AAA1111"], "ga4_tags": [], "snippet_form": "standard",
+                    "snippet_in_head": True, "data_layer_name": "dataLayer",
+                    "consent_platform": None, "gtm_consent_gated": False,
+                    "csp_present": False, "csp_allows_gtm": None, "csp_blocks_preview": None,
+                    "server_side": False, "query_stripped_on_redirect": False,
+                    "findings": [], "checked_at": datetime.now(UTC).isoformat(), "error": None,
+                },
+            },
+        )
+    )
+    thread = AdvisorThread(
+        website_id=site.id, persona_key="consultant", title="Plan d'action — test"
+    )
+    db_session.add(thread)
+    await db_session.flush()
+
+    async def headless_verifier(url: str) -> GtmHeadlessResult:
+        _ = url
+        return GtmHeadlessResult(
+            gtm_js_loaded=True,
+            containers_initialised=("GTM-AAA1111",),
+            datalayer_present=True,
+            gtm_events=("gtm.js",),
+            requests_before_consent=True,
+            csp_console_errors=(),
+            findings=(),
+            checked_at=datetime.now(UTC),
+        )
+
+    llm = MockAdvisorLLM(
+        turns=[
+            TurnResult(
+                content=[
+                    {"type": "tool_use", "id": "t1", "name": "run_gtm_headless_probe", "input": {}}
+                ],
+                stop_reason="tool_use",
+                usage=dict(_ZERO),
+            ),
+            TurnResult(
+                content=[{"type": "text", "text": "GTM confirme en conditions reelles."}],
+                stop_reason="end_turn",
+                usage=dict(_ZERO),
+            ),
+        ]
+    )
+
+    events = await _collect(
+        run_chat_turn(
+            db_session,
+            thread=thread,
+            website=site,
+            user_id=user.id,
+            llm=llm,
+            user_text="verifie GTM en conditions reelles",
+            iteration_cap=6,
+            gtm_headless_verifier=headless_verifier,
+        )
+    )
+    assert events[-1]["kind"] == "done"
+
+    rows = await _messages(db_session, thread.id)
+    tool_msg = next(
+        r for r in rows if r.blocks and r.blocks[0].get("name") == "run_gtm_headless_probe"
+    )
     assert tool_msg is not None
