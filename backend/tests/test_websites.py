@@ -8,7 +8,12 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_gtm_checker, get_live_stack_detector, get_tls_checker
+from app.api.deps import (
+    get_audit_probe,
+    get_gtm_checker,
+    get_live_stack_detector,
+    get_tls_checker,
+)
 from app.api.v1.endpoints.websites import normalize_domain
 from app.main import app
 from app.models.audit_snapshot import AuditSnapshot
@@ -16,6 +21,7 @@ from app.models.enums import StackKind
 from app.models.issue_item import IssueItem
 from app.models.user import User
 from app.models.website import Website
+from app.services.audit_probe import MockAuditProbe
 from app.services.stack_detector import StackDetection, StackGuess
 from app.services.tls_check import TlsStatus
 
@@ -44,13 +50,17 @@ def fake_detector():
         _ = domain
         return None
 
+    # Independant de AUDIT_PROBE_MOCK dans .env : la suite reste deterministe
+    # meme quand le dev bascule son environnement local en mode reel.
     app.dependency_overrides[get_live_stack_detector] = lambda: _fake
     app.dependency_overrides[get_tls_checker] = lambda: _fake_tls
     app.dependency_overrides[get_gtm_checker] = lambda: _fake_gtm
+    app.dependency_overrides[get_audit_probe] = MockAuditProbe
     yield
     app.dependency_overrides.pop(get_live_stack_detector, None)
     app.dependency_overrides.pop(get_tls_checker, None)
     app.dependency_overrides.pop(get_gtm_checker, None)
+    app.dependency_overrides.pop(get_audit_probe, None)
 
 
 @pytest.mark.parametrize(
