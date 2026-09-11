@@ -4,7 +4,7 @@
  * remontée en `ApiError` pour que l'appelant bascule sur le fallback mocké.
  */
 
-const API_BASE =
+export const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8020/api/v1";
 
 export class ApiError extends Error {
