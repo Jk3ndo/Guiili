@@ -519,6 +519,11 @@ Migration : `advisor_threads.archived_at` + `create_table` `advisor_tool_calls`.
    statique suffit peut-être sur les cas réels). Si on garde : `playwright
    install --with-deps chromium` dans l'image, timeout strict, un seul
    contexte navigateur par appel.
+   **2026-09-11** : `uv add playwright` a d'abord échoué en environnement
+   sandbox (`operation timed out` sur le téléchargement du wheel 36 Mo depuis
+   `files.pythonhosted.org`) — confirme empiriquement que la dépendance a un
+   coût d'infra réel, pas juste théorique. Après changement de connexion,
+   retenté ; téléchargement lent mais sans erreur (voir incr. 3b pour l'issue).
 4. **Coût réel** — à surveiller via `usage` persisté ; ajuster les caps après
    quelques semaines d'usage. Prompt caching à vérifier
    (`cache_read_input_tokens` > 0 sur les tours de chat rapprochés).
