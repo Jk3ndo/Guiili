@@ -10,9 +10,11 @@ import {
   fetchThread,
   fetchThreads,
   generateBrief,
+  streamChatMessage,
 } from "@/lib/api/advisor";
 import { ApiError } from "@/lib/api/client";
 import type {
+  AdvisorMessageDto,
   AdvisorSettingsDto,
   AdvisorThreadSummaryDto,
 } from "@/lib/api/dto";
@@ -20,12 +22,44 @@ import { useShell } from "@/lib/shell/shell-context";
 
 import { BriefMarkdown } from "./brief-markdown";
 import { PersonaPicker } from "./persona-picker";
+import { ToolChip } from "./tool-chip";
+
+interface ChatMessage {
+  role: "user" | "assistant";
+  text: string;
+  tools: string[];
+}
+
+/**
+ * Derive les bulles affichables depuis les messages stockes : les tours
+ * tool_use / tool_result n'ont pas de bulle propre, leurs noms d'outils sont
+ * rattaches a la reponse assistant qui suit.
+ */
+function deriveChatMessages(messages: AdvisorMessageDto[]): ChatMessage[] {
+  const out: ChatMessage[] = [];
+  let pendingTools: string[] = [];
+  for (const m of messages) {
+    const toolUses = m.blocks.filter((b) => b.type === "tool_use");
+    if (toolUses.length > 0) {
+      pendingTools = [...pendingTools, ...toolUses.map((b) => String(b.name))];
+      continue;
+    }
+    if (m.blocks.some((b) => b.type === "tool_result")) continue;
+    if (!m.text.trim()) continue;
+    out.push({ role: m.role, text: m.text, tools: pendingTools });
+    pendingTools = [];
+  }
+  return out;
+}
 
 function AdvisorPanel({ websiteId }: { websiteId: string }) {
   const [settings, setSettings] = useState<AdvisorSettingsDto | null>(null);
   const [threads, setThreads] = useState<AdvisorThreadSummaryDto[]>([]);
-  const [content, setContent] = useState<string | null>(null);
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState("");
   const [generating, setGenerating] = useState(false);
+  const [sending, setSending] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -49,10 +83,10 @@ function AdvisorPanel({ websiteId }: { websiteId: string }) {
 
   async function onGenerate() {
     setGenerating(true);
-    setContent(null);
     try {
       const brief = await generateBrief(websiteId);
-      setContent(brief.content);
+      setActiveThreadId(brief.thread_id);
+      setMessages([{ role: "assistant", text: brief.content, tools: [] }]);
       setThreads((current) => [
         {
           id: brief.thread_id,
@@ -78,10 +112,47 @@ function AdvisorPanel({ websiteId }: { websiteId: string }) {
   async function openThread(id: string) {
     try {
       const thread = await fetchThread(id);
-      const assistant = thread.messages.find((m) => m.role === "assistant");
-      setContent(assistant?.text ?? "");
+      setActiveThreadId(thread.id);
+      setMessages(deriveChatMessages(thread.messages));
     } catch {
       toast.error("Impossible d'ouvrir ce plan");
+    }
+  }
+
+  async function onSend() {
+    const text = chatInput.trim();
+    if (!text || !activeThreadId || sending) return;
+    setChatInput("");
+    setSending(true);
+    setMessages((current) => [
+      ...current,
+      { role: "user", text, tools: [] },
+      { role: "assistant", text: "", tools: [] },
+    ]);
+    try {
+      for await (const event of streamChatMessage(activeThreadId, text)) {
+        if (event.kind === "token") {
+          setMessages((current) => {
+            const next = [...current];
+            const last = next[next.length - 1];
+            next[next.length - 1] = { ...last, text: last.text + event.text };
+            return next;
+          });
+        } else if (event.kind === "tool_call") {
+          setMessages((current) => {
+            const next = [...current];
+            const last = next[next.length - 1];
+            next[next.length - 1] = { ...last, tools: [...last.tools, event.tool] };
+            return next;
+          });
+        } else if (event.kind === "error") {
+          toast.error(event.text);
+        }
+      }
+    } catch {
+      toast.error("Le conseiller est injoignable");
+    } finally {
+      setSending(false);
     }
   }
 
@@ -117,10 +188,58 @@ function AdvisorPanel({ websiteId }: { websiteId: string }) {
         ) : null}
       </div>
 
-      {content !== null ? (
-        <article className="rounded-xl border border-white/[0.08] bg-surface/60 p-6 backdrop-blur-sm">
-          <BriefMarkdown content={content} />
-        </article>
+      {messages.length > 0 ? (
+        <div className="space-y-4">
+          {messages.map((m, i) => (
+            <article
+              key={i}
+              className={
+                m.role === "user"
+                  ? "ml-auto max-w-xl rounded-xl border border-white/[0.08] bg-white/[0.03] p-4"
+                  : "rounded-xl border border-white/[0.08] bg-surface/60 p-6 backdrop-blur-sm"
+              }
+            >
+              {m.tools.length > 0 ? (
+                <div className="mb-3 flex flex-wrap gap-1.5">
+                  {m.tools.map((tool, idx) => (
+                    <ToolChip key={`${tool}-${idx}`} tool={tool} />
+                  ))}
+                </div>
+              ) : null}
+              {m.role === "assistant" ? (
+                <BriefMarkdown content={m.text} />
+              ) : (
+                <p className="text-sm text-ink">{m.text}</p>
+              )}
+            </article>
+          ))}
+        </div>
+      ) : null}
+
+      {activeThreadId ? (
+        <div className="flex items-end gap-2">
+          <textarea
+            value={chatInput}
+            onChange={(event) => setChatInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                void onSend();
+              }
+            }}
+            disabled={sending}
+            placeholder="Pose une question sur ce site…"
+            className="h-11 flex-1 resize-none rounded-lg border border-white/[0.08] bg-white/[0.03] p-2.5 text-sm text-ink placeholder:text-ink-faint focus:border-white/20 focus:outline-none disabled:opacity-60"
+          />
+          <button
+            type="button"
+            onClick={() => void onSend()}
+            disabled={sending || !chatInput.trim()}
+            className="inline-flex h-9 items-center rounded-lg bg-zinc-100 px-4 text-xs font-medium text-zinc-950 shadow-sm transition-colors hover:bg-zinc-200 disabled:opacity-60"
+          >
+            Envoyer
+          </button>
+        </div>
       ) : null}
 
       {threads.length > 0 ? (

@@ -1,23 +1,27 @@
 """Agent conseiller : reglages de persona, generation du brief, fils de discussion.
 
 Le brief est un POST bloquant (~20-40 s) : Claude streame en interne, l'endpoint
-renvoie le texte complet. Streaming SSE + chat = increment 3.
+renvoie le texte complet. Le tchat, lui, streame vraiment vers le client (SSE) :
+la boucle d'outils peut prendre plusieurs tours.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+import json
+from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import AdvisorLLMDep, CurrentUserDep, SessionDep, SettingsDep
-from app.models.advisor import AdvisorMessage, AdvisorThread, UserAdvisorSettings
+from app.models.advisor import AdvisorMessage, AdvisorThread, AdvisorUsage, UserAdvisorSettings
 from app.models.user import User
 from app.models.website import Website
+from app.services.advisor.chat import AdvisorMessageCapReached, run_chat_turn
 from app.services.advisor.personas import (
     PERSONA_DEFAULT,
     PERSONA_LABELS,
@@ -84,8 +88,21 @@ class MessageOut(BaseModel):
     id: UUID
     role: str
     text: str
+    blocks: list[dict]
     usage: dict | None
     created_at: datetime
+
+
+class PostMessageRequest(BaseModel):
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def _clean_text(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("message vide")
+        return cleaned[:4000]
 
 
 class ThreadOut(BaseModel):
@@ -247,9 +264,61 @@ async def get_thread_endpoint(
                 id=m.id,
                 role=m.role,
                 text=m.text,
+                blocks=m.blocks,
                 usage=m.usage,
                 created_at=m.created_at,
             )
             for m in messages
         ],
     )
+
+
+@router.post("/advisor/threads/{thread_id}/messages")
+async def post_message_endpoint(
+    thread_id: UUID,
+    body: PostMessageRequest,
+    user: CurrentUserDep,
+    session: SessionDep,
+    llm: AdvisorLLMDep,
+    settings: SettingsDep,
+) -> StreamingResponse:
+    thread = await session.get(AdvisorThread, thread_id)
+    if thread is None:
+        raise HTTPException(status_code=404, detail="fil introuvable")
+    site = await _owned_website(session, thread.website_id, user)
+
+    today = datetime.now(UTC).date()
+    usage = (
+        await session.execute(
+            select(AdvisorUsage).where(AdvisorUsage.user_id == user.id, AdvisorUsage.day == today)
+        )
+    ).scalar_one_or_none()
+    if usage is not None and usage.message_count >= settings.advisor_daily_message_cap:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Limite quotidienne de messages atteinte ({settings.advisor_daily_message_cap}). "
+            "Réessaie demain.",
+        )
+
+    async def event_stream():
+        try:
+            async for event in run_chat_turn(
+                session,
+                thread=thread,
+                website=site,
+                user_id=user.id,
+                llm=llm,
+                user_text=body.text,
+                iteration_cap=settings.advisor_tool_iteration_cap,
+            ):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            await session.commit()
+        except AdvisorMessageCapReached as exc:
+            yield f"data: {json.dumps({'kind': 'error', 'text': str(exc)}, ensure_ascii=False)}\n\n"
+        except Exception:  # tout echec LLM/reseau en cours de flux -> event d'erreur, pas de crash SSE
+            yield (
+                'data: {"kind": "error", "text": '
+                '"le conseiller a rencontr\\u00e9 un probl\\u00e8me, r\\u00e9essaie"}\n\n'
+            )
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")

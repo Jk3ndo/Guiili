@@ -8,6 +8,7 @@ Le brief est un appel bloquant : on streame en interne (`messages.stream` +
 from __future__ import annotations
 
 import abc
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 import anthropic
@@ -40,17 +41,48 @@ class BriefResult:
     usage: dict
 
 
+@dataclass(frozen=True, slots=True)
+class TurnDelta:
+    """Fragment de texte streame pendant un tour de conversation."""
+
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class TurnResult:
+    """Tour complet : content blocks bruts (pour replay API) + metadonnees."""
+
+    content: list[dict]
+    stop_reason: str
+    usage: dict
+
+
+_MOCK_REPLY = "Je n'ai pas assez d'informations pour repondre precisement."
+
+
 class AdvisorLLM(abc.ABC):
     @abc.abstractmethod
     async def generate_brief(
         self, *, system: list[dict], context: str, max_tokens: int = 8000
     ) -> BriefResult: ...
 
+    @abc.abstractmethod
+    def stream_turn(
+        self, *, system: list[dict], messages: list[dict], tools: list[dict], max_tokens: int = 4000
+    ) -> AsyncIterator[TurnDelta | TurnResult]: ...
+
 
 class MockAdvisorLLM(AdvisorLLM):
-    def __init__(self, *, text: str | None = None, raises: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        text: str | None = None,
+        raises: Exception | None = None,
+        turns: list[TurnResult] | None = None,
+    ) -> None:
         self._text = text if text is not None else _MOCK_BRIEF
         self._raises = raises
+        self._turns = list(turns) if turns is not None else None
 
     async def generate_brief(
         self, *, system: list[dict], context: str, max_tokens: int = 8000
@@ -60,17 +92,37 @@ class MockAdvisorLLM(AdvisorLLM):
             raise self._raises
         return BriefResult(text=self._text, usage=dict(_ZERO_USAGE))
 
+    async def stream_turn(
+        self, *, system: list[dict], messages: list[dict], tools: list[dict], max_tokens: int = 4000
+    ) -> AsyncIterator[TurnDelta | TurnResult]:
+        _ = (system, messages, tools, max_tokens)
+        if self._raises is not None:
+            raise self._raises
+        if self._turns:
+            result = self._turns.pop(0)
+        else:
+            result = TurnResult(
+                content=[{"type": "text", "text": _MOCK_REPLY}],
+                stop_reason="end_turn",
+                usage=dict(_ZERO_USAGE),
+            )
+        text = "".join(block.get("text", "") for block in result.content if block.get("type") == "text")
+        if text:
+            yield TurnDelta(text=text)
+        yield result
+
 
 class RealAdvisorLLM(AdvisorLLM):
-    def __init__(self, *, api_key: str, model: str) -> None:
+    def __init__(self, *, api_key: str, brief_model: str, chat_model: str) -> None:
         self._client = anthropic.AsyncAnthropic(api_key=api_key)
-        self._model = model
+        self._brief_model = brief_model
+        self._chat_model = chat_model
 
     async def generate_brief(
         self, *, system: list[dict], context: str, max_tokens: int = 8000
     ) -> BriefResult:
         async with self._client.messages.stream(
-            model=self._model,
+            model=self._brief_model,
             max_tokens=max_tokens,
             thinking={"type": "adaptive"},
             output_config={"effort": "high"},
@@ -88,6 +140,35 @@ class RealAdvisorLLM(AdvisorLLM):
         usage = message.usage
         return BriefResult(
             text=text,
+            usage={
+                "input": usage.input_tokens,
+                "output": usage.output_tokens,
+                "cache_read": getattr(usage, "cache_read_input_tokens", 0) or 0,
+                "cache_creation": getattr(usage, "cache_creation_input_tokens", 0) or 0,
+            },
+        )
+
+    async def stream_turn(
+        self, *, system: list[dict], messages: list[dict], tools: list[dict], max_tokens: int = 4000
+    ) -> AsyncIterator[TurnDelta | TurnResult]:
+        async with self._client.messages.stream(
+            model=self._chat_model,
+            max_tokens=max_tokens,
+            thinking={"type": "adaptive"},
+            output_config={"effort": "medium"},
+            system=system,
+            messages=messages,
+            tools=tools,
+        ) as stream:
+            async for text in stream.text_stream:
+                yield TurnDelta(text=text)
+            message = await stream.get_final_message()
+
+        content = [block.model_dump(mode="json") for block in message.content]
+        usage = message.usage
+        yield TurnResult(
+            content=content,
+            stop_reason=message.stop_reason or "end_turn",
             usage={
                 "input": usage.input_tokens,
                 "output": usage.output_tokens,

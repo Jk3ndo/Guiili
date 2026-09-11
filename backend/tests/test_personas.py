@@ -36,6 +36,27 @@ def test_custom_key_without_prompt_falls_back_to_default() -> None:
     assert PERSONA_PRESETS[PERSONA_DEFAULT] in build_system("custom", None)[1]["text"]
 
 
+def test_build_system_brief_mode_has_structure() -> None:
+    blocks = build_system("consultant", None, mode="brief")
+    assert "Synthèse" in blocks[0]["text"]
+    assert "Actions prioritaires" in blocks[0]["text"]
+
+
+def test_build_system_chat_mode_has_no_forced_structure() -> None:
+    blocks = build_system("consultant", None, mode="chat")
+    assert "Synthèse" not in blocks[0]["text"]
+    assert "Actions prioritaires" not in blocks[0]["text"]
+
+
+def test_build_system_chat_mode_keeps_safety_rules() -> None:
+    blocks = build_system("consultant", None, mode="chat")
+    assert "invente" in blocks[0]["text"].lower()
+
+
+def test_build_system_default_mode_is_brief() -> None:
+    assert build_system("consultant", None) == build_system("consultant", None, mode="brief")
+
+
 def test_validate_custom_prompt() -> None:
     assert validate_custom_prompt("  hello  ") == "hello"
     with pytest.raises(ValueError):

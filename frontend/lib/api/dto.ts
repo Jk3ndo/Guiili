@@ -276,6 +276,7 @@ export interface AdvisorMessageDto {
   id: string;
   role: "user" | "assistant";
   text: string;
+  blocks: Record<string, unknown>[];
   usage: AdvisorUsageDto | null;
   created_at: string;
 }
@@ -287,6 +288,13 @@ export interface AdvisorThreadDto {
   created_at: string;
   messages: AdvisorMessageDto[];
 }
+
+export type ChatEventDto =
+  | { kind: "token"; text: string }
+  | { kind: "tool_call"; tool: string }
+  | { kind: "tool_result"; tool: string }
+  | { kind: "done"; usage: AdvisorUsageDto }
+  | { kind: "error"; text: string };
 
 export interface AuditDto {
   site_name: string;
