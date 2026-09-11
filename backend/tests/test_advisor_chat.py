@@ -5,10 +5,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.advisor import AdvisorMessage, AdvisorThread, AdvisorUsage
 from app.models.audit_snapshot import AuditSnapshot
-from app.models.enums import SnapshotSource
+from app.models.enums import SnapshotSource, StackKind
 from app.models.website import Website
 from app.services.advisor.chat import run_chat_turn
 from app.services.advisor.llm import MockAdvisorLLM, TurnResult
+from app.services.audit_probe import MockAuditProbe
+from app.services.stack_detector import StackDetection
+from app.services.tls_check import TlsStatus
 from tests.conftest import UserFactory
 
 _ZERO = {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}
@@ -208,3 +211,54 @@ async def test_history_is_reloaded_on_second_message(
 
     rows = await _messages(db_session, thread.id)
     assert len(rows) == 4
+
+
+async def test_chat_can_trigger_rescan_via_tool(
+    db_session: AsyncSession, make_user: UserFactory
+) -> None:
+    user = await make_user(sub="chat-5")
+    site, thread = await _thread_with_snapshot(db_session, user.id)
+
+    async def detector(url: str, **kw):
+        _ = (url, kw)
+        return StackDetection(StackKind.REACT, ("react-root-static",), 0.7)
+
+    async def tls_checker(domain: str):
+        return TlsStatus(host=domain, status="valid", checked_at=datetime.now(UTC))
+
+    llm = MockAdvisorLLM(
+        turns=[
+            TurnResult(
+                content=[
+                    {"type": "tool_use", "id": "t1", "name": "trigger_rescan", "input": {}}
+                ],
+                stop_reason="tool_use",
+                usage=dict(_ZERO),
+            ),
+            TurnResult(
+                content=[{"type": "text", "text": "Diagnostic relance."}],
+                stop_reason="end_turn",
+                usage=dict(_ZERO),
+            ),
+        ]
+    )
+
+    events = await _collect(
+        run_chat_turn(
+            db_session,
+            thread=thread,
+            website=site,
+            user_id=user.id,
+            llm=llm,
+            user_text="relance un scan",
+            iteration_cap=6,
+            probe=MockAuditProbe(),
+            detector=detector,
+            tls_checker=tls_checker,
+        )
+    )
+    assert events[-1]["kind"] == "done"
+
+    rows = await _messages(db_session, thread.id)
+    tool_msg = next(r for r in rows if r.blocks and r.blocks[0].get("name") == "trigger_rescan")
+    assert tool_msg is not None

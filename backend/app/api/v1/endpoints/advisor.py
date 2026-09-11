@@ -17,7 +17,16 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import AdvisorLLMDep, CurrentUserDep, SessionDep, SettingsDep
+from app.api.deps import (
+    AdvisorLLMDep,
+    AuditProbeDep,
+    CurrentUserDep,
+    GtmCheckerDep,
+    SessionDep,
+    SettingsDep,
+    StackDetectorDep,
+    TlsCheckerDep,
+)
 from app.models.advisor import AdvisorMessage, AdvisorThread, AdvisorUsage, UserAdvisorSettings
 from app.models.user import User
 from app.models.website import Website
@@ -281,6 +290,10 @@ async def post_message_endpoint(
     session: SessionDep,
     llm: AdvisorLLMDep,
     settings: SettingsDep,
+    probe: AuditProbeDep,
+    detector: StackDetectorDep,
+    tls_checker: TlsCheckerDep,
+    gtm_checker: GtmCheckerDep,
 ) -> StreamingResponse:
     thread = await session.get(AdvisorThread, thread_id)
     if thread is None:
@@ -310,6 +323,10 @@ async def post_message_endpoint(
                 llm=llm,
                 user_text=body.text,
                 iteration_cap=settings.advisor_tool_iteration_cap,
+                probe=probe,
+                detector=detector,
+                tls_checker=tls_checker,
+                gtm_checker=gtm_checker,
             ):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             await session.commit()
