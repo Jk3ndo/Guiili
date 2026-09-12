@@ -14,6 +14,7 @@ from app.security.token_crypto import TokenCipher, load_token_cipher
 from app.services.advisor.llm import AdvisorLLM, MockAdvisorLLM, RealAdvisorLLM
 from app.services.audit_engine import Detector, GtmChecker, TlsChecker
 from app.services.audit_probe import AuditProbe, MockAuditProbe, RealAuditProbe
+from app.services.email import ConsoleEmailSender, EmailSender
 from app.services.google_oauth import GoogleOAuthClient, get_google_oauth_client
 from app.services.gtm_check import check_gtm
 from app.services.gtm_headless import GtmHeadlessVerifier, verify_gtm
@@ -85,6 +86,11 @@ def get_advisor_llm(settings: SettingsDep) -> AdvisorLLM:
     )
 
 
+def get_email_sender() -> EmailSender:
+    # Aucun fournisseur reel configure pour l'instant (choix differe, voir spec §6/§9).
+    return ConsoleEmailSender()
+
+
 TokenCipherDep = Annotated[TokenCipher, Depends(get_token_cipher)]
 GoogleClientDep = Annotated[GoogleOAuthClient, Depends(get_google_client)]
 AuditProbeDep = Annotated[AuditProbe, Depends(get_audit_probe)]
@@ -94,6 +100,7 @@ TlsCheckerDep = Annotated[TlsChecker, Depends(get_tls_checker)]
 GtmCheckerDep = Annotated[GtmChecker, Depends(get_gtm_checker)]
 GtmHeadlessVerifierDep = Annotated[GtmHeadlessVerifier, Depends(get_gtm_headless_verifier)]
 AdvisorLLMDep = Annotated[AdvisorLLM, Depends(get_advisor_llm)]
+EmailSenderDep = Annotated[EmailSender, Depends(get_email_sender)]
 
 
 def _session_user_id(request: Request, settings: Settings):
