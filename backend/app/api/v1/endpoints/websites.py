@@ -10,7 +10,6 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
     AuditProbeDep,
@@ -22,10 +21,12 @@ from app.api.deps import (
 )
 from app.models.audit_snapshot import AuditSnapshot
 from app.models.enums import StackKind
-from app.models.user import User
 from app.models.website import Website
+from app.models.workspace import Workspace
+from app.models.workspace_member import WorkspaceMember
 from app.services.audit_engine import apply_tls_status, run_audit
 from app.services.stack_detector import StackDetection
+from app.services.workspaces import owned_website, user_workspace_ids
 
 router = APIRouter(tags=["websites"])
 
@@ -45,13 +46,6 @@ def normalize_domain(raw: str) -> str:
     value = value.split(":", 1)[0]  # port eventuel
     value = value.removeprefix("www.").strip(".")
     return value
-
-
-async def _owned_website(session: AsyncSession, website_id: UUID, user: User) -> Website:
-    site = await session.get(Website, website_id)
-    if site is None or site.user_id != user.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="site introuvable")
-    return site
 
 
 # --------------------------------------------------------------------------- #
@@ -188,7 +182,8 @@ async def list_websites(
     session: SessionDep,
     include_archived: bool = False,
 ) -> list[Website]:
-    stmt = select(Website).where(Website.user_id == user.id)
+    workspace_ids = await user_workspace_ids(session, user.id)
+    stmt = select(Website).where(Website.workspace_id.in_(workspace_ids))
     if not include_archived:
         stmt = stmt.where(Website.archived_at.is_(None))
     rows = await session.execute(stmt.order_by(Website.created_at))
@@ -212,7 +207,10 @@ async def create_website(
 ) -> CreateWebsiteResponse:
     existing = (
         await session.execute(
-            select(Website).where(Website.user_id == user.id, Website.domain == body.domain)
+            select(Website).where(
+                Website.workspace_id.in_(await user_workspace_ids(session, user.id)),
+                Website.domain == body.domain,
+            )
         )
     ).scalar_one_or_none()
     if existing is not None:
@@ -221,8 +219,23 @@ async def create_website(
             detail=f"le domaine « {body.domain} » est déjà suivi",
         )
 
+    # Meme resolution get-or-create qu'en dev (app/api/v1/endpoints/dev.py) :
+    # tant que le flux d'inscription reel (increment ulterieur) ne cree pas
+    # encore le workspace a la volee, on le cree ici au besoin.
+    workspace = (
+        await session.execute(
+            select(Workspace).join(WorkspaceMember).where(WorkspaceMember.user_id == user.id)
+        )
+    ).scalars().first()
+    if workspace is None:
+        workspace = Workspace(name=user.display_name or user.email, owner_user_id=user.id)
+        session.add(workspace)
+        await session.flush()
+        session.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
+        await session.flush()
+
     site = Website(
-        user_id=user.id,
+        workspace_id=workspace.id,
         domain=body.domain,
         display_name=body.name,
         allow_insecure_probe=body.allow_insecure,
@@ -276,7 +289,7 @@ async def create_website(
 async def set_website_stack(
     website_id: UUID, body: SetStackRequest, user: CurrentUserDep, session: SessionDep
 ) -> Website:
-    site = await _owned_website(session, website_id, user)
+    site = await owned_website(session, website_id=website_id, user_id=user.id)
     site.stack_label = body.stack_label
     await session.commit()
     return site
@@ -290,7 +303,7 @@ async def redetect_website_stack(
     session: SessionDep,
     detector: LiveStackDetectorDep,
 ) -> RedetectResponse:
-    site = await _owned_website(session, website_id, user)
+    site = await owned_website(session, website_id=website_id, user_id=user.id)
     detection: StackDetection = await detector(
         f"https://{site.domain}", allow_insecure=body.allow_insecure
     )
@@ -307,7 +320,7 @@ async def website_stack_hint(
     session: SessionDep,
     detector: LiveStackDetectorDep,
 ) -> StackHintResponse:
-    site = await _owned_website(session, website_id, user)
+    site = await owned_website(session, website_id=website_id, user_id=user.id)
     snapshot = (
         await session.execute(
             select(AuditSnapshot)
@@ -355,7 +368,7 @@ async def website_ssl(
     session: SessionDep,
     tls_checker: TlsCheckerDep,
 ) -> SslOut:
-    site = await _owned_website(session, website_id, user)
+    site = await owned_website(session, website_id=website_id, user_id=user.id)
     tls = await tls_checker(site.domain)
     apply_tls_status(site, tls)
     await session.commit()
@@ -369,7 +382,7 @@ async def delete_website(
     session: SessionDep,
     purge: bool = Query(False, description="Suppression definitive en cascade au lieu d'archiver"),
 ) -> None:
-    site = await _owned_website(session, website_id, user)
+    site = await owned_website(session, website_id=website_id, user_id=user.id)
     if purge:
         await session.delete(site)  # cascade : snapshots, issues, liens Google
     else:

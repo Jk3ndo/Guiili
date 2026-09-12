@@ -5,28 +5,19 @@ import json
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Response, status
+from fastapi import APIRouter, Response
 from pydantic import BaseModel
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUserDep, SessionDep
 from app.models.audit_log import AuditLog
 from app.models.enums import AuditResult, ResourceType, StackKind
-from app.models.user import User
-from app.models.website import Website
 from app.models.website_google_link import WebsiteGoogleLink
 from app.services.gtm_generator import build_gtm_container
 from app.services.snippet_library import SnippetEvent, get_snippets
+from app.services.workspaces import owned_website
 
 router = APIRouter(tags=["gtm"])
-
-
-async def _owned_website(session: AsyncSession, website_id: UUID, user: User) -> Website:
-    site = await session.get(Website, website_id)
-    if site is None or site.user_id != user.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="site introuvable")
-    return site
 
 
 @router.get("/websites/{website_id}/gtm-export")
@@ -36,7 +27,7 @@ async def gtm_export(
     session: SessionDep,
     mode: Literal["merge", "overwrite"] = "merge",
 ) -> Response:
-    site = await _owned_website(session, website_id, user)
+    site = await owned_website(session, website_id=website_id, user_id=user.id)
 
     ga4_link = (
         await session.execute(
@@ -98,7 +89,7 @@ async def website_snippets(
     session: SessionDep,
     event: SnippetEvent | None = None,
 ) -> SnippetsResponse:
-    site = await _owned_website(session, website_id, user)
+    site = await owned_website(session, website_id=website_id, user_id=user.id)
     entries = get_snippets(site.detected_stack, event)
     return SnippetsResponse(
         detected_stack=site.detected_stack,

@@ -9,10 +9,10 @@ from sqlalchemy import select
 from app.api.deps import CurrentUserDep, GoogleClientDep, SessionDep, TokenCipherDep
 from app.models.enums import ConnectionStatus, ResourceType
 from app.models.google_connection import GoogleConnection
-from app.models.website import Website
 from app.models.website_google_link import WebsiteGoogleLink
 from app.services.connections import decrypt_refresh_token
 from app.services.google_oauth import InvalidGrantError
+from app.services.workspaces import owned_website, user_workspace_ids
 
 router = APIRouter(tags=["google"])
 
@@ -80,8 +80,13 @@ async def list_google_resources(
     client: GoogleClientDep,
     cipher: TokenCipherDep,
 ) -> ResourcesResponse:
+    workspace_ids = await user_workspace_ids(session, user.id)
     connections = (
-        (await session.execute(select(GoogleConnection).where(GoogleConnection.user_id == user.id)))
+        (
+            await session.execute(
+                select(GoogleConnection).where(GoogleConnection.workspace_id.in_(workspace_ids))
+            )
+        )
         .scalars()
         .all()
     )
@@ -154,12 +159,12 @@ async def link_resource(
     user: CurrentUserDep,
     session: SessionDep,
 ) -> WebsiteGoogleLink:
-    website = await session.get(Website, website_id)
-    if website is None or website.user_id != user.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="site introuvable")
+    await owned_website(session, website_id=website_id, user_id=user.id)
 
     connection = await session.get(GoogleConnection, body.google_connection_id)
-    if connection is None or connection.user_id != user.id:
+    if connection is None or connection.workspace_id not in await user_workspace_ids(
+        session, user.id
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="connexion Google invalide pour cet utilisateur",

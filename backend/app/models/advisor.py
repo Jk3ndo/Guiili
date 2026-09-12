@@ -69,8 +69,8 @@ class AdvisorToolCall(UUIDPrimaryKeyMixin, Base):
 class AdvisorUsage(Base):
     __tablename__ = "advisor_usage"
 
-    user_id: Mapped[UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), primary_key=True
     )
     day: Mapped[date] = mapped_column(Date, primary_key=True)
     brief_count: Mapped[int] = mapped_column(

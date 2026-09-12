@@ -12,16 +12,17 @@ from app.models.enums import StackKind, pg_enum
 from app.models.mixins import TimestampMixin, UUIDPrimaryKeyMixin
 
 if TYPE_CHECKING:
-    from app.models.user import User
     from app.models.website_google_link import WebsiteGoogleLink
 
 
 class Website(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "websites"
-    __table_args__ = (UniqueConstraint("user_id", "domain", name="uq_websites_user_domain"),)
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "domain", name="uq_websites_workspace_domain"),
+    )
 
-    user_id: Mapped[UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True
     )
     domain: Mapped[str] = mapped_column(String(255), nullable=False)
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -41,7 +42,6 @@ class Website(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # Site archive : exclu des listes, conserve pour l'historique (purge explicite).
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    user: Mapped[User] = relationship(back_populates="websites")
     google_links: Mapped[list[WebsiteGoogleLink]] = relationship(
         back_populates="website", cascade="all, delete-orphan", passive_deletes=True
     )
