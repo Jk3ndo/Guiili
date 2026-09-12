@@ -56,6 +56,13 @@ export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
   return (await request(path, init)).json() as Promise<T>;
 }
 
+/** POST sans corps de réponse (ex. `/auth/logout` renvoie 204 — `.json()` planterait sur un corps vide). */
+export async function apiPostNoContent(path: string, body?: unknown): Promise<void> {
+  const init: RequestInit = { method: "POST" };
+  if (body !== undefined) init.body = JSON.stringify(body);
+  await request(path, init);
+}
+
 export async function apiPatch<T>(path: string, body: unknown): Promise<T> {
   return (
     await request(path, { method: "PATCH", body: JSON.stringify(body) })
