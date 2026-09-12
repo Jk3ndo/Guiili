@@ -273,6 +273,28 @@ async def test_allow_insecure_persisted_on_creation(
     assert site.allow_insecure_probe is True
 
 
+async def test_list_websites_includes_sites_from_joined_workspace(
+    authed_client: tuple[AsyncClient, User],
+    db_session: AsyncSession,
+    make_user,
+) -> None:
+    from app.models.workspace_member import WorkspaceMember
+
+    client, user = authed_client
+    own_ws = await owner_workspace_id(db_session, user)
+    db_session.add(Website(workspace_id=own_ws, domain="mine.test", display_name="Mine"))
+
+    other_owner = await make_user(sub="other-owner-ws")
+    other_ws = await owner_workspace_id(db_session, other_owner)
+    db_session.add(Website(workspace_id=other_ws, domain="shared.test", display_name="Shared"))
+    db_session.add(WorkspaceMember(workspace_id=other_ws, user_id=user.id, role="member"))
+    await db_session.flush()
+
+    resp = await client.get("/api/v1/websites")
+    domains = {w["domain"] for w in resp.json()}
+    assert domains == {"mine.test", "shared.test"}
+
+
 async def test_endpoints_require_auth(db_client: AsyncClient) -> None:
     fake = "00000000-0000-0000-0000-000000000000"
     assert (await db_client.get("/api/v1/websites")).status_code == 401
