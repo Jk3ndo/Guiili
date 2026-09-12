@@ -1,8 +1,10 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import select
 
 from app.models.workspace_invitation import WorkspaceInvitation
+from app.models.workspace_member import WorkspaceMember
 from app.services.workspace_invites import (
     InvitationEmailMismatch,
     InvitationInvalid,
@@ -95,3 +97,37 @@ async def test_accept_invitation_rejects_already_used_token(db_session, make_use
 
 async def test_get_invitation_unknown_token_returns_none(db_session) -> None:
     assert await get_invitation(db_session, "not-a-real-token") is None
+
+
+async def test_accept_invitation_is_idempotent_if_already_a_member(db_session, make_user) -> None:
+    owner = await make_user(sub="inv-owner-idem")
+    ws_id = await owner_workspace_id(db_session, owner)
+    friend = await make_user(sub="friend-idem", email="idem@example.com")
+
+    first_invitation = await create_invitation(
+        db_session, workspace_id=ws_id, invited_email="idem@example.com",
+        invited_by_user_id=owner.id,
+    )
+    await accept_invitation(db_session, token=first_invitation.token, user=friend)
+
+    second_invitation = await create_invitation(
+        db_session, workspace_id=ws_id, invited_email="idem@example.com",
+        invited_by_user_id=owner.id,
+    )
+    # Must not raise IntegrityError, and must still mark the 2nd invitation accepted.
+    member = await accept_invitation(db_session, token=second_invitation.token, user=friend)
+
+    assert member.workspace_id == ws_id
+    assert member.user_id == friend.id
+    refreshed = await db_session.get(WorkspaceInvitation, second_invitation.id)
+    assert refreshed.status == "accepted"
+
+    # Still exactly one membership row for this user/workspace pair, not two.
+    rows = (
+        await db_session.execute(
+            select(WorkspaceMember).where(
+                WorkspaceMember.workspace_id == ws_id, WorkspaceMember.user_id == friend.id
+            )
+        )
+    ).scalars().all()
+    assert len(rows) == 1

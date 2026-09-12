@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.user import User
 from app.models.workspace_invitation import WorkspaceInvitation
 from app.models.workspace_member import WorkspaceMember
+from app.services.workspaces import is_member
 
 _INVITATION_TTL = timedelta(days=7)
 
@@ -58,6 +59,19 @@ async def accept_invitation(
         raise InvitationInvalid("invitation expiree")
     if invitation.invited_email.lower() != user.email.lower():
         raise InvitationEmailMismatch("cette invitation est nominative")
+
+    if await is_member(session, workspace_id=invitation.workspace_id, user_id=user.id):
+        invitation.status = "accepted"
+        invitation.accepted_at = datetime.now(UTC)
+        await session.flush()
+        return (
+            await session.execute(
+                select(WorkspaceMember).where(
+                    WorkspaceMember.workspace_id == invitation.workspace_id,
+                    WorkspaceMember.user_id == user.id,
+                )
+            )
+        ).scalar_one()
 
     member = WorkspaceMember(workspace_id=invitation.workspace_id, user_id=user.id, role="member")
     session.add(member)
