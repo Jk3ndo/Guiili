@@ -551,9 +551,12 @@ git commit -m "feat(auth): workspaces + migration user_id -> workspace_id (websi
 **Files:**
 - Modify: `backend/tests/conftest.py`
 - Modify: tous les fichiers de test construisant `Website`/`GoogleConnection`/`AdvisorUsage`
-  directement — `test_audit_endpoints.py`, `test_websites.py`, `test_advisor_tools.py`,
-  `test_advisor_chat.py`, `test_advisor_endpoints.py`, `test_gtm_headless.py`, et tout autre
-  fichier révélé par la recherche du Step 1 ci-dessous.
+  directement — `test_advisor_chat.py`, `test_advisor_endpoints.py`, `test_advisor_service.py`,
+  `test_advisor_tools.py`, `test_audit_endpoints.py`, `test_audit_engine.py`,
+  `test_context_builder.py`, `test_gtm_endpoints.py`, `test_link_resource.py`,
+  `test_models_journal.py`, `test_models_websites_links.py`, `test_real_audit_probe.py`,
+  `test_websites.py` (liste exacte vérifiée par la recherche du Step 1 — s'y fier plutôt qu'à
+  cette énumération si elle a bougé).
 
 **Interfaces:**
 - Consumes: `app.models.workspace.Workspace`, `app.models.workspace_member.WorkspaceMember`
@@ -565,10 +568,19 @@ git commit -m "feat(auth): workspaces + migration user_id -> workspace_id (websi
 
 ```bash
 cd backend
-grep -rln "user_id=user\.id\|user_id=owner\.id\|Website(user_id" tests/
+grep -rln "Website(user_id\|GoogleConnection(user_id\|AdvisorUsage(user_id" tests/
 ```
-Noter la liste exacte des fichiers retournés — c'est le périmètre réel de ce step (peut différer
-légèrement de la liste ci-dessus si un fichier a été ajouté/renommé depuis l'écriture de ce plan).
+Vérifié à l'écriture de ce plan, cette commande retourne exactement : `test_advisor_chat.py`,
+`test_advisor_endpoints.py`, `test_advisor_service.py`, `test_advisor_tools.py`,
+`test_audit_endpoints.py`, `test_audit_engine.py`, `test_context_builder.py`,
+`test_gtm_endpoints.py`, `test_link_resource.py`, `test_models_journal.py`,
+`test_models_websites_links.py`, `test_real_audit_probe.py`, `test_websites.py` — **13 fichiers**,
+periometre reel plus large que ce qu'une recherche naïve sur `user_id=user\.id` laisserait croire
+(plusieurs fichiers passent une variable locale `user_id` plutôt que l'attribut `user.id`
+directement — le pattern ci-dessus cible la syntaxe de construction elle-même, pas la forme de
+l'argument, pour ne rater aucun cas). Relancer la commande au moment de l'implémentation : la
+liste peut avoir bougé depuis l'écriture de ce plan, faire foi du résultat réel plutôt que de
+cette liste figée.
 
 - [ ] **Step 2: `make_user` crée transparemment un workspace**
 
