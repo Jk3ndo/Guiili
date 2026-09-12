@@ -23,7 +23,7 @@ from app.services.audit_probe import (
 from app.services.gtm_check import GtmCheck, GtmFinding
 from app.services.stack_detector import StackDetection
 from app.services.tls_check import TlsStatus
-from tests.conftest import UserFactory
+from tests.conftest import UserFactory, owner_workspace_id
 
 
 async def _detector(url: str) -> StackDetection:
@@ -49,8 +49,8 @@ _CLEAN = ProbeData(
 )
 
 
-async def _website(session: AsyncSession, user_id, *, domain: str) -> Website:
-    site = Website(user_id=user_id, domain=domain, display_name=domain)
+async def _website(session: AsyncSession, workspace_id, *, domain: str) -> Website:
+    site = Website(workspace_id=workspace_id, domain=domain, display_name=domain)
     session.add(site)
     await session.flush()
     return site
@@ -201,7 +201,7 @@ async def test_run_audit_writes_snapshot_and_issues(
     db_session: AsyncSession, make_user: UserFactory
 ) -> None:
     user = await make_user(sub="au-1")
-    site = await _website(db_session, user.id, domain="boutique-verte.fr")
+    site = await _website(db_session, await owner_workspace_id(db_session, user), domain="boutique-verte.fr")
 
     result = await run_audit(
         db_session,
@@ -235,7 +235,7 @@ async def test_run_audit_persists_gtm_block_and_tracking_issue(
     db_session: AsyncSession, make_user: UserFactory
 ) -> None:
     user = await make_user(sub="au-gtm")
-    site = await _website(db_session, user.id, domain="gtm-site.test")
+    site = await _website(db_session, await owner_workspace_id(db_session, user), domain="gtm-site.test")
 
     async def gtm_checker(domain: str) -> GtmCheck:
         _ = domain
@@ -264,7 +264,7 @@ async def test_run_audit_without_gtm_checker_has_null_block(
     db_session: AsyncSession, make_user: UserFactory
 ) -> None:
     user = await make_user(sub="au-nogtm")
-    site = await _website(db_session, user.id, domain="plain.test")
+    site = await _website(db_session, await owner_workspace_id(db_session, user), domain="plain.test")
     result = await run_audit(
         db_session, website=site, probe=MockAuditProbe(), detector=_detector
     )
@@ -275,7 +275,7 @@ async def test_rescan_does_not_duplicate_issues(
     db_session: AsyncSession, make_user: UserFactory
 ) -> None:
     user = await make_user(sub="au-2")
-    site = await _website(db_session, user.id, domain="boutique-verte.fr")
+    site = await _website(db_session, await owner_workspace_id(db_session, user), domain="boutique-verte.fr")
 
     first = await run_audit(db_session, website=site, probe=MockAuditProbe(), detector=_detector)
     count_1 = (
@@ -301,7 +301,7 @@ async def test_fingerprint_stable_when_details_change(
     db_session: AsyncSession, make_user: UserFactory
 ) -> None:
     user = await make_user(sub="au-3")
-    site = await _website(db_session, user.id, domain="x.test")
+    site = await _website(db_session, await owner_workspace_id(db_session, user), domain="x.test")
 
     probe_a = _StubProbe(
         ProbeData(
@@ -343,7 +343,7 @@ async def test_disappearing_anomaly_is_auto_resolved_then_reopened(
     db_session: AsyncSession, make_user: UserFactory
 ) -> None:
     user = await make_user(sub="au-4")
-    site = await _website(db_session, user.id, domain="boutique-verte.fr")
+    site = await _website(db_session, await owner_workspace_id(db_session, user), domain="boutique-verte.fr")
 
     await run_audit(db_session, website=site, probe=MockAuditProbe(), detector=_detector)
     purchase = (

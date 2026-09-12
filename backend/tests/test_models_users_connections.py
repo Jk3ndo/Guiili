@@ -6,6 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.enums import ConnectionStatus
 from app.models.google_connection import GoogleConnection
 from app.models.user import User
+from app.models.workspace import Workspace
+from tests.conftest import owner_workspace_id
 
 
 async def _make_user(session: AsyncSession, sub: str = "sub-1") -> User:
@@ -22,10 +24,13 @@ async def test_user_defaults(db_session: AsyncSession) -> None:
     assert user.created_at is not None
 
 
-async def test_connection_status_defaults_active(db_session: AsyncSession) -> None:
-    user = await _make_user(db_session)
+async def test_connection_status_defaults_active(
+    db_session: AsyncSession, make_user
+) -> None:
+    user = await make_user(sub="sub-1")
+    workspace_id = await owner_workspace_id(db_session, user)
     conn = GoogleConnection(
-        user_id=user.id,
+        workspace_id=workspace_id,
         google_account_email="acct@example.com",
         google_sub="g-sub-1",
         granted_scopes=["openid", "email"],
@@ -37,10 +42,13 @@ async def test_connection_status_defaults_active(db_session: AsyncSession) -> No
     assert conn.status == ConnectionStatus.ACTIVE
 
 
-async def test_connection_unique_user_google_sub(db_session: AsyncSession) -> None:
-    user = await _make_user(db_session)
+async def test_connection_unique_user_google_sub(
+    db_session: AsyncSession, make_user
+) -> None:
+    user = await make_user(sub="sub-1")
+    workspace_id = await owner_workspace_id(db_session, user)
     common = {
-        "user_id": user.id,
+        "workspace_id": workspace_id,
         "google_account_email": "a@example.com",
         "google_sub": "dup-sub",
         "granted_scopes": ["openid"],
@@ -54,11 +62,18 @@ async def test_connection_unique_user_google_sub(db_session: AsyncSession) -> No
         await db_session.flush()
 
 
-async def test_user_cascade_deletes_connections(db_session: AsyncSession) -> None:
-    user = await _make_user(db_session)
+async def test_workspace_cascade_deletes_connections(
+    db_session: AsyncSession, make_user
+) -> None:
+    """Les google_connections dependent desormais du workspace, pas directement
+    de l'utilisateur (cf. commentaire dans app/models/user.py) : Workspace.owner_user_id
+    est ondelete=RESTRICT, donc supprimer directement le user proprietaire echouerait.
+    Le cascade passe maintenant par la suppression du workspace lui-meme."""
+    user = await make_user(sub="sub-1")
+    workspace_id = await owner_workspace_id(db_session, user)
     db_session.add(
         GoogleConnection(
-            user_id=user.id,
+            workspace_id=workspace_id,
             google_account_email="a@example.com",
             google_sub="c-sub",
             granted_scopes=["openid"],
@@ -67,7 +82,8 @@ async def test_user_cascade_deletes_connections(db_session: AsyncSession) -> Non
         )
     )
     await db_session.flush()
-    await db_session.delete(user)
+    workspace = await db_session.get(Workspace, workspace_id)
+    await db_session.delete(workspace)
     await db_session.flush()
     remaining = (await db_session.execute(select(GoogleConnection))).scalars().all()
     assert remaining == []

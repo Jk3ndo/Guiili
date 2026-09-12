@@ -1,7 +1,9 @@
 from collections.abc import AsyncGenerator, Awaitable, Callable
+from uuid import UUID
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import app.models  # import à effet de bord : enregistre les modèles dans Base.metadata
@@ -10,6 +12,8 @@ from app.db.base import Base
 from app.db.session import build_engine, get_session
 from app.main import app
 from app.models.user import User
+from app.models.workspace import Workspace
+from app.models.workspace_member import WorkspaceMember
 from app.security.session import issue_session
 
 
@@ -86,9 +90,29 @@ async def make_user(db_session: AsyncSession) -> UserFactory:
         )
         db_session.add(user)
         await db_session.flush()
+        workspace = Workspace(name=user.display_name or user.email, owner_user_id=user.id)
+        db_session.add(workspace)
+        await db_session.flush()
+        db_session.add(
+            WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner")
+        )
+        await db_session.flush()
         return user
 
     return _make
+
+
+async def owner_workspace_id(session: AsyncSession, user: User) -> UUID:
+    """Workspace dont `user` est owner — cree transparemment par make_user ci-dessus.
+    Fonction ordinaire (pas une fixture) : importable et appelable depuis n'importe
+    quel fichier de test avec `from tests.conftest import owner_workspace_id`."""
+    return (
+        await session.execute(
+            select(WorkspaceMember.workspace_id).where(
+                WorkspaceMember.user_id == user.id, WorkspaceMember.role == "owner"
+            )
+        )
+    ).scalar_one()
 
 
 @pytest_asyncio.fixture

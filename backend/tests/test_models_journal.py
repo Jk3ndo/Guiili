@@ -17,13 +17,20 @@ from app.models.enums import (
 from app.models.issue_item import IssueItem
 from app.models.user import User
 from app.models.website import Website
+from app.models.workspace import Workspace
+from app.models.workspace_member import WorkspaceMember
 
 
 async def _site(session: AsyncSession) -> Website:
     user = User(email="j@example.com", google_sub="sub-j")
     session.add(user)
     await session.flush()
-    site = Website(user_id=user.id, domain="j.com", display_name="J")
+    workspace = Workspace(name="J", owner_user_id=user.id)
+    session.add(workspace)
+    await session.flush()
+    session.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
+    await session.flush()
+    site = Website(workspace_id=workspace.id, domain="j.com", display_name="J")
     session.add(site)
     await session.flush()
     return site

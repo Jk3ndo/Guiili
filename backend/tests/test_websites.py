@@ -24,6 +24,7 @@ from app.models.website import Website
 from app.services.audit_probe import MockAuditProbe
 from app.services.stack_detector import StackDetection, StackGuess
 from app.services.tls_check import TlsStatus
+from tests.conftest import owner_workspace_id
 
 
 @pytest_asyncio.fixture
@@ -101,7 +102,7 @@ async def test_create_runs_first_audit_and_returns_snapshot(
     assert body["captured_at"] is not None
 
     site = (await db_session.execute(select(Website).where(Website.id == body["id"]))).scalar_one()
-    assert site.user_id == user.id
+    assert site.workspace_id == await owner_workspace_id(db_session, user)
     assert site.detected_stack is StackKind.NEXTJS
     assert site.ssl_status == "valid"
     assert site.ssl_checked_at is not None
@@ -139,9 +140,10 @@ async def test_same_domain_allowed_for_a_different_user(
     ).status_code == 201
 
     stranger = await make_user(sub="stranger-web", email="stranger@example.com")
-    site = Website(user_id=stranger.id, domain="shared.example", display_name="Theirs")
+    stranger_workspace_id = await owner_workspace_id(db_session, stranger)
+    site = Website(workspace_id=stranger_workspace_id, domain="shared.example", display_name="Theirs")
     db_session.add(site)
-    await db_session.flush()  # pas d'IntegrityError : unicite (user_id, domain)
+    await db_session.flush()  # pas d'IntegrityError : unicite (workspace_id, domain)
 
     listed = (await client.get("/api/v1/websites")).json()
     assert [w["domain"] for w in listed] == ["shared.example"]  # isole a l'utilisateur

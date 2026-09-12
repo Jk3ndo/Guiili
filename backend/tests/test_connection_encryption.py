@@ -17,7 +17,7 @@ from app.services.connections import (
     upsert_google_connection,
 )
 from app.services.google_oauth.base import GoogleTokenResponse, GoogleUserInfo
-from tests.conftest import UserFactory
+from tests.conftest import UserFactory, owner_workspace_id
 
 _KEY = os.urandom(32)
 
@@ -46,7 +46,7 @@ async def test_refresh_token_stored_encrypted(
     cipher = _cipher()
     conn = await upsert_google_connection(
         db_session,
-        user_id=user.id,
+        workspace_id=await owner_workspace_id(db_session, user),
         userinfo=_userinfo("g-1"),
         token=_token("1//SECRET"),
         cipher=cipher,
@@ -58,10 +58,11 @@ async def test_refresh_token_stored_encrypted(
 
 async def test_aad_bound_to_user_and_sub(db_session: AsyncSession, make_user: UserFactory) -> None:
     user = await make_user(sub="aad-user")
+    workspace_id = await owner_workspace_id(db_session, user)
     cipher = _cipher()
     conn = await upsert_google_connection(
         db_session,
-        user_id=user.id,
+        workspace_id=workspace_id,
         userinfo=_userinfo("g-aad"),
         token=_token("1//AAD"),
         cipher=cipher,
@@ -69,18 +70,19 @@ async def test_aad_bound_to_user_and_sub(db_session: AsyncSession, make_user: Us
     blob = conn.refresh_token_encrypted
 
     # bon AAD -> ok
-    good = connection_aad(user.id, "g-aad")
+    good = connection_aad(workspace_id, "g-aad")
     assert cipher.decrypt(EncryptedToken.unpack(blob), aad=good) == "1//AAD"
 
     # AAD d'un autre sub -> echec
     with pytest.raises(TokenDecryptionError):
-        cipher.decrypt(EncryptedToken.unpack(blob), aad=connection_aad(user.id, "autre-sub"))
-    # AAD d'un autre user -> echec
+        cipher.decrypt(EncryptedToken.unpack(blob), aad=connection_aad(workspace_id, "autre-sub"))
+    # AAD d'un autre workspace -> echec
     other_user = await make_user(sub="aad-user-2")
+    other_workspace_id = await owner_workspace_id(db_session, other_user)
     with pytest.raises(TokenDecryptionError):
         cipher.decrypt(
             EncryptedToken.unpack(blob),
-            aad=connection_aad(other_user.id, "g-aad"),
+            aad=connection_aad(other_workspace_id, "g-aad"),
         )
 
 
@@ -93,14 +95,14 @@ async def test_moving_blob_between_rows_fails_to_decrypt(
 
     conn_a = await upsert_google_connection(
         db_session,
-        user_id=user_a.id,
+        workspace_id=await owner_workspace_id(db_session, user_a),
         userinfo=_userinfo("g-mv-a"),
         token=_token("1//A"),
         cipher=cipher,
     )
     conn_b = await upsert_google_connection(
         db_session,
-        user_id=user_b.id,
+        workspace_id=await owner_workspace_id(db_session, user_b),
         userinfo=_userinfo("g-mv-b"),
         token=_token("1//B"),
         cipher=cipher,
@@ -122,7 +124,7 @@ async def test_upsert_rejects_missing_refresh_token(
     with pytest.raises(ValueError, match="refresh_token"):
         await upsert_google_connection(
             db_session,
-            user_id=user.id,
+            workspace_id=await owner_workspace_id(db_session, user),
             userinfo=_userinfo("g-nr"),
             token=token,
             cipher=_cipher(),

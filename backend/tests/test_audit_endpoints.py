@@ -22,6 +22,7 @@ from app.services.audit_probe import MockAuditProbe
 from app.services.gtm_headless import GtmHeadlessResult, _derive_findings
 from app.services.stack_detector import StackDetection
 from app.services.tls_check import TlsStatus
+from tests.conftest import owner_workspace_id
 
 
 @pytest_asyncio.fixture
@@ -51,7 +52,10 @@ async def mock_detector():
 
 
 async def _website(session: AsyncSession, *, user: User, domain: str) -> Website:
-    site = Website(user_id=user.id, domain=domain, display_name=domain.split(".", maxsplit=1)[0])
+    workspace_id = await owner_workspace_id(session, user)
+    site = Website(
+        workspace_id=workspace_id, domain=domain, display_name=domain.split(".", maxsplit=1)[0]
+    )
     session.add(site)
     await session.flush()
     return site

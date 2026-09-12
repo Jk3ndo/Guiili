@@ -12,12 +12,13 @@ from app.models.website_google_link import WebsiteGoogleLink
 from app.security.token_crypto import load_token_cipher
 from app.services.connections import upsert_google_connection
 from app.services.google_oauth.base import GoogleTokenResponse, GoogleUserInfo
+from tests.conftest import owner_workspace_id
 
 
 async def _connection(session: AsyncSession, *, user: User, sub: str) -> GoogleConnection:
     return await upsert_google_connection(
         session,
-        user_id=user.id,
+        workspace_id=await owner_workspace_id(session, user),
         userinfo=GoogleUserInfo(sub=sub, email=f"{sub}@gmail.com"),
         token=GoogleTokenResponse(
             access_token="at",
@@ -30,7 +31,8 @@ async def _connection(session: AsyncSession, *, user: User, sub: str) -> GoogleC
 
 
 async def _website(session: AsyncSession, *, user: User, domain: str) -> Website:
-    site = Website(user_id=user.id, domain=domain, display_name=domain)
+    workspace_id = await owner_workspace_id(session, user)
+    site = Website(workspace_id=workspace_id, domain=domain, display_name=domain)
     session.add(site)
     await session.flush()
     return site

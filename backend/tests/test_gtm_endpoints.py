@@ -12,12 +12,16 @@ from app.models.google_connection import GoogleConnection
 from app.models.user import User
 from app.models.website import Website
 from app.models.website_google_link import WebsiteGoogleLink
+from tests.conftest import owner_workspace_id
 
 
 async def _website(
     session: AsyncSession, *, user: User, domain: str, stack: StackKind | None = None
 ) -> Website:
-    site = Website(user_id=user.id, domain=domain, display_name=domain, detected_stack=stack)
+    workspace_id = await owner_workspace_id(session, user)
+    site = Website(
+        workspace_id=workspace_id, domain=domain, display_name=domain, detected_stack=stack
+    )
     session.add(site)
     await session.flush()
     return site
@@ -65,7 +69,7 @@ async def test_gtm_export_uses_linked_ga4_property(
     client, user = authed_client
     site = await _website(db_session, user=user, domain="linked.test")
     conn = GoogleConnection(
-        user_id=user.id,
+        workspace_id=await owner_workspace_id(db_session, user),
         google_account_email="a@gmail.com",
         google_sub="sub-gtm",
         granted_scopes=["openid"],
