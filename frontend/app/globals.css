@@ -1,7 +1,7 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
-/* next-themes writes class="dark" on <html>; dark is the product default. */
+/* app/layout.tsx sets class="dark" on <html> statically ; dark is the product default. */
 @custom-variant dark (&:where(.dark, .dark *));
 
 /* ------------------------------------------------------------------ *
