@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Response, status
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
 
 from app.api.deps import (
+    CurrentUserDep,
     GoogleClientDep,
     OptionalUserDep,
     SessionDep,
@@ -15,12 +17,19 @@ from app.api.deps import (
     TokenCipherDep,
 )
 from app.models.user import User
+from app.security.password import hash_password, verify_password
 from app.security.session import issue_session
 from app.services.connections import upsert_google_connection
 from app.services.google_oauth import InvalidGrantError
 from app.services.oauth_state import consume_oauth_state, create_oauth_transaction
+from app.services.workspaces import create_workspace_for_user
 
 router = APIRouter(prefix="/auth/google", tags=["auth"])
+# Routes email + mot de passe (register/login/logout/me) : prefix "/auth" distinct de
+# celui du router ci-dessus ("/auth/google", dedie a l'OAuth Google) pour ne pas toucher
+# aux routes google_start/google_callback (leur corps est modifie par une tache
+# ulterieure). Cable en plus de `router` dans app/api/v1/router.py.
+auth_router = APIRouter(prefix="/auth", tags=["auth"])
 
 _SESSION_MAX_AGE = int(timedelta(days=30).total_seconds())
 
@@ -140,3 +149,88 @@ async def google_callback(
         secure=settings.environment != "local",
     )
     return response
+
+
+class RegisterRequest(BaseModel):
+    email: EmailStr
+    password: str
+    display_name: str | None = None
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+def _set_session_cookie(response: Response, user_id, settings) -> None:
+    response.set_cookie(
+        settings.session_cookie_name,
+        issue_session(user_id, secret=settings.app_secret_key.get_secret_value()),
+        max_age=_SESSION_MAX_AGE,
+        httponly=True,
+        samesite="lax",
+        secure=settings.environment != "local",
+    )
+
+
+@auth_router.post("/register", status_code=status.HTTP_201_CREATED)
+async def register(
+    body: RegisterRequest, response: Response, session: SessionDep, settings: SettingsDep
+) -> None:
+    existing = (
+        await session.execute(select(User).where(User.email == body.email))
+    ).scalar_one_or_none()
+    if existing is not None:
+        detail = (
+            "ce compte utilise deja Google, connecte-toi avec Google"
+            if existing.google_sub is not None
+            else "email deja utilise"
+        )
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
+
+    user = User(
+        email=body.email,
+        password_hash=hash_password(body.password),
+        google_sub=None,
+        display_name=body.display_name,
+    )
+    session.add(user)
+    await session.flush()
+    await create_workspace_for_user(session, user=user)
+    await session.commit()
+    _set_session_cookie(response, user.id, settings)
+
+
+@auth_router.post("/login")
+async def login(
+    body: LoginRequest, response: Response, session: SessionDep, settings: SettingsDep
+) -> None:
+    user = (
+        await session.execute(select(User).where(User.email == body.email))
+    ).scalar_one_or_none()
+    if user is None or user.password_hash is None:
+        detail = (
+            "ce compte utilise Google, pas de mot de passe"
+            if user is not None
+            else "email ou mot de passe incorrect"
+        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+    if not verify_password(body.password, user.password_hash):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="email ou mot de passe incorrect")
+    _set_session_cookie(response, user.id, settings)
+
+
+@auth_router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(response: Response, settings: SettingsDep) -> None:
+    response.delete_cookie(settings.session_cookie_name)
+
+
+class MeOut(BaseModel):
+    id: UUID
+    email: str
+    display_name: str | None
+
+
+@auth_router.get("/me", response_model=MeOut)
+async def me(user: CurrentUserDep) -> MeOut:
+    return MeOut(id=user.id, email=user.email, display_name=user.display_name)
