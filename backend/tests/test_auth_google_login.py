@@ -57,6 +57,48 @@ async def test_google_login_new_user_gets_own_workspace(
     assert membership.role == "owner"
 
 
+async def test_google_login_twice_reuses_user_and_workspace(
+    db_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # Premiere connexion : cree le user + workspace.
+    state1 = await _start(db_client)
+    resp1 = await db_client.get(
+        "/api/v1/auth/google/callback",
+        params={"code": "mock:client_perso", "state": state1},
+        follow_redirects=False,
+    )
+    assert resp1.status_code == 302
+
+    user = (
+        await db_session.execute(select(User).where(User.google_sub == "google-sub-client-perso"))
+    ).scalar_one()
+    memberships_after_first = (
+        await db_session.execute(select(WorkspaceMember).where(WorkspaceMember.user_id == user.id))
+    ).scalars().all()
+    assert len(memberships_after_first) == 1
+
+    # Deuxieme connexion avec le meme google_sub : doit reutiliser le meme user,
+    # pas en creer un second, et ne pas creer une seconde adhesion de workspace.
+    state2 = await _start(db_client)
+    resp2 = await db_client.get(
+        "/api/v1/auth/google/callback",
+        params={"code": "mock:client_perso", "state": state2},
+        follow_redirects=False,
+    )
+    assert resp2.status_code == 302
+
+    users_with_this_sub = (
+        await db_session.execute(select(User).where(User.google_sub == "google-sub-client-perso"))
+    ).scalars().all()
+    assert len(users_with_this_sub) == 1
+    assert users_with_this_sub[0].id == user.id
+
+    memberships_after_second = (
+        await db_session.execute(select(WorkspaceMember).where(WorkspaceMember.user_id == user.id))
+    ).scalars().all()
+    assert len(memberships_after_second) == 1
+
+
 async def test_google_login_rejects_email_already_password_based(
     db_client: AsyncClient,
 ) -> None:
