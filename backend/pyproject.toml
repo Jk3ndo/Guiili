@@ -13,6 +13,7 @@ dependencies = [
     "httpx>=0.28",
     "anthropic>=0.40",
     "playwright>=1.47",
+    "argon2-cffi>=25.1.0",
 ]
 
 [dependency-groups]
