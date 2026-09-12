@@ -28,7 +28,7 @@ def upgrade() -> None:
         sa.Column("owner_user_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.ForeignKeyConstraint(["owner_user_id"], ["users.id"], ondelete="RESTRICT"),
+        sa.ForeignKeyConstraint(["owner_user_id"], ["users.id"], name=op.f("fk_workspaces_owner_user_id_users"), ondelete="RESTRICT"),
     )
     op.create_index("ix_workspaces_owner_user_id", "workspaces", ["owner_user_id"])
 
@@ -39,8 +39,8 @@ def upgrade() -> None:
         sa.Column("user_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("role", sa.String(16), nullable=False),
         sa.Column("joined_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.ForeignKeyConstraint(["workspace_id"], ["workspaces.id"], ondelete="CASCADE"),
-        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["workspace_id"], ["workspaces.id"], name=op.f("fk_workspace_members_workspace_id_workspaces"), ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"], name=op.f("fk_workspace_members_user_id_users"), ondelete="CASCADE"),
         sa.UniqueConstraint("workspace_id", "user_id", name="uq_workspace_members_workspace_user"),
     )
     op.create_index("ix_workspace_members_workspace_id", "workspace_members", ["workspace_id"])
@@ -58,8 +58,8 @@ def upgrade() -> None:
         sa.Column("accepted_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.ForeignKeyConstraint(["workspace_id"], ["workspaces.id"], ondelete="CASCADE"),
-        sa.ForeignKeyConstraint(["invited_by_user_id"], ["users.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["workspace_id"], ["workspaces.id"], name=op.f("fk_workspace_invitations_workspace_id_workspaces"), ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["invited_by_user_id"], ["users.id"], name=op.f("fk_workspace_invitations_invited_by_user_id_users"), ondelete="CASCADE"),
     )
     op.create_index("ix_workspace_invitations_workspace_id", "workspace_invitations", ["workspace_id"])
     op.create_index(
@@ -74,7 +74,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("used_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"], name=op.f("fk_password_reset_tokens_user_id_users"), ondelete="CASCADE"),
     )
     op.create_index("ix_password_reset_tokens_user_id", "password_reset_tokens", ["user_id"])
     op.create_index(
@@ -150,16 +150,16 @@ def upgrade() -> None:
     # oauth_states : + workspace_id (nullable, increment B)
     op.add_column("oauth_states", sa.Column("workspace_id", postgresql.UUID(as_uuid=True), nullable=True))
     op.create_foreign_key(
-        "fk_oauth_states_workspace_id", "oauth_states", "workspaces", ["workspace_id"], ["id"], ondelete="CASCADE"
+        "fk_oauth_states_workspace_id_workspaces", "oauth_states", "workspaces", ["workspace_id"], ["id"], ondelete="CASCADE"
     )
     op.create_foreign_key(
-        "fk_websites_workspace_id", "websites", "workspaces", ["workspace_id"], ["id"], ondelete="CASCADE"
+        "fk_websites_workspace_id_workspaces", "websites", "workspaces", ["workspace_id"], ["id"], ondelete="CASCADE"
     )
     op.create_foreign_key(
-        "fk_google_connections_workspace_id", "google_connections", "workspaces", ["workspace_id"], ["id"], ondelete="CASCADE"
+        "fk_google_connections_workspace_id_workspaces", "google_connections", "workspaces", ["workspace_id"], ["id"], ondelete="CASCADE"
     )
     op.create_foreign_key(
-        "fk_advisor_usage_workspace_id", "advisor_usage", "workspaces", ["workspace_id"], ["id"], ondelete="CASCADE"
+        "fk_advisor_usage_workspace_id_workspaces", "advisor_usage", "workspaces", ["workspace_id"], ["id"], ondelete="CASCADE"
     )
 
 
@@ -168,11 +168,11 @@ def downgrade() -> None:
     conn = op.get_bind()
 
     # oauth_states : retirer la colonne ajoutee (jamais exploitee avant l'increment B).
-    op.drop_constraint("fk_oauth_states_workspace_id", "oauth_states", type_="foreignkey")
+    op.drop_constraint("fk_oauth_states_workspace_id_workspaces", "oauth_states", type_="foreignkey")
     op.drop_column("oauth_states", "workspace_id")
 
     # advisor_usage : workspace_id -> user_id (backfill via owner_user_id du workspace).
-    op.drop_constraint("fk_advisor_usage_workspace_id", "advisor_usage", type_="foreignkey")
+    op.drop_constraint("fk_advisor_usage_workspace_id_workspaces", "advisor_usage", type_="foreignkey")
     op.add_column("advisor_usage", sa.Column("user_id", postgresql.UUID(as_uuid=True), nullable=True))
     conn.execute(
         sa.text(
@@ -186,7 +186,7 @@ def downgrade() -> None:
     op.create_primary_key("pk_advisor_usage", "advisor_usage", ["user_id", "day"])
 
     # google_connections : workspace_id -> user_id.
-    op.drop_constraint("fk_google_connections_workspace_id", "google_connections", type_="foreignkey")
+    op.drop_constraint("fk_google_connections_workspace_id_workspaces", "google_connections", type_="foreignkey")
     op.drop_index("ix_google_connections_workspace_id", table_name="google_connections")
     op.add_column("google_connections", sa.Column("user_id", postgresql.UUID(as_uuid=True), nullable=True))
     conn.execute(
@@ -204,7 +204,7 @@ def downgrade() -> None:
     op.drop_column("google_connections", "workspace_id")
 
     # websites : workspace_id -> user_id.
-    op.drop_constraint("fk_websites_workspace_id", "websites", type_="foreignkey")
+    op.drop_constraint("fk_websites_workspace_id_workspaces", "websites", type_="foreignkey")
     op.drop_index("ix_websites_workspace_id", table_name="websites")
     op.add_column("websites", sa.Column("user_id", postgresql.UUID(as_uuid=True), nullable=True))
     conn.execute(
