@@ -32,7 +32,11 @@ export function useOverview(workspace: Workspace) {
       setData(getOverview(workspace));
       setSource("fallback");
     }
-  }, [workspace]);
+    // `workspace.domain` (a stable string) is the real trigger; depending on
+    // `workspace` itself would refire on every reference change even when
+    // nothing usable changed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspace.domain]);
 
   useEffect(() => {
     void load();
@@ -64,7 +68,9 @@ export function useBacklog(workspace: Workspace) {
       setSource("fallback");
     }
     setVersion((current) => current + 1);
-  }, [workspace]);
+    // Same rationale as useOverview above: `workspace.domain` is the real trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspace.domain]);
 
   useEffect(() => {
     void load();
