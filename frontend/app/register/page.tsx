@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -9,8 +9,10 @@ import { Input } from "@/components/ui/input";
 import { register } from "@/lib/api/auth";
 import { ApiError } from "@/lib/api/client";
 
-export default function RegisterPage() {
+function RegisterForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const invitation = searchParams.get("invitation");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -21,7 +23,9 @@ export default function RegisterPage() {
     setLoading(true);
     try {
       await register(email, password, displayName);
-      router.push("/overview");
+      // Si l'inscription part d'une invitation, on renvoie vers la page
+      // d'invitation pour finaliser l'acceptation plutôt que vers /overview.
+      router.push(invitation ? `/invitations/${invitation}` : "/overview");
     } catch (error) {
       toast.error(error instanceof ApiError ? error.message : "Création de compte impossible");
     } finally {
@@ -74,5 +78,13 @@ export default function RegisterPage() {
         </a>
       </form>
     </div>
+  );
+}
+
+export default function RegisterPage() {
+  return (
+    <Suspense fallback={null}>
+      <RegisterForm />
+    </Suspense>
   );
 }
