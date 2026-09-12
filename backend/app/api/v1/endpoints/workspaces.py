@@ -18,6 +18,7 @@ from app.services.workspace_invites import (
     create_invitation,
     get_invitation,
 )
+from app.services.workspaces import is_member
 
 router = APIRouter(tags=["workspaces"])
 
@@ -41,16 +42,16 @@ class InvitationOut(BaseModel):
 
 
 async def _require_owner(session: SessionDep, workspace_id: UUID, user_id: UUID) -> None:
-    row = (
+    if not await is_member(session, workspace_id=workspace_id, user_id=user_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="workspace introuvable")
+    role = (
         await session.execute(
-            select(WorkspaceMember).where(
+            select(WorkspaceMember.role).where(
                 WorkspaceMember.workspace_id == workspace_id, WorkspaceMember.user_id == user_id
             )
         )
     ).scalar_one_or_none()
-    if row is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="workspace introuvable")
-    if row.role != "owner":
+    if role != "owner":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="reserve au proprietaire")
 
 
