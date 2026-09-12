@@ -13,25 +13,21 @@ from app.api.deps import (
     CurrentUserDep,
     EmailSenderDep,
     GoogleClientDep,
-    OptionalUserDep,
     SessionDep,
     SettingsDep,
-    TokenCipherDep,
 )
 from app.models.password_reset_token import PasswordResetToken
 from app.models.user import User
 from app.security.password import hash_password, verify_password
 from app.security.session import issue_session
-from app.services.connections import upsert_google_connection
 from app.services.google_oauth import InvalidGrantError
 from app.services.oauth_state import consume_oauth_state, create_oauth_transaction
 from app.services.workspaces import create_workspace_for_user
 
 router = APIRouter(prefix="/auth/google", tags=["auth"])
 # Routes email + mot de passe (register/login/logout/me) : prefix "/auth" distinct de
-# celui du router ci-dessus ("/auth/google", dedie a l'OAuth Google) pour ne pas toucher
-# aux routes google_start/google_callback (leur corps est modifie par une tache
-# ulterieure). Cable en plus de `router` dans app/api/v1/router.py.
+# celui du router ci-dessus ("/auth/google", dedie au login Google, scopes identite
+# seule). Cable en plus de `router` dans app/api/v1/router.py.
 auth_router = APIRouter(prefix="/auth", tags=["auth"])
 
 _SESSION_MAX_AGE = int(timedelta(days=30).total_seconds())
@@ -47,12 +43,11 @@ async def google_start(
     session: SessionDep,
     settings: SettingsDep,
     client: GoogleClientDep,
-    current_user: OptionalUserDep,
     redirect_to: str | None = None,
 ) -> StartResponse:
     transaction = await create_oauth_transaction(
         session,
-        user_id=current_user.id if current_user else None,
+        user_id=None,
         redirect_to=redirect_to,
         ttl_seconds=settings.oauth_state_ttl_seconds,
     )
@@ -60,7 +55,6 @@ async def google_start(
     url = client.build_authorization_url(
         state=transaction.state,
         code_challenge=transaction.code_challenge,
-        login_hint=current_user.email if current_user else None,
     )
     return StartResponse(authorization_url=url)
 
@@ -70,7 +64,6 @@ async def google_callback(
     session: SessionDep,
     settings: SettingsDep,
     client: GoogleClientDep,
-    cipher: TokenCipherDep,
     code: str | None = None,
     state: str | None = None,
     error: str | None = None,
@@ -111,33 +104,27 @@ async def google_callback(
             detail="Google n'a pas fourni de refresh token — reconsentement requis",
         )
 
-    if consumed.user_id is not None:
-        user = await session.get(User, consumed.user_id)
-        if user is None:
+    user = (
+        await session.execute(select(User).where(User.google_sub == userinfo.sub))
+    ).scalar_one_or_none()
+    if user is None:
+        existing_password_user = (
+            await session.execute(
+                select(User).where(
+                    User.email == userinfo.email, User.password_hash.is_not(None)
+                )
+            )
+        ).scalar_one_or_none()
+        if existing_password_user is not None:
+            await session.commit()
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="utilisateur de session introuvable",
+                detail="ce compte utilise deja un mot de passe, connecte-toi avec ton mot de passe",
             )
-    else:
-        user = (
-            await session.execute(select(User).where(User.google_sub == userinfo.sub))
-        ).scalar_one_or_none()
-        if user is None:
-            user = User(
-                email=userinfo.email,
-                google_sub=userinfo.sub,
-                display_name=userinfo.name,
-            )
-            session.add(user)
-            await session.flush()
-
-    await upsert_google_connection(
-        session,
-        user_id=user.id,
-        userinfo=userinfo,
-        token=token,
-        cipher=cipher,
-    )
+        user = User(email=userinfo.email, google_sub=userinfo.sub, display_name=userinfo.name)
+        session.add(user)
+        await session.flush()
+        await create_workspace_for_user(session, user=user)
     await session.commit()
 
     response = RedirectResponse(

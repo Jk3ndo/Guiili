@@ -1,4 +1,5 @@
 from app.services.google_oauth.base import (
+    GOOGLE_LOGIN_SCOPES,
     GOOGLE_OAUTH_SCOPES,
     DiscoveredResources,
     Ga4Property,
@@ -14,6 +15,7 @@ from app.services.google_oauth.base import (
 from app.services.google_oauth.factory import get_google_oauth_client
 
 __all__ = [
+    "GOOGLE_LOGIN_SCOPES",
     "GOOGLE_OAUTH_SCOPES",
     "DiscoveredResources",
     "Ga4Property",
