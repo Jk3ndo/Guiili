@@ -21,6 +21,7 @@ from app.models.enums import StackKind
 from app.models.issue_item import IssueItem
 from app.models.user import User
 from app.models.website import Website
+from app.models.workspace_member import WorkspaceMember
 from app.services.audit_probe import MockAuditProbe
 from app.services.stack_detector import StackDetection, StackGuess
 from app.services.tls_check import TlsStatus
@@ -278,8 +279,6 @@ async def test_list_websites_includes_sites_from_joined_workspace(
     db_session: AsyncSession,
     make_user,
 ) -> None:
-    from app.models.workspace_member import WorkspaceMember
-
     client, user = authed_client
     own_ws = await owner_workspace_id(db_session, user)
     db_session.add(Website(workspace_id=own_ws, domain="mine.test", display_name="Mine"))
