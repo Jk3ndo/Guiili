@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import timedelta
+import secrets
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Response, status
@@ -10,12 +11,14 @@ from sqlalchemy import select
 
 from app.api.deps import (
     CurrentUserDep,
+    EmailSenderDep,
     GoogleClientDep,
     OptionalUserDep,
     SessionDep,
     SettingsDep,
     TokenCipherDep,
 )
+from app.models.password_reset_token import PasswordResetToken
 from app.models.user import User
 from app.security.password import hash_password, verify_password
 from app.security.session import issue_session
@@ -32,6 +35,7 @@ router = APIRouter(prefix="/auth/google", tags=["auth"])
 auth_router = APIRouter(prefix="/auth", tags=["auth"])
 
 _SESSION_MAX_AGE = int(timedelta(days=30).total_seconds())
+_RESET_TTL = timedelta(hours=1)
 
 
 class StartResponse(BaseModel):
@@ -234,3 +238,56 @@ class MeOut(BaseModel):
 @auth_router.get("/me", response_model=MeOut)
 async def me(user: CurrentUserDep) -> MeOut:
     return MeOut(id=user.id, email=user.email, display_name=user.display_name)
+
+
+class PasswordResetRequest(BaseModel):
+    email: EmailStr
+
+
+class PasswordResetConfirm(BaseModel):
+    token: str
+    new_password: str
+
+
+@auth_router.post("/password-reset/request")
+async def password_reset_request(
+    body: PasswordResetRequest, session: SessionDep, settings: SettingsDep, email_sender: EmailSenderDep
+) -> dict[str, str]:
+    user = (
+        await session.execute(
+            select(User).where(User.email == body.email, User.password_hash.is_not(None))
+        )
+    ).scalar_one_or_none()
+    if user is not None:
+        token = secrets.token_urlsafe(32)
+        session.add(
+            PasswordResetToken(
+                user_id=user.id, token=token, expires_at=datetime.now(UTC) + _RESET_TTL
+            )
+        )
+        await session.commit()
+        link = f"{settings.frontend_base_url}/reset-password?token={token}"
+        await email_sender.send(
+            to=user.email, subject="Réinitialisation de mot de passe",
+            body_text=f"Clique ici pour choisir un nouveau mot de passe : {link}",
+        )
+    return {"status": "ok"}  # toujours 200, meme si l'email n'existe pas
+
+
+@auth_router.post("/password-reset/confirm")
+async def password_reset_confirm(
+    body: PasswordResetConfirm, session: SessionDep
+) -> dict[str, str]:
+    row = (
+        await session.execute(
+            select(PasswordResetToken).where(PasswordResetToken.token == body.token)
+        )
+    ).scalar_one_or_none()
+    if row is None or row.used_at is not None or row.expires_at < datetime.now(UTC):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="lien invalide ou expire")
+
+    user = await session.get(User, row.user_id)
+    user.password_hash = hash_password(body.new_password)
+    row.used_at = datetime.now(UTC)
+    await session.commit()
+    return {"status": "ok"}
