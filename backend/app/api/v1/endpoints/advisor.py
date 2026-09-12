@@ -172,6 +172,7 @@ async def create_brief_endpoint(
             session,
             website=site,
             user_id=user.id,
+            workspace_id=site.workspace_id,
             llm=llm,
             daily_cap=settings.advisor_daily_brief_cap,
         )
@@ -322,6 +323,7 @@ async def post_message_endpoint(
                 thread=thread,
                 website=site,
                 user_id=user.id,
+                workspace_id=site.workspace_id,
                 llm=llm,
                 user_text=body.text,
                 iteration_cap=settings.advisor_tool_iteration_cap,

@@ -36,7 +36,12 @@ async def test_generate_brief_persists_thread_message_and_usage(
     site = await _site_with_snapshot(db_session, user.id)
 
     outcome = await generate_brief(
-        db_session, website=site, user_id=user.id, llm=MockAdvisorLLM(), daily_cap=5
+        db_session,
+        website=site,
+        user_id=user.id,
+        workspace_id=site.workspace_id,
+        llm=MockAdvisorLLM(),
+        daily_cap=5,
     )
 
     thread = await db_session.get(AdvisorThread, outcome.thread_id)
@@ -60,7 +65,12 @@ async def test_second_call_increments_usage(
     site = await _site_with_snapshot(db_session, user.id)
     for _ in range(2):
         await generate_brief(
-            db_session, website=site, user_id=user.id, llm=MockAdvisorLLM(), daily_cap=5
+            db_session,
+            website=site,
+            user_id=user.id,
+            workspace_id=site.workspace_id,
+            llm=MockAdvisorLLM(),
+            daily_cap=5,
         )
     usage = (
         await db_session.execute(select(AdvisorUsage).where(AdvisorUsage.user_id == user.id))
@@ -74,11 +84,21 @@ async def test_cap_reached_raises_and_persists_nothing_more(
     user = await make_user(sub="svc-3")
     site = await _site_with_snapshot(db_session, user.id)
     await generate_brief(
-        db_session, website=site, user_id=user.id, llm=MockAdvisorLLM(), daily_cap=1
+        db_session,
+        website=site,
+        user_id=user.id,
+        workspace_id=site.workspace_id,
+        llm=MockAdvisorLLM(),
+        daily_cap=1,
     )
     with pytest.raises(AdvisorCapReached):
         await generate_brief(
-            db_session, website=site, user_id=user.id, llm=MockAdvisorLLM(), daily_cap=1
+            db_session,
+            website=site,
+            user_id=user.id,
+            workspace_id=site.workspace_id,
+            llm=MockAdvisorLLM(),
+            daily_cap=1,
         )
     count = (
         await db_session.execute(
@@ -94,7 +114,12 @@ async def test_uses_saved_persona(db_session: AsyncSession, make_user: UserFacto
     db_session.add(UserAdvisorSettings(user_id=user.id, persona_key="technique"))
     await db_session.flush()
     outcome = await generate_brief(
-        db_session, website=site, user_id=user.id, llm=MockAdvisorLLM(), daily_cap=5
+        db_session,
+        website=site,
+        user_id=user.id,
+        workspace_id=site.workspace_id,
+        llm=MockAdvisorLLM(),
+        daily_cap=5,
     )
     thread = await db_session.get(AdvisorThread, outcome.thread_id)
     assert thread.persona_key == "technique"
@@ -110,6 +135,7 @@ async def test_llm_error_propagates_nothing_persisted(
             db_session,
             website=site,
             user_id=user.id,
+            workspace_id=site.workspace_id,
             llm=MockAdvisorLLM(raises=RuntimeError("api down")),
             daily_cap=5,
         )

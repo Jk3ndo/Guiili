@@ -82,6 +82,7 @@ async def test_simple_reply_persists_user_and_assistant_messages(
             thread=thread,
             website=site,
             user_id=user.id,
+            workspace_id=site.workspace_id,
             llm=llm,
             user_text="Quel est mon score GA4 ?",
             iteration_cap=6,
@@ -128,6 +129,7 @@ async def test_tool_use_turn_executes_tool_and_continues(
             thread=thread,
             website=site,
             user_id=user.id,
+            workspace_id=site.workspace_id,
             llm=llm,
             user_text="Et avant ?",
             iteration_cap=6,
@@ -165,6 +167,7 @@ async def test_iteration_cap_stops_infinite_tool_loop(
             thread=thread,
             website=site,
             user_id=user.id,
+            workspace_id=site.workspace_id,
             llm=llm,
             user_text="boucle",
             iteration_cap=3,
@@ -190,6 +193,7 @@ async def test_history_is_reloaded_on_second_message(
     await _collect(
         run_chat_turn(
             db_session, thread=thread, website=site, user_id=user.id,
+            workspace_id=site.workspace_id,
             llm=llm, user_text="Question 1", iteration_cap=6,
         )
     )
@@ -206,6 +210,7 @@ async def test_history_is_reloaded_on_second_message(
     await _collect(
         run_chat_turn(
             db_session, thread=thread, website=site, user_id=user.id,
+            workspace_id=site.workspace_id,
             llm=llm2, user_text="Question 2", iteration_cap=6,
         )
     )
@@ -250,6 +255,7 @@ async def test_chat_can_trigger_rescan_via_tool(
             thread=thread,
             website=site,
             user_id=user.id,
+            workspace_id=site.workspace_id,
             llm=llm,
             user_text="relance un scan",
             iteration_cap=6,
@@ -332,6 +338,7 @@ async def test_chat_can_run_gtm_headless_probe_via_tool(
             thread=thread,
             website=site,
             user_id=user.id,
+            workspace_id=site.workspace_id,
             llm=llm,
             user_text="verifie GTM en conditions reelles",
             iteration_cap=6,
