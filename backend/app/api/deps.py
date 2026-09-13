@@ -86,9 +86,17 @@ def get_advisor_llm(settings: SettingsDep) -> AdvisorLLM:
     )
 
 
-def get_email_sender() -> EmailSender:
+def get_email_sender(settings: SettingsDep) -> EmailSender:
     # Aucun fournisseur reel configure pour l'instant (choix differe, voir spec §6/§9).
-    return ConsoleEmailSender()
+    # Meme garde-fou que le flag `secure` du cookie de session (auth.py) : ne
+    # jamais laisser tourner le ConsoleEmailSender (qui logge les tokens de
+    # reset/invitation en clair) hors dev local.
+    if settings.environment == "local":
+        return ConsoleEmailSender()
+    raise RuntimeError(
+        "Aucun fournisseur d'email reel configure — RealEmailSender n'est pas "
+        "implemente dans cet increment (voir spec §6/§9)."
+    )
 
 
 TokenCipherDep = Annotated[TokenCipher, Depends(get_token_cipher)]
