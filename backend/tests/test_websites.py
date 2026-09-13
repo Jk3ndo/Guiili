@@ -129,6 +129,38 @@ async def test_create_rejects_duplicate_domain_for_same_user(
     assert again.status_code == 409
 
 
+async def test_create_lands_in_owned_workspace_not_joined_one(
+    authed_client: tuple[AsyncClient, User],
+    db_session: AsyncSession,
+    make_user,
+    fake_detector: None,
+) -> None:
+    """Un utilisateur membre (invite) d'un workspace ET owner d'un autre doit
+    voir son nouveau site atterrir dans le workspace qu'il possede, jamais
+    dans celui ou il n'est que membre invite — regression sur le tri
+    deterministe (role owner en priorite) de la resolution get-or-create."""
+    client, user = authed_client
+    own_ws = await owner_workspace_id(db_session, user)
+
+    other_owner = await make_user(sub="other-owner-ws-2")
+    other_ws = await owner_workspace_id(db_session, other_owner)
+    db_session.add(WorkspaceMember(workspace_id=other_ws, user_id=user.id, role="member"))
+    await db_session.flush()
+
+    resp = await client.post(
+        "/api/v1/websites", json={"name": "Nouveau", "domain": "nouveau-membre.test"}
+    )
+    assert resp.status_code == 201, resp.text
+
+    site = (
+        await db_session.execute(
+            select(Website).where(Website.domain == "nouveau-membre.test")
+        )
+    ).scalar_one()
+    assert site.workspace_id == own_ws
+    assert site.workspace_id != other_ws
+
+
 async def test_same_domain_allowed_for_a_different_user(
     authed_client: tuple[AsyncClient, User],
     db_session: AsyncSession,

@@ -219,12 +219,17 @@ async def create_website(
             detail=f"le domaine « {body.domain} » est déjà suivi",
         )
 
-    # Meme resolution get-or-create qu'en dev (app/api/v1/endpoints/dev.py) :
-    # tant que le flux d'inscription reel (increment ulterieur) ne cree pas
-    # encore le workspace a la volee, on le cree ici au besoin.
+    # Meme resolution get-or-create qu'en dev (app/api/v1/endpoints/dev.py).
+    # Un utilisateur peut appartenir a plusieurs workspaces (invitations,
+    # Task 9) : tri deterministe pour privilegier le workspace dont il est
+    # owner (jamais un workspace ou il n'est que membre invite), avec
+    # created_at comme depart-egalite stable.
     workspace = (
         await session.execute(
-            select(Workspace).join(WorkspaceMember).where(WorkspaceMember.user_id == user.id)
+            select(Workspace)
+            .join(WorkspaceMember)
+            .where(WorkspaceMember.user_id == user.id)
+            .order_by((WorkspaceMember.role == "owner").desc(), Workspace.created_at.asc())
         )
     ).scalars().first()
     if workspace is None:

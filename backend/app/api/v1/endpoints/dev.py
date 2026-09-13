@@ -70,9 +70,14 @@ async def dev_workspaces(
         session.add(user)
         await session.flush()
 
+    # Meme tri deterministe que POST /websites (owner avant simple membre) ;
+    # peu d'enjeu ici (utilisateur de dev unique) mais coherence de pattern.
     workspace = (
         await session.execute(
-            select(Workspace).join(WorkspaceMember).where(WorkspaceMember.user_id == user.id)
+            select(Workspace)
+            .join(WorkspaceMember)
+            .where(WorkspaceMember.user_id == user.id)
+            .order_by((WorkspaceMember.role == "owner").desc(), Workspace.created_at.asc())
         )
     ).scalars().first()
     if workspace is None:
