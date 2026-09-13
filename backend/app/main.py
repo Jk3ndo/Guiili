@@ -1,3 +1,4 @@
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated
@@ -11,6 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.router import api_router
 from app.config import get_settings
 from app.db.session import engine, get_session
+
+# Le logger racine n'a par défaut aucun handler (niveau WARNING) : sans ceci,
+# tout logger.info() applicatif (ex. ConsoleEmailSender) est silencieusement
+# avalé au runtime, même si uvicorn tourne — seul son propre logger d'accès
+# s'affiche. Sans effet sur pytest (caplog installe son propre handler).
+logging.basicConfig(
+    level=logging.INFO, format="%(levelname)s %(name)s: %(message)s", force=True
+)
 
 
 @asynccontextmanager
