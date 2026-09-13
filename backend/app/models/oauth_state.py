@@ -26,6 +26,11 @@ class OAuthState(UUIDPrimaryKeyMixin, Base):
     user_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=True
     )
+    # Workspace cible du flux "ajouter une connexion Google" — colonne posee
+    # maintenant, exploitee seulement a partir de l'increment B.
+    workspace_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True
+    )
     redirect_to: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

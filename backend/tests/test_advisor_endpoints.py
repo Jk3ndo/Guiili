@@ -17,6 +17,7 @@ from app.models.enums import SnapshotSource
 from app.models.user import User
 from app.models.website import Website
 from app.services.advisor.llm import MockAdvisorLLM, TurnResult
+from tests.conftest import owner_workspace_id
 
 _ZERO = {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}
 
@@ -40,7 +41,8 @@ def mock_advisor():
 
 
 async def _site(db_session: AsyncSession, *, user: User, domain: str = "adv.test") -> Website:
-    site = Website(user_id=user.id, domain=domain, display_name=domain.partition(".")[0])
+    workspace_id = await owner_workspace_id(db_session, user)
+    site = Website(workspace_id=workspace_id, domain=domain, display_name=domain.partition(".")[0])
     db_session.add(site)
     await db_session.flush()
     db_session.add(
@@ -148,11 +150,10 @@ async def test_brief_404_on_foreign_site(
     authed_client: tuple[AsyncClient, User],
     db_session: AsyncSession,
     mock_advisor: None,
+    make_user,
 ) -> None:
     client, _ = authed_client
-    other = User(email="other@x.com", google_sub="other-adv", display_name="Other")
-    db_session.add(other)
-    await db_session.flush()
+    other = await make_user(sub="other-adv", email="other@x.com", name="Other")
     foreign = await _site(db_session, user=other, domain="foreign.test")
     assert (
         await client.post(f"/api/v1/websites/{foreign.id}/advisor/brief")
@@ -292,11 +293,10 @@ async def test_archive_thread_404_on_foreign_thread(
     authed_client: tuple[AsyncClient, User],
     db_session: AsyncSession,
     mock_advisor: None,
+    make_user,
 ) -> None:
     client, _ = authed_client
-    other = User(email="other2@x.com", google_sub="other-adv-2", display_name="Other2")
-    db_session.add(other)
-    await db_session.flush()
+    other = await make_user(sub="other-adv-2", email="other2@x.com", name="Other2")
     foreign_site = await _site(db_session, user=other, domain="foreign2.test")
     foreign_thread = AdvisorThread(
         website_id=foreign_site.id, persona_key="consultant", title="Fil etranger"

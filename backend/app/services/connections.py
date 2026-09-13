@@ -12,19 +12,19 @@ from app.security.token_crypto import EncryptedToken, TokenCipher
 from app.services.google_oauth.base import GoogleTokenResponse, GoogleUserInfo
 
 
-def connection_aad(user_id: UUID, google_sub: str) -> bytes:
-    """AAD stricte : lie le blob chiffre au couple (utilisateur, identite Google).
+def connection_aad(workspace_id: UUID, google_sub: str) -> bytes:
+    """AAD stricte : lie le blob chiffre au couple (workspace, identite Google).
 
-    Deplacer une ligne `refresh_token_encrypted` vers un autre user_id ou un
-    autre google_sub fait echouer le dechiffrement (`TokenDecryptionError`).
+    Deplacer une ligne `refresh_token_encrypted` vers un autre workspace_id ou
+    un autre google_sub fait echouer le dechiffrement (`TokenDecryptionError`).
     """
-    return f"gconn|user:{user_id}|sub:{google_sub}".encode()
+    return f"gconn|user:{workspace_id}|sub:{google_sub}".encode()
 
 
 async def upsert_google_connection(
     session: AsyncSession,
     *,
-    user_id: UUID,
+    workspace_id: UUID,
     userinfo: GoogleUserInfo,
     token: GoogleTokenResponse,
     cipher: TokenCipher,
@@ -32,7 +32,7 @@ async def upsert_google_connection(
     if token.refresh_token is None:
         raise ValueError("upsert_google_connection appele sans refresh_token")
 
-    aad = connection_aad(user_id, userinfo.sub)
+    aad = connection_aad(workspace_id, userinfo.sub)
     encrypted = cipher.encrypt(token.refresh_token, aad=aad)
     blob = encrypted.pack()
     now = datetime.now(UTC)
@@ -40,7 +40,7 @@ async def upsert_google_connection(
     existing = (
         await session.execute(
             select(GoogleConnection).where(
-                GoogleConnection.user_id == user_id,
+                GoogleConnection.workspace_id == workspace_id,
                 GoogleConnection.google_sub == userinfo.sub,
             )
         )
@@ -48,7 +48,7 @@ async def upsert_google_connection(
 
     if existing is None:
         connection = GoogleConnection(
-            user_id=user_id,
+            workspace_id=workspace_id,
             google_account_email=userinfo.email,
             google_sub=userinfo.sub,
             granted_scopes=list(token.scopes),
@@ -72,5 +72,5 @@ async def upsert_google_connection(
 
 
 def decrypt_refresh_token(connection: GoogleConnection, *, cipher: TokenCipher) -> str:
-    aad = connection_aad(connection.user_id, connection.google_sub)
+    aad = connection_aad(connection.workspace_id, connection.google_sub)
     return cipher.decrypt(EncryptedToken.unpack(connection.refresh_token_encrypted), aad=aad)

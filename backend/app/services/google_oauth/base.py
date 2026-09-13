@@ -10,7 +10,13 @@ from __future__ import annotations
 import abc
 from dataclasses import dataclass, field
 
+# Scopes identite seule, utilises par le flow de login (`/auth/google/*`). Aucune
+# connexion de donnees n'est creee a partir de ces scopes.
+GOOGLE_LOGIN_SCOPES: tuple[str, ...] = ("openid", "email", "profile")
+
 # Scopes STRICTEMENT en lecture (aucun scope sensible/restreint -> pas de CASA).
+# Reserve a l'increment B ("connecter une source de donnees", `/connections/google/*`) —
+# non utilise par ce plan.
 GOOGLE_OAUTH_SCOPES: tuple[str, ...] = (
     "openid",
     "email",
@@ -86,7 +92,12 @@ class DiscoveredResources:
 class GoogleOAuthClient(abc.ABC):
     @abc.abstractmethod
     def build_authorization_url(
-        self, *, state: str, code_challenge: str, login_hint: str | None = None
+        self,
+        *,
+        state: str,
+        code_challenge: str,
+        login_hint: str | None = None,
+        scopes: tuple[str, ...] = GOOGLE_LOGIN_SCOPES,
     ) -> str: ...
 
     @abc.abstractmethod

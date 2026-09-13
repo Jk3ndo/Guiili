@@ -33,16 +33,16 @@ class BriefOutcome:
     usage: dict
 
 
-async def _usage_row(session: AsyncSession, user_id: UUID, day) -> AdvisorUsage:
+async def _usage_row(session: AsyncSession, workspace_id: UUID, day) -> AdvisorUsage:
     row = (
         await session.execute(
             select(AdvisorUsage).where(
-                AdvisorUsage.user_id == user_id, AdvisorUsage.day == day
+                AdvisorUsage.workspace_id == workspace_id, AdvisorUsage.day == day
             )
         )
     ).scalar_one_or_none()
     if row is None:
-        row = AdvisorUsage(user_id=user_id, day=day, brief_count=0, message_count=0)
+        row = AdvisorUsage(workspace_id=workspace_id, day=day, brief_count=0, message_count=0)
         session.add(row)
         await session.flush()
     return row
@@ -53,11 +53,12 @@ async def generate_brief(
     *,
     website: Website,
     user_id: UUID,
+    workspace_id: UUID,
     llm: AdvisorLLM,
     daily_cap: int,
 ) -> BriefOutcome:
     now = datetime.now(UTC)
-    usage = await _usage_row(session, user_id, now.date())
+    usage = await _usage_row(session, workspace_id, now.date())
     if usage.brief_count >= daily_cap:
         raise AdvisorCapReached(
             f"Limite quotidienne de briefs atteinte ({daily_cap}). Réessaie demain."

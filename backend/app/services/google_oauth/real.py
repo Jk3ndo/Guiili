@@ -10,7 +10,7 @@ from urllib.parse import urlencode
 import httpx
 
 from app.services.google_oauth.base import (
-    GOOGLE_OAUTH_SCOPES,
+    GOOGLE_LOGIN_SCOPES,
     DiscoveredResources,
     Ga4Property,
     GoogleOAuthClient,
@@ -51,13 +51,18 @@ class RealGoogleOAuthClient(GoogleOAuthClient):
         self._redirect_uri = redirect_uri
 
     def build_authorization_url(
-        self, *, state: str, code_challenge: str, login_hint: str | None = None
+        self,
+        *,
+        state: str,
+        code_challenge: str,
+        login_hint: str | None = None,
+        scopes: tuple[str, ...] = GOOGLE_LOGIN_SCOPES,
     ) -> str:
         params = {
             "response_type": "code",
             "client_id": self._client_id,
             "redirect_uri": self._redirect_uri,
-            "scope": " ".join(GOOGLE_OAUTH_SCOPES),
+            "scope": " ".join(scopes),
             "state": state,
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",

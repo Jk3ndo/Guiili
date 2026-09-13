@@ -13,11 +13,13 @@ from app.models.enums import (
 from app.models.issue_item import IssueItem
 from app.models.website import Website
 from app.services.advisor.context_builder import build_context
-from tests.conftest import UserFactory
+from tests.conftest import UserFactory, owner_workspace_id
 
 
-async def _site(db_session: AsyncSession, user_id) -> Website:
-    site = Website(user_id=user_id, domain="ctx.test", display_name="Ctx", detected_stack=None)
+async def _site(db_session: AsyncSession, workspace_id) -> Website:
+    site = Website(
+        workspace_id=workspace_id, domain="ctx.test", display_name="Ctx", detected_stack=None
+    )
     db_session.add(site)
     await db_session.flush()
     return site
@@ -27,7 +29,7 @@ async def test_context_is_deterministic_sorted_json(
     db_session: AsyncSession, make_user: UserFactory
 ) -> None:
     user = await make_user(sub="ctx-1")
-    site = await _site(db_session, user.id)
+    site = await _site(db_session, await owner_workspace_id(db_session, user))
     db_session.add(
         AuditSnapshot(
             website_id=site.id,
@@ -74,7 +76,7 @@ async def test_context_without_snapshot_flags_gap(
     db_session: AsyncSession, make_user: UserFactory
 ) -> None:
     user = await make_user(sub="ctx-2")
-    site = await _site(db_session, user.id)
+    site = await _site(db_session, await owner_workspace_id(db_session, user))
     data = json.loads(await build_context(db_session, site))
     assert data["latest_snapshot"] is None
     assert "no_snapshot" in data["data_gaps"]

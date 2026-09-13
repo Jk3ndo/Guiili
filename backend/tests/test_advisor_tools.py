@@ -13,15 +13,15 @@ from app.services.audit_probe import MockAuditProbe
 from app.services.gtm_headless import GtmHeadlessResult
 from app.services.stack_detector import StackDetection
 from app.services.tls_check import TlsStatus
-from tests.conftest import UserFactory
+from tests.conftest import UserFactory, owner_workspace_id
 
 
 def _client(handler) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
-async def _site(db_session, user_id, domain: str = "tool.test") -> Website:
-    site = Website(user_id=user_id, domain=domain, display_name="Tool")
+async def _site(db_session, workspace_id, domain: str = "tool.test") -> Website:
+    site = Website(workspace_id=workspace_id, domain=domain, display_name="Tool")
     db_session.add(site)
     await db_session.flush()
     return site
@@ -86,7 +86,7 @@ async def _snapshot_with_gtm(db_session, site: Website) -> None:
 
 async def test_get_score_history_clamps_days(db_session, make_user: UserFactory) -> None:
     user = await make_user(sub="tl-1")
-    site = await _site(db_session, user.id)
+    site = await _site(db_session, await owner_workspace_id(db_session, user))
     old = datetime.now(UTC) - timedelta(days=200)
     recent = datetime.now(UTC) - timedelta(days=5)
     for when, ga4 in ((old, 10), (recent, 80)):
@@ -110,14 +110,14 @@ async def test_get_score_history_clamps_days(db_session, make_user: UserFactory)
 
 async def test_get_score_history_default_days(db_session, make_user: UserFactory) -> None:
     user = await make_user(sub="tl-1b")
-    site = await _site(db_session, user.id)
+    site = await _site(db_session, await owner_workspace_id(db_session, user))
     out = await dispatch("get_score_history", {}, ToolContext(session=db_session, website=site))
     assert out == {"history": []}
 
 
 async def test_get_snapshot_detail_defaults_to_latest(db_session, make_user: UserFactory) -> None:
     user = await make_user(sub="tl-2")
-    site = await _site(db_session, user.id)
+    site = await _site(db_session, await owner_workspace_id(db_session, user))
     db_session.add(
         AuditSnapshot(
             website_id=site.id,
@@ -137,7 +137,7 @@ async def test_get_snapshot_detail_unknown_id_returns_error(
     db_session, make_user: UserFactory
 ) -> None:
     user = await make_user(sub="tl-3")
-    site = await _site(db_session, user.id)
+    site = await _site(db_session, await owner_workspace_id(db_session, user))
     out = await dispatch(
         "get_snapshot_detail",
         {"snapshot_id": str(uuid4())},
@@ -150,7 +150,7 @@ async def test_get_snapshot_detail_invalid_id_returns_error(
     db_session, make_user: UserFactory
 ) -> None:
     user = await make_user(sub="tl-3b")
-    site = await _site(db_session, user.id)
+    site = await _site(db_session, await owner_workspace_id(db_session, user))
     out = await dispatch(
         "get_snapshot_detail",
         {"snapshot_id": "not-a-uuid"},
@@ -161,7 +161,7 @@ async def test_get_snapshot_detail_invalid_id_returns_error(
 
 async def test_get_gtm_check_reads_latest_snapshot(db_session, make_user: UserFactory) -> None:
     user = await make_user(sub="tl-4")
-    site = await _site(db_session, user.id)
+    site = await _site(db_session, await owner_workspace_id(db_session, user))
     db_session.add(
         AuditSnapshot(
             website_id=site.id,
@@ -177,7 +177,7 @@ async def test_get_gtm_check_reads_latest_snapshot(db_session, make_user: UserFa
 
 async def test_get_gtm_check_no_snapshot_returns_error(db_session, make_user: UserFactory) -> None:
     user = await make_user(sub="tl-4b")
-    site = await _site(db_session, user.id)
+    site = await _site(db_session, await owner_workspace_id(db_session, user))
     out = await dispatch("get_gtm_check", {}, ToolContext(session=db_session, website=site))
     assert "error" in out
 
@@ -256,7 +256,7 @@ async def test_dispatch_unknown_tool() -> None:
 
 async def test_trigger_rescan_creates_snapshot(db_session, make_user: UserFactory) -> None:
     user = await make_user(sub="act-1")
-    site = await _site(db_session, user.id, domain="rescan.test")
+    site = await _site(db_session, await owner_workspace_id(db_session, user), domain="rescan.test")
     thread = await _thread(db_session, site)
     ctx = ToolContext(
         session=db_session,
@@ -275,7 +275,7 @@ async def test_trigger_rescan_creates_snapshot(db_session, make_user: UserFactor
 
 async def test_trigger_rescan_is_rate_limited(db_session, make_user: UserFactory) -> None:
     user = await make_user(sub="act-2")
-    site = await _site(db_session, user.id, domain="rescan2.test")
+    site = await _site(db_session, await owner_workspace_id(db_session, user), domain="rescan2.test")
     thread = await _thread(db_session, site)
     ctx = ToolContext(
         session=db_session,
@@ -304,7 +304,7 @@ async def test_trigger_rescan_missing_deps_returns_error(
     db_session, make_user: UserFactory
 ) -> None:
     user = await make_user(sub="act-3")
-    site = await _site(db_session, user.id, domain="rescan3.test")
+    site = await _site(db_session, await owner_workspace_id(db_session, user), domain="rescan3.test")
     thread = await _thread(db_session, site)
     ctx = ToolContext(session=db_session, website=site, user_id=user.id, thread_id=thread.id)
     out = await dispatch("trigger_rescan", {}, ctx)
@@ -313,7 +313,7 @@ async def test_trigger_rescan_missing_deps_returns_error(
 
 async def test_draft_gtm_snippet_purchase_for_nextjs(db_session, make_user: UserFactory) -> None:
     user = await make_user(sub="snip-1")
-    site = await _site(db_session, user.id, domain="snip.test")
+    site = await _site(db_session, await owner_workspace_id(db_session, user), domain="snip.test")
     site.detected_stack = StackKind.NEXTJS
     ctx = ToolContext(session=db_session, website=site)
     out = await dispatch("draft_gtm_snippet", {"event": "purchase"}, ctx)
@@ -326,7 +326,7 @@ async def test_draft_gtm_snippet_unknown_event_returns_error(
     db_session, make_user: UserFactory
 ) -> None:
     user = await make_user(sub="snip-2")
-    site = await _site(db_session, user.id, domain="snip2.test")
+    site = await _site(db_session, await owner_workspace_id(db_session, user), domain="snip2.test")
     ctx = ToolContext(session=db_session, website=site)
     out = await dispatch("draft_gtm_snippet", {"event": "signup"}, ctx)
     assert "error" in out
@@ -336,7 +336,7 @@ async def test_run_gtm_headless_probe_updates_snapshot(
     db_session, make_user: UserFactory
 ) -> None:
     user = await make_user(sub="headless-1")
-    site = await _site(db_session, user.id, domain="headless.test")
+    site = await _site(db_session, await owner_workspace_id(db_session, user), domain="headless.test")
     await _snapshot_with_gtm(db_session, site)
     thread = await _thread(db_session, site)
     ctx = ToolContext(
@@ -362,7 +362,7 @@ async def test_run_gtm_headless_probe_is_rate_limited(
     db_session, make_user: UserFactory
 ) -> None:
     user = await make_user(sub="headless-2")
-    site = await _site(db_session, user.id, domain="headless2.test")
+    site = await _site(db_session, await owner_workspace_id(db_session, user), domain="headless2.test")
     await _snapshot_with_gtm(db_session, site)
     thread = await _thread(db_session, site)
     ctx = ToolContext(
@@ -392,7 +392,7 @@ async def test_run_gtm_headless_probe_missing_deps_returns_error(
     db_session, make_user: UserFactory
 ) -> None:
     user = await make_user(sub="headless-3")
-    site = await _site(db_session, user.id, domain="headless3.test")
+    site = await _site(db_session, await owner_workspace_id(db_session, user), domain="headless3.test")
     await _snapshot_with_gtm(db_session, site)
     thread = await _thread(db_session, site)
     ctx = ToolContext(session=db_session, website=site, user_id=user.id, thread_id=thread.id)
@@ -404,7 +404,7 @@ async def test_run_gtm_headless_probe_no_static_check_returns_error(
     db_session, make_user: UserFactory
 ) -> None:
     user = await make_user(sub="headless-4")
-    site = await _site(db_session, user.id, domain="headless4.test")
+    site = await _site(db_session, await owner_workspace_id(db_session, user), domain="headless4.test")
     thread = await _thread(db_session, site)
     ctx = ToolContext(
         session=db_session,

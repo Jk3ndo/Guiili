@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING
 from uuid import UUID
 
 from sqlalchemy import (
@@ -13,27 +12,24 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
 from app.models.enums import ConnectionStatus, pg_enum
 from app.models.mixins import TimestampMixin, UUIDPrimaryKeyMixin
 
-if TYPE_CHECKING:
-    from app.models.user import User
-
 
 class GoogleConnection(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "google_connections"
     __table_args__ = (
-        # un utilisateur ne lie pas deux fois la même identité Google
+        # un workspace ne lie pas deux fois la même identité Google
         UniqueConstraint(
-            "user_id", "google_sub", name="uq_google_connections_user_google_sub"
+            "workspace_id", "google_sub", name="uq_google_connections_workspace_google_sub"
         ),
     )
 
-    user_id: Mapped[UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True
     )
     google_account_email: Mapped[str] = mapped_column(String(320), nullable=False)
     google_sub: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -52,5 +48,3 @@ class GoogleConnection(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     last_refreshed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-
-    user: Mapped[User] = relationship(back_populates="google_connections")

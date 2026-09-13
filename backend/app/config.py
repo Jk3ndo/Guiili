@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     advisor_tool_iteration_cap: int = 6  # incr. 3
 
     # Où renvoyer le navigateur après le callback OAuth (défaut = dev front).
-    frontend_base_url: str = "http://localhost:4000"
+    frontend_base_url: str = "http://127.0.0.1:4000"
     session_cookie_name: str = "cc_session"
     # Origines autorisées par CORS (le front Next.js en dev).
     cors_origins: list[str] = [

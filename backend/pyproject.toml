@@ -13,6 +13,8 @@ dependencies = [
     "httpx>=0.28",
     "anthropic>=0.40",
     "playwright>=1.47",
+    "argon2-cffi>=25.1.0",
+    "email-validator>=2.3.0",
 ]
 
 [dependency-groups]

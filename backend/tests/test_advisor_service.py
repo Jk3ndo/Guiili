@@ -10,11 +10,11 @@ from app.models.enums import SnapshotSource
 from app.models.website import Website
 from app.services.advisor.llm import MockAdvisorLLM
 from app.services.advisor.service import AdvisorCapReached, generate_brief
-from tests.conftest import UserFactory
+from tests.conftest import UserFactory, owner_workspace_id
 
 
-async def _site_with_snapshot(db_session: AsyncSession, user_id) -> Website:
-    site = Website(user_id=user_id, domain="svc.test", display_name="Svc")
+async def _site_with_snapshot(db_session: AsyncSession, workspace_id) -> Website:
+    site = Website(workspace_id=workspace_id, domain="svc.test", display_name="Svc")
     db_session.add(site)
     await db_session.flush()
     db_session.add(
@@ -33,10 +33,15 @@ async def test_generate_brief_persists_thread_message_and_usage(
     db_session: AsyncSession, make_user: UserFactory
 ) -> None:
     user = await make_user(sub="svc-1")
-    site = await _site_with_snapshot(db_session, user.id)
+    site = await _site_with_snapshot(db_session, await owner_workspace_id(db_session, user))
 
     outcome = await generate_brief(
-        db_session, website=site, user_id=user.id, llm=MockAdvisorLLM(), daily_cap=5
+        db_session,
+        website=site,
+        user_id=user.id,
+        workspace_id=site.workspace_id,
+        llm=MockAdvisorLLM(),
+        daily_cap=5,
     )
 
     thread = await db_session.get(AdvisorThread, outcome.thread_id)
@@ -48,7 +53,9 @@ async def test_generate_brief_persists_thread_message_and_usage(
     assert msg.blocks == [{"type": "text", "text": msg.text}]
 
     usage = (
-        await db_session.execute(select(AdvisorUsage).where(AdvisorUsage.user_id == user.id))
+        await db_session.execute(
+            select(AdvisorUsage).where(AdvisorUsage.workspace_id == site.workspace_id)
+        )
     ).scalar_one()
     assert usage.brief_count == 1
 
@@ -57,13 +64,20 @@ async def test_second_call_increments_usage(
     db_session: AsyncSession, make_user: UserFactory
 ) -> None:
     user = await make_user(sub="svc-2")
-    site = await _site_with_snapshot(db_session, user.id)
+    site = await _site_with_snapshot(db_session, await owner_workspace_id(db_session, user))
     for _ in range(2):
         await generate_brief(
-            db_session, website=site, user_id=user.id, llm=MockAdvisorLLM(), daily_cap=5
+            db_session,
+            website=site,
+            user_id=user.id,
+            workspace_id=site.workspace_id,
+            llm=MockAdvisorLLM(),
+            daily_cap=5,
         )
     usage = (
-        await db_session.execute(select(AdvisorUsage).where(AdvisorUsage.user_id == user.id))
+        await db_session.execute(
+            select(AdvisorUsage).where(AdvisorUsage.workspace_id == site.workspace_id)
+        )
     ).scalar_one()
     assert usage.brief_count == 2
 
@@ -72,13 +86,23 @@ async def test_cap_reached_raises_and_persists_nothing_more(
     db_session: AsyncSession, make_user: UserFactory
 ) -> None:
     user = await make_user(sub="svc-3")
-    site = await _site_with_snapshot(db_session, user.id)
+    site = await _site_with_snapshot(db_session, await owner_workspace_id(db_session, user))
     await generate_brief(
-        db_session, website=site, user_id=user.id, llm=MockAdvisorLLM(), daily_cap=1
+        db_session,
+        website=site,
+        user_id=user.id,
+        workspace_id=site.workspace_id,
+        llm=MockAdvisorLLM(),
+        daily_cap=1,
     )
     with pytest.raises(AdvisorCapReached):
         await generate_brief(
-            db_session, website=site, user_id=user.id, llm=MockAdvisorLLM(), daily_cap=1
+            db_session,
+            website=site,
+            user_id=user.id,
+            workspace_id=site.workspace_id,
+            llm=MockAdvisorLLM(),
+            daily_cap=1,
         )
     count = (
         await db_session.execute(
@@ -90,11 +114,16 @@ async def test_cap_reached_raises_and_persists_nothing_more(
 
 async def test_uses_saved_persona(db_session: AsyncSession, make_user: UserFactory) -> None:
     user = await make_user(sub="svc-4")
-    site = await _site_with_snapshot(db_session, user.id)
+    site = await _site_with_snapshot(db_session, await owner_workspace_id(db_session, user))
     db_session.add(UserAdvisorSettings(user_id=user.id, persona_key="technique"))
     await db_session.flush()
     outcome = await generate_brief(
-        db_session, website=site, user_id=user.id, llm=MockAdvisorLLM(), daily_cap=5
+        db_session,
+        website=site,
+        user_id=user.id,
+        workspace_id=site.workspace_id,
+        llm=MockAdvisorLLM(),
+        daily_cap=5,
     )
     thread = await db_session.get(AdvisorThread, outcome.thread_id)
     assert thread.persona_key == "technique"
@@ -104,12 +133,13 @@ async def test_llm_error_propagates_nothing_persisted(
     db_session: AsyncSession, make_user: UserFactory
 ) -> None:
     user = await make_user(sub="svc-5")
-    site = await _site_with_snapshot(db_session, user.id)
+    site = await _site_with_snapshot(db_session, await owner_workspace_id(db_session, user))
     with pytest.raises(RuntimeError):
         await generate_brief(
             db_session,
             website=site,
             user_id=user.id,
+            workspace_id=site.workspace_id,
             llm=MockAdvisorLLM(raises=RuntimeError("api down")),
             daily_cap=5,
         )

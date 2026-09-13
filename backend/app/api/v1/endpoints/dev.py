@@ -16,6 +16,8 @@ from app.models.audit_snapshot import AuditSnapshot
 from app.models.enums import StackKind
 from app.models.user import User
 from app.models.website import Website
+from app.models.workspace import Workspace
+from app.models.workspace_member import WorkspaceMember
 from app.security.session import issue_session
 from app.services.audit_engine import run_audit
 from app.services.audit_probe import MockAuditProbe
@@ -68,15 +70,34 @@ async def dev_workspaces(
         session.add(user)
         await session.flush()
 
+    # Meme tri deterministe que POST /websites (owner avant simple membre) ;
+    # peu d'enjeu ici (utilisateur de dev unique) mais coherence de pattern.
+    workspace = (
+        await session.execute(
+            select(Workspace)
+            .join(WorkspaceMember)
+            .where(WorkspaceMember.user_id == user.id)
+            .order_by((WorkspaceMember.role == "owner").desc(), Workspace.created_at.asc())
+        )
+    ).scalars().first()
+    if workspace is None:
+        workspace = Workspace(name="Dev local", owner_user_id=user.id)
+        session.add(workspace)
+        await session.flush()
+        session.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
+        await session.flush()
+
     sites: list[Website] = []
     for domain, name in _SEED:
         site = (
             await session.execute(
-                select(Website).where(Website.user_id == user.id, Website.domain == domain)
+                select(Website).where(
+                    Website.workspace_id == workspace.id, Website.domain == domain
+                )
             )
         ).scalar_one_or_none()
         if site is None:
-            site = Website(user_id=user.id, domain=domain, display_name=name)
+            site = Website(workspace_id=workspace.id, domain=domain, display_name=name)
             session.add(site)
             await session.flush()
 

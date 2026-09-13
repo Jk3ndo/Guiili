@@ -15,15 +15,20 @@ from app.api.deps import (
     get_tls_checker,
 )
 from app.api.v1.endpoints.websites import normalize_domain
+from app.config import get_settings
 from app.main import app
 from app.models.audit_snapshot import AuditSnapshot
 from app.models.enums import StackKind
 from app.models.issue_item import IssueItem
 from app.models.user import User
 from app.models.website import Website
+from app.models.workspace import Workspace
+from app.models.workspace_member import WorkspaceMember
+from app.security.session import issue_session
 from app.services.audit_probe import MockAuditProbe
 from app.services.stack_detector import StackDetection, StackGuess
 from app.services.tls_check import TlsStatus
+from tests.conftest import owner_workspace_id
 
 
 @pytest_asyncio.fixture
@@ -101,7 +106,7 @@ async def test_create_runs_first_audit_and_returns_snapshot(
     assert body["captured_at"] is not None
 
     site = (await db_session.execute(select(Website).where(Website.id == body["id"]))).scalar_one()
-    assert site.user_id == user.id
+    assert site.workspace_id == await owner_workspace_id(db_session, user)
     assert site.detected_stack is StackKind.NEXTJS
     assert site.ssl_status == "valid"
     assert site.ssl_checked_at is not None
@@ -127,6 +132,66 @@ async def test_create_rejects_duplicate_domain_for_same_user(
     assert again.status_code == 409
 
 
+async def test_create_lands_in_owned_workspace_not_joined_one(
+    db_client: AsyncClient,
+    db_session: AsyncSession,
+    make_user,
+    fake_detector: None,
+) -> None:
+    """Un utilisateur membre (invite) d'un workspace ET owner d'un autre doit
+    voir son nouveau site atterrir dans le workspace qu'il possede, jamais
+    dans celui ou il n'est que membre invite — regression sur le tri
+    deterministe (role owner en priorite) de la resolution get-or-create.
+
+    On n'utilise volontairement PAS `authed_client` : sa fixture cree la
+    ligne WorkspaceMember "owner" de l'utilisateur AVANT tout, si bien que
+    l'ordre de retour naturel (non trie) de Postgres pour ce petit jeu de
+    lignes fraichement inserees dans une seule transaction correspond deja
+    a l'ordre d'insertion — et fait passer le test meme sans le `order_by`
+    du fix (constate empiriquement : revert du `order_by`, test toujours
+    vert). Ici on inverse deliberement l'ordre d'insertion des deux lignes
+    WorkspaceMember de l'utilisateur (le role "member" ecrit AVANT le role
+    "owner"), pour que `.first()` sans tri choisisse le mauvais workspace
+    si le `order_by` par role est absent, et exerce donc reellement le fix."""
+    other_owner = await make_user(sub="other-owner-ws-2")
+    other_ws = await owner_workspace_id(db_session, other_owner)
+
+    user = User(email="invited-then-owner@example.com", google_sub="invited-then-owner")
+    db_session.add(user)
+    await db_session.flush()
+
+    # 1) ligne "membre invite" ecrite EN PREMIER pour cet utilisateur.
+    db_session.add(WorkspaceMember(workspace_id=other_ws, user_id=user.id, role="member"))
+    await db_session.flush()
+
+    # 2) son propre workspace (owner) ecrit EN SECOND.
+    own_ws_row = Workspace(name="Mine", owner_user_id=user.id)
+    db_session.add(own_ws_row)
+    await db_session.flush()
+    db_session.add(WorkspaceMember(workspace_id=own_ws_row.id, user_id=user.id, role="owner"))
+    await db_session.flush()
+    own_ws = own_ws_row.id
+
+    settings = get_settings()
+    db_client.cookies.set(
+        settings.session_cookie_name,
+        issue_session(user.id, secret=settings.app_secret_key.get_secret_value()),
+    )
+
+    resp = await db_client.post(
+        "/api/v1/websites", json={"name": "Nouveau", "domain": "nouveau-membre.test"}
+    )
+    assert resp.status_code == 201, resp.text
+
+    site = (
+        await db_session.execute(
+            select(Website).where(Website.domain == "nouveau-membre.test")
+        )
+    ).scalar_one()
+    assert site.workspace_id == own_ws
+    assert site.workspace_id != other_ws
+
+
 async def test_same_domain_allowed_for_a_different_user(
     authed_client: tuple[AsyncClient, User],
     db_session: AsyncSession,
@@ -139,9 +204,10 @@ async def test_same_domain_allowed_for_a_different_user(
     ).status_code == 201
 
     stranger = await make_user(sub="stranger-web", email="stranger@example.com")
-    site = Website(user_id=stranger.id, domain="shared.example", display_name="Theirs")
+    stranger_workspace_id = await owner_workspace_id(db_session, stranger)
+    site = Website(workspace_id=stranger_workspace_id, domain="shared.example", display_name="Theirs")
     db_session.add(site)
-    await db_session.flush()  # pas d'IntegrityError : unicite (user_id, domain)
+    await db_session.flush()  # pas d'IntegrityError : unicite (workspace_id, domain)
 
     listed = (await client.get("/api/v1/websites")).json()
     assert [w["domain"] for w in listed] == ["shared.example"]  # isole a l'utilisateur
@@ -269,6 +335,26 @@ async def test_allow_insecure_persisted_on_creation(
     site = await db_session.get(Website, body.json()["id"])
     await db_session.refresh(site)
     assert site.allow_insecure_probe is True
+
+
+async def test_list_websites_includes_sites_from_joined_workspace(
+    authed_client: tuple[AsyncClient, User],
+    db_session: AsyncSession,
+    make_user,
+) -> None:
+    client, user = authed_client
+    own_ws = await owner_workspace_id(db_session, user)
+    db_session.add(Website(workspace_id=own_ws, domain="mine.test", display_name="Mine"))
+
+    other_owner = await make_user(sub="other-owner-ws")
+    other_ws = await owner_workspace_id(db_session, other_owner)
+    db_session.add(Website(workspace_id=other_ws, domain="shared.test", display_name="Shared"))
+    db_session.add(WorkspaceMember(workspace_id=other_ws, user_id=user.id, role="member"))
+    await db_session.flush()
+
+    resp = await client.get("/api/v1/websites")
+    domains = {w["domain"] for w in resp.json()}
+    assert domains == {"mine.test", "shared.test"}
 
 
 async def test_endpoints_require_auth(db_client: AsyncClient) -> None:

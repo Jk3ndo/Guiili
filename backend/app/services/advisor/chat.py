@@ -28,14 +28,16 @@ class AdvisorMessageCapReached(Exception):
     """Le quota quotidien de messages de l'utilisateur est atteint."""
 
 
-async def _usage_row(session: AsyncSession, user_id: UUID, day: date) -> AdvisorUsage:
+async def _usage_row(session: AsyncSession, workspace_id: UUID, day: date) -> AdvisorUsage:
     row = (
         await session.execute(
-            select(AdvisorUsage).where(AdvisorUsage.user_id == user_id, AdvisorUsage.day == day)
+            select(AdvisorUsage).where(
+                AdvisorUsage.workspace_id == workspace_id, AdvisorUsage.day == day
+            )
         )
     ).scalar_one_or_none()
     if row is None:
-        row = AdvisorUsage(user_id=user_id, day=day, brief_count=0, message_count=0)
+        row = AdvisorUsage(workspace_id=workspace_id, day=day, brief_count=0, message_count=0)
         session.add(row)
         await session.flush()
     return row
@@ -66,6 +68,7 @@ async def run_chat_turn(
     thread: AdvisorThread,
     website: Website,
     user_id: UUID,
+    workspace_id: UUID,
     llm: AdvisorLLM,
     user_text: str,
     iteration_cap: int,
@@ -134,7 +137,7 @@ async def run_chat_turn(
                     usage=total_usage,
                 )
             )
-            usage_row = await _usage_row(session, user_id, datetime.now(UTC).date())
+            usage_row = await _usage_row(session, workspace_id, datetime.now(UTC).date())
             usage_row.message_count += 1
             await session.flush()
             yield {"kind": "done", "usage": total_usage}

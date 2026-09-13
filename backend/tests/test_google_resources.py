@@ -11,6 +11,7 @@ from app.models.user import User
 from app.security.token_crypto import load_token_cipher
 from app.services.connections import upsert_google_connection
 from app.services.google_oauth.base import GoogleTokenResponse, GoogleUserInfo
+from tests.conftest import owner_workspace_id
 
 _SCOPES = ("openid", "email", "https://www.googleapis.com/auth/analytics.readonly")
 
@@ -21,7 +22,7 @@ async def _make_connection(
     cipher = load_token_cipher(get_settings())
     return await upsert_google_connection(
         session,
-        user_id=user.id,
+        workspace_id=await owner_workspace_id(session, user),
         userinfo=GoogleUserInfo(sub=sub, email=email),
         token=GoogleTokenResponse(
             access_token="at", refresh_token=refresh, expires_in=3599, scopes=_SCOPES

@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from urllib.parse import urlencode
 
 from app.services.google_oauth.base import (
+    GOOGLE_LOGIN_SCOPES,
     DiscoveredResources,
     Ga4Property,
     GoogleOAuthClient,
@@ -131,13 +132,18 @@ class MockGoogleOAuthClient(GoogleOAuthClient):
         self._authorize_endpoint = authorize_endpoint
 
     def build_authorization_url(
-        self, *, state: str, code_challenge: str, login_hint: str | None = None
+        self,
+        *,
+        state: str,
+        code_challenge: str,
+        login_hint: str | None = None,
+        scopes: tuple[str, ...] = GOOGLE_LOGIN_SCOPES,
     ) -> str:
         params = {
             "response_type": "code",
             "client_id": self._client_id,
             "redirect_uri": self._redirect_uri,
-            "scope": "openid email",
+            "scope": " ".join(scopes),
             "state": state,
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",

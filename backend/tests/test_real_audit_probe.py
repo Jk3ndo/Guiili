@@ -17,6 +17,7 @@ from app.security.token_crypto import load_token_cipher
 from app.services.audit_probe import RealAuditProbe
 from app.services.connections import upsert_google_connection
 from app.services.google_oauth import GoogleTokenResponse, GoogleUserInfo, InvalidGrantError
+from tests.conftest import owner_workspace_id
 
 _CIPHER = load_token_cipher(get_settings())
 _SCOPES = (
@@ -89,7 +90,8 @@ class _StubOAuth:
 
 
 async def _website(session: AsyncSession, user: User) -> Website:
-    site = Website(user_id=user.id, domain="shop.test", display_name="Shop")
+    workspace_id = await owner_workspace_id(session, user)
+    site = Website(workspace_id=workspace_id, domain="shop.test", display_name="Shop")
     session.add(site)
     await session.flush()
     return site
@@ -98,7 +100,7 @@ async def _website(session: AsyncSession, user: User) -> Website:
 async def _connection(session: AsyncSession, user: User, *, refresh: str = "rt-live"):
     return await upsert_google_connection(
         session,
-        user_id=user.id,
+        workspace_id=await owner_workspace_id(session, user),
         userinfo=GoogleUserInfo(sub="g-sub-1", email="owner@gmail.com"),
         token=GoogleTokenResponse(
             access_token="at", refresh_token=refresh, expires_in=3599, scopes=_SCOPES

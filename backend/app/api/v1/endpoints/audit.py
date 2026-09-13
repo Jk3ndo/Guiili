@@ -8,7 +8,6 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
     AuditProbeDep,
@@ -28,10 +27,9 @@ from app.models.enums import (
     StackKind,
 )
 from app.models.issue_item import IssueItem
-from app.models.user import User
-from app.models.website import Website
 from app.services.audit_engine import run_audit
 from app.services.gtm_headless import headless_result_to_dict
+from app.services.workspaces import owned_website
 
 router = APIRouter(tags=["audit"])
 
@@ -43,13 +41,6 @@ _SEVERITY_RANK: dict[IssueSeverity, int] = {
 }
 _OPEN_STATUSES = (IssueStatus.TODO, IssueStatus.IN_PROGRESS)
 _METRIC_LABEL = {"ga4": "Santé GA4", "gsc": "Indexation GSC", "cwv": "Core Web Vitals"}
-
-
-async def _owned_website(session: AsyncSession, website_id: UUID, user: User) -> Website:
-    site = await session.get(Website, website_id)
-    if site is None or site.user_id != user.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="site introuvable")
-    return site
 
 
 # --------------------------------------------------------------------------- #
@@ -85,7 +76,7 @@ async def scan_website(
     tls_checker: TlsCheckerDep,
     gtm_checker: GtmCheckerDep,
 ) -> ScanResponse:
-    site = await _owned_website(session, website_id, user)
+    site = await owned_website(session, website_id=website_id, user_id=user.id)
     result = await run_audit(
         session,
         website=site,
@@ -157,7 +148,7 @@ def _hours_since(moment: datetime) -> int:
 async def website_overview(
     website_id: UUID, user: CurrentUserDep, session: SessionDep
 ) -> OverviewResponse:
-    site = await _owned_website(session, website_id, user)
+    site = await owned_website(session, website_id=website_id, user_id=user.id)
 
     snapshot = (
         await session.execute(
@@ -647,7 +638,7 @@ def _build_index(gsc: dict) -> AuditIndexOut:
 async def website_audit(
     website_id: UUID, user: CurrentUserDep, session: SessionDep
 ) -> AuditResponse:
-    site = await _owned_website(session, website_id, user)
+    site = await owned_website(session, website_id=website_id, user_id=user.id)
 
     snapshot = (
         await session.execute(
@@ -697,7 +688,7 @@ async def verify_gtm_headless_endpoint(
     session: SessionDep,
     verifier: GtmHeadlessVerifierDep,
 ) -> GtmHeadlessOut:
-    site = await _owned_website(session, website_id, user)
+    site = await owned_website(session, website_id=website_id, user_id=user.id)
 
     snapshot = (
         await session.execute(
@@ -766,7 +757,7 @@ async def list_website_issues(
     status_filter: Annotated[IssueStatus | None, Query(alias="status")] = None,
     severity: IssueSeverity | None = None,
 ) -> list[IssueItem]:
-    await _owned_website(session, website_id, user)
+    await owned_website(session, website_id=website_id, user_id=user.id)
     stmt = select(IssueItem).where(IssueItem.website_id == website_id)
     if status_filter is not None:
         stmt = stmt.where(IssueItem.status == status_filter)
@@ -797,7 +788,7 @@ async def patch_website_issue(
     user: CurrentUserDep,
     session: SessionDep,
 ) -> IssueItem:
-    await _owned_website(session, website_id, user)
+    await owned_website(session, website_id=website_id, user_id=user.id)
     issue = await session.get(IssueItem, issue_id)
     if issue is None or issue.website_id != website_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="anomalie introuvable")

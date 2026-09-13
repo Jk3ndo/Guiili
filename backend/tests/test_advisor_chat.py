@@ -13,15 +13,15 @@ from app.services.audit_probe import MockAuditProbe
 from app.services.gtm_headless import GtmHeadlessResult
 from app.services.stack_detector import StackDetection
 from app.services.tls_check import TlsStatus
-from tests.conftest import UserFactory
+from tests.conftest import UserFactory, owner_workspace_id
 
 _ZERO = {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}
 
 
 async def _thread_with_snapshot(
-    db_session: AsyncSession, user_id
+    db_session: AsyncSession, workspace_id
 ) -> tuple[Website, AdvisorThread]:
-    site = Website(user_id=user_id, domain="chat.test", display_name="Chat")
+    site = Website(workspace_id=workspace_id, domain="chat.test", display_name="Chat")
     db_session.add(site)
     await db_session.flush()
     db_session.add(
@@ -65,7 +65,7 @@ async def test_simple_reply_persists_user_and_assistant_messages(
     db_session: AsyncSession, make_user: UserFactory
 ) -> None:
     user = await make_user(sub="chat-1")
-    site, thread = await _thread_with_snapshot(db_session, user.id)
+    site, thread = await _thread_with_snapshot(db_session, await owner_workspace_id(db_session, user))
     llm = MockAdvisorLLM(
         turns=[
             TurnResult(
@@ -82,6 +82,7 @@ async def test_simple_reply_persists_user_and_assistant_messages(
             thread=thread,
             website=site,
             user_id=user.id,
+            workspace_id=site.workspace_id,
             llm=llm,
             user_text="Quel est mon score GA4 ?",
             iteration_cap=6,
@@ -95,7 +96,9 @@ async def test_simple_reply_persists_user_and_assistant_messages(
     assert rows[1].text == "Reponse directe."
 
     usage = (
-        await db_session.execute(select(AdvisorUsage).where(AdvisorUsage.user_id == user.id))
+        await db_session.execute(
+            select(AdvisorUsage).where(AdvisorUsage.workspace_id == site.workspace_id)
+        )
     ).scalar_one()
     assert usage.message_count == 1
 
@@ -104,7 +107,7 @@ async def test_tool_use_turn_executes_tool_and_continues(
     db_session: AsyncSession, make_user: UserFactory
 ) -> None:
     user = await make_user(sub="chat-2")
-    site, thread = await _thread_with_snapshot(db_session, user.id)
+    site, thread = await _thread_with_snapshot(db_session, await owner_workspace_id(db_session, user))
     llm = MockAdvisorLLM(
         turns=[
             TurnResult(
@@ -128,6 +131,7 @@ async def test_tool_use_turn_executes_tool_and_continues(
             thread=thread,
             website=site,
             user_id=user.id,
+            workspace_id=site.workspace_id,
             llm=llm,
             user_text="Et avant ?",
             iteration_cap=6,
@@ -151,7 +155,7 @@ async def test_iteration_cap_stops_infinite_tool_loop(
     db_session: AsyncSession, make_user: UserFactory
 ) -> None:
     user = await make_user(sub="chat-3")
-    site, thread = await _thread_with_snapshot(db_session, user.id)
+    site, thread = await _thread_with_snapshot(db_session, await owner_workspace_id(db_session, user))
     forever = TurnResult(
         content=[{"type": "tool_use", "id": "t", "name": "get_gtm_check", "input": {}}],
         stop_reason="tool_use",
@@ -165,6 +169,7 @@ async def test_iteration_cap_stops_infinite_tool_loop(
             thread=thread,
             website=site,
             user_id=user.id,
+            workspace_id=site.workspace_id,
             llm=llm,
             user_text="boucle",
             iteration_cap=3,
@@ -177,7 +182,7 @@ async def test_history_is_reloaded_on_second_message(
     db_session: AsyncSession, make_user: UserFactory
 ) -> None:
     user = await make_user(sub="chat-4")
-    site, thread = await _thread_with_snapshot(db_session, user.id)
+    site, thread = await _thread_with_snapshot(db_session, await owner_workspace_id(db_session, user))
     llm = MockAdvisorLLM(
         turns=[
             TurnResult(
@@ -190,6 +195,7 @@ async def test_history_is_reloaded_on_second_message(
     await _collect(
         run_chat_turn(
             db_session, thread=thread, website=site, user_id=user.id,
+            workspace_id=site.workspace_id,
             llm=llm, user_text="Question 1", iteration_cap=6,
         )
     )
@@ -206,6 +212,7 @@ async def test_history_is_reloaded_on_second_message(
     await _collect(
         run_chat_turn(
             db_session, thread=thread, website=site, user_id=user.id,
+            workspace_id=site.workspace_id,
             llm=llm2, user_text="Question 2", iteration_cap=6,
         )
     )
@@ -218,7 +225,7 @@ async def test_chat_can_trigger_rescan_via_tool(
     db_session: AsyncSession, make_user: UserFactory
 ) -> None:
     user = await make_user(sub="chat-5")
-    site, thread = await _thread_with_snapshot(db_session, user.id)
+    site, thread = await _thread_with_snapshot(db_session, await owner_workspace_id(db_session, user))
 
     async def detector(url: str, **kw):
         _ = (url, kw)
@@ -250,6 +257,7 @@ async def test_chat_can_trigger_rescan_via_tool(
             thread=thread,
             website=site,
             user_id=user.id,
+            workspace_id=site.workspace_id,
             llm=llm,
             user_text="relance un scan",
             iteration_cap=6,
@@ -269,7 +277,8 @@ async def test_chat_can_run_gtm_headless_probe_via_tool(
     db_session: AsyncSession, make_user: UserFactory
 ) -> None:
     user = await make_user(sub="chat-6")
-    site = Website(user_id=user.id, domain="headless-chat.test", display_name="Headless")
+    workspace_id = await owner_workspace_id(db_session, user)
+    site = Website(workspace_id=workspace_id, domain="headless-chat.test", display_name="Headless")
     db_session.add(site)
     await db_session.flush()
     db_session.add(
@@ -332,6 +341,7 @@ async def test_chat_can_run_gtm_headless_probe_via_tool(
             thread=thread,
             website=site,
             user_id=user.id,
+            workspace_id=site.workspace_id,
             llm=llm,
             user_text="verifie GTM en conditions reelles",
             iteration_cap=6,
