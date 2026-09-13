@@ -25,7 +25,7 @@ export default async function ShellLayout({ children }: LayoutProps<"/">) {
       <SidebarProvider defaultOpen={defaultOpen}>
         <AppSidebar />
         <SidebarInset className="min-w-0 bg-canvas">
-          <Topbar />
+          <Topbar me={me} />
           <main className="flex-1 overflow-y-auto">{children}</main>
         </SidebarInset>
         <CommandMenu />

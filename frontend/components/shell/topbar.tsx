@@ -6,11 +6,13 @@ import { Kbd } from "@/components/ui/kbd";
 import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { runDiagnostic } from "@/lib/api/actions";
+import type { MeDto } from "@/lib/api/auth";
 import { useShell } from "@/lib/shell/shell-context";
 
 import { AppBreadcrumb } from "./app-breadcrumb";
+import { UserMenu } from "./user-menu";
 
-export function Topbar() {
+export function Topbar({ me }: { me: MeDto }) {
   const { setCommandOpen, workspace } = useShell();
 
   return (
@@ -41,6 +43,8 @@ export function Topbar() {
           <Play className="size-3.5" />
           Lancer un diagnostic
         </button>
+
+        <UserMenu me={me} />
       </div>
     </header>
   );
