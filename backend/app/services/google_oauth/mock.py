@@ -123,13 +123,24 @@ class MockGoogleOAuthClient(GoogleOAuthClient):
     def __init__(
         self,
         *,
-        redirect_uri: str = "http://localhost:8000/auth/google/callback",
+        redirect_uri: str = "http://127.0.0.1:8020/api/v1/auth/google/callback",
         client_id: str = "mock-client-id",
-        authorize_endpoint: str = "https://accounts.google.com/o/oauth2/v2/auth",
+        authorize_endpoint: str | None = None,
+        mock_identity_key: str = _DEFAULT_KEY,
     ) -> None:
         self._redirect_uri = redirect_uri
         self._client_id = client_id
-        self._authorize_endpoint = authorize_endpoint
+        # Mode mock : zero reseau, y compris si un vrai navigateur suit ce lien.
+        # Contrairement a une URL Google reelle, on pointe directement sur NOTRE
+        # callback (le meme redirect_uri que le flow reel) avec un `code=mock:...`
+        # deja pret a etre echange -- un clic reel sur "Continuer avec Google"
+        # complete alors un login mock authentique en un aller-retour. Pointer
+        # vers accounts.google.com (comme avant) fonctionnait pour les tests
+        # (qui ne font qu'inspecter la query string, jamais la suivre), mais
+        # faisait echouer un vrai clic navigateur avec `invalid_client` — le
+        # `client_id` factice n'existe evidemment pas cote Google.
+        self._authorize_endpoint = authorize_endpoint or redirect_uri
+        self._mock_identity_key = mock_identity_key
 
     def build_authorization_url(
         self,
@@ -150,6 +161,9 @@ class MockGoogleOAuthClient(GoogleOAuthClient):
             "access_type": "offline",
             "prompt": "consent",
             "include_granted_scopes": "true",
+            # Permet a notre propre callback de completer immediatement le
+            # login mock quand cette URL est reellement suivie par un navigateur.
+            "code": f"mock:{self._mock_identity_key}",
         }
         if login_hint:
             params["login_hint"] = login_hint

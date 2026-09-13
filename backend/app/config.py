@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     # SecretStr : masqué dans repr()/logs/traces (affiche '**********').
     # Lire la valeur avec .get_secret_value().
     google_client_secret: SecretStr = SecretStr("")
-    google_oauth_redirect_uri: str = "http://localhost:8000/auth/google/callback"
+    google_oauth_redirect_uri: str = "http://127.0.0.1:8020/api/v1/auth/google/callback"
     # true -> MockGoogleOAuthClient : aucun appel réseau, fixtures déterministes.
     google_oauth_mock: bool = False
     # true -> MockAuditProbe (fixtures). false -> RealAuditProbe (PageSpeed Insights).
