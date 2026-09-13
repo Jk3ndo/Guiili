@@ -15,13 +15,16 @@ from app.api.deps import (
     get_tls_checker,
 )
 from app.api.v1.endpoints.websites import normalize_domain
+from app.config import get_settings
 from app.main import app
 from app.models.audit_snapshot import AuditSnapshot
 from app.models.enums import StackKind
 from app.models.issue_item import IssueItem
 from app.models.user import User
 from app.models.website import Website
+from app.models.workspace import Workspace
 from app.models.workspace_member import WorkspaceMember
+from app.security.session import issue_session
 from app.services.audit_probe import MockAuditProbe
 from app.services.stack_detector import StackDetection, StackGuess
 from app.services.tls_check import TlsStatus
@@ -130,7 +133,7 @@ async def test_create_rejects_duplicate_domain_for_same_user(
 
 
 async def test_create_lands_in_owned_workspace_not_joined_one(
-    authed_client: tuple[AsyncClient, User],
+    db_client: AsyncClient,
     db_session: AsyncSession,
     make_user,
     fake_detector: None,
@@ -138,16 +141,44 @@ async def test_create_lands_in_owned_workspace_not_joined_one(
     """Un utilisateur membre (invite) d'un workspace ET owner d'un autre doit
     voir son nouveau site atterrir dans le workspace qu'il possede, jamais
     dans celui ou il n'est que membre invite — regression sur le tri
-    deterministe (role owner en priorite) de la resolution get-or-create."""
-    client, user = authed_client
-    own_ws = await owner_workspace_id(db_session, user)
+    deterministe (role owner en priorite) de la resolution get-or-create.
 
+    On n'utilise volontairement PAS `authed_client` : sa fixture cree la
+    ligne WorkspaceMember "owner" de l'utilisateur AVANT tout, si bien que
+    l'ordre de retour naturel (non trie) de Postgres pour ce petit jeu de
+    lignes fraichement inserees dans une seule transaction correspond deja
+    a l'ordre d'insertion — et fait passer le test meme sans le `order_by`
+    du fix (constate empiriquement : revert du `order_by`, test toujours
+    vert). Ici on inverse deliberement l'ordre d'insertion des deux lignes
+    WorkspaceMember de l'utilisateur (le role "member" ecrit AVANT le role
+    "owner"), pour que `.first()` sans tri choisisse le mauvais workspace
+    si le `order_by` par role est absent, et exerce donc reellement le fix."""
     other_owner = await make_user(sub="other-owner-ws-2")
     other_ws = await owner_workspace_id(db_session, other_owner)
+
+    user = User(email="invited-then-owner@example.com", google_sub="invited-then-owner")
+    db_session.add(user)
+    await db_session.flush()
+
+    # 1) ligne "membre invite" ecrite EN PREMIER pour cet utilisateur.
     db_session.add(WorkspaceMember(workspace_id=other_ws, user_id=user.id, role="member"))
     await db_session.flush()
 
-    resp = await client.post(
+    # 2) son propre workspace (owner) ecrit EN SECOND.
+    own_ws_row = Workspace(name="Mine", owner_user_id=user.id)
+    db_session.add(own_ws_row)
+    await db_session.flush()
+    db_session.add(WorkspaceMember(workspace_id=own_ws_row.id, user_id=user.id, role="owner"))
+    await db_session.flush()
+    own_ws = own_ws_row.id
+
+    settings = get_settings()
+    db_client.cookies.set(
+        settings.session_cookie_name,
+        issue_session(user.id, secret=settings.app_secret_key.get_secret_value()),
+    )
+
+    resp = await db_client.post(
         "/api/v1/websites", json={"name": "Nouveau", "domain": "nouveau-membre.test"}
     )
     assert resp.status_code == 201, resp.text
