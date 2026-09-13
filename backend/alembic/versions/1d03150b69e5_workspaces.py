@@ -118,14 +118,25 @@ def upgrade() -> None:
     op.drop_column("websites", "user_id")
     op.create_index("ix_websites_workspace_id", "websites", ["workspace_id"])
 
-    # google_connections : meme mecanique
+    # google_connections : PAS la meme mecanique que websites/advisor_usage
+    # ci-dessus — un backfill naif casserait le chiffrement des jetons.
+    # `connection_aad(workspace_id, google_sub)` (app/services/connections.py)
+    # lie cryptographiquement le blob AES-GCM au couple (workspace_id, sub) via
+    # l'AAD. Avant cette migration, chaque `refresh_token_encrypted` a ete
+    # chiffre avec l'ancien `user_id` de la ligne dans cette AAD. Le backfill
+    # ci-dessous assigne `workspace_id` = id du NOUVEAU workspace cree plus
+    # haut (lui-meme un gen_random_uuid() frais, sans aucun lien avec l'ancien
+    # user_id) : `decrypt_refresh_token` recalculerait alors une AAD differente
+    # de celle utilisee au chiffrement -> `TokenDecryptionError` permanent pour
+    # CHAQUE ligne preexistante. Il n'existe aucune facon legitime de preserver
+    # ces jetons (le lien cryptographique a l'ancienne cle est irrecuperable) :
+    # on supprime donc TOUTES les lignes qui existent avant ce backfill, avant
+    # meme d'ajouter la colonne — il n'y a alors plus rien a backfiller ni
+    # d'ordre a respecter. Ne pas "reparer" ceci en tentant de represerver ces
+    # lignes : c'est le point precis de ce commentaire.
+    conn.execute(sa.text("DELETE FROM google_connections"))
+
     op.add_column("google_connections", sa.Column("workspace_id", postgresql.UUID(as_uuid=True), nullable=True))
-    conn.execute(
-        sa.text(
-            "UPDATE google_connections gc SET workspace_id = wm.workspace_id "
-            "FROM workspace_members wm WHERE wm.user_id = gc.user_id"
-        )
-    )
     op.alter_column("google_connections", "workspace_id", nullable=False)
     op.drop_constraint("uq_google_connections_user_google_sub", "google_connections", type_="unique")
     op.create_unique_constraint(
