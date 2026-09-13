@@ -63,6 +63,12 @@ export default function LoginPage() {
         <a href="/register" className="block text-center text-xs text-ink-muted hover:text-ink">
           Créer un compte
         </a>
+        <a
+          href="/forgot-password"
+          className="block text-center text-xs text-ink-muted hover:text-ink"
+        >
+          Mot de passe oublié ?
+        </a>
       </form>
     </div>
   );
