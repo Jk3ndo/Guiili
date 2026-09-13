@@ -6,6 +6,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.models.oauth_state import OAuthState
 from app.models.user import User
 
@@ -47,7 +48,7 @@ async def test_callback_logs_in_creates_user(
         follow_redirects=False,
     )
     assert resp.status_code == 302
-    assert resp.headers["location"] == "http://localhost:4000"
+    assert resp.headers["location"] == get_settings().frontend_base_url
     assert "cc_session" in resp.cookies
 
     user = (
