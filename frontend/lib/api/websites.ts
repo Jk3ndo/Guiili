@@ -10,7 +10,7 @@ import type {
   WebsiteDto,
 } from "./dto";
 import { mapStack } from "./mappers";
-import { ensureDevSession, registerWebsite } from "./workspaces";
+import { registerWebsite } from "./workspaces";
 
 const STACK_LABEL: Record<string, string> = {
   nextjs: "Next.js",
@@ -74,7 +74,6 @@ export function websiteToWorkspace(
 }
 
 export async function listWebsites(): Promise<Workspace[]> {
-  await ensureDevSession();
   const dtos = await apiGet<WebsiteDto[]>("/websites");
   return dtos.map(websiteToWorkspace);
 }
@@ -97,7 +96,6 @@ export interface CreatedWebsite {
 export async function createWebsite(
   input: CreateWebsiteInput,
 ): Promise<CreatedWebsite> {
-  await ensureDevSession();
   const dto = await apiPost<CreateWebsiteDto>("/websites", input);
   return {
     workspace: websiteToWorkspace(dto),

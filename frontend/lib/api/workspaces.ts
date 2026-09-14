@@ -1,52 +1,32 @@
-import { apiGet, ApiError } from "./client";
-import type { DevWorkspaceDto } from "./dto";
+import { ApiError } from "./client";
 
 /**
  * Résout un domaine de site vers l'UUID backend.
  *
- * - Sites ajoutés par l'utilisateur (`POST /websites`) : enregistrés dans un
- *   registre en mémoire par le shell → résolution directe.
- * - Sites de démo : via l'amorçage dev `/dev/workspaces` (crée l'utilisateur +
- *   les 4 sites seedés et pose le cookie de session au premier appel).
+ * Le registre est peuplé par `listWebsites()`/`createWebsite()` (voir
+ * `websiteToWorkspace` dans `./websites.ts`), qui enregistrent chaque site
+ * réel de l'utilisateur dès qu'il est chargé — le shell attend que cette
+ * liste soit chargée avant de monter les vues qui en dépendent (voir
+ * `ShellProvider`), donc le registre est déjà prêt au moment où une vue
+ * appelle `resolveWebsiteId`.
+ *
+ * ⚠️ Avant l'authentification réelle, ce module passait par un amorçage dev
+ * (`GET /dev/workspaces`) qui créait un utilisateur fixe et — plus grave —
+ * reposait le cookie de session à chaque appel, écrasant silencieusement la
+ * session de n'importe quel utilisateur réellement connecté. Retiré : plus
+ * aucun appel ne doit re-authentifier l'utilisateur à son insu.
  */
 
-let cache: Promise<Map<string, DevWorkspaceDto>> | null = null;
-
-/** domaine -> UUID backend, pour les sites réels ajoutés à chaud. */
 const realRegistry = new Map<string, string>();
 
 export function registerWebsite(domain: string, id: string): void {
   realRegistry.set(domain, id);
 }
 
-function loadWorkspaces(): Promise<Map<string, DevWorkspaceDto>> {
-  if (!cache) {
-    cache = apiGet<DevWorkspaceDto[]>("/dev/workspaces")
-      .then((list) => new Map(list.map((entry) => [entry.domain, entry])))
-      .catch((error: unknown) => {
-        cache = null;
-        throw error;
-      });
-  }
-  return cache;
-}
-
-/**
- * Garantit qu'une session existe (l'amorçage dev pose le cookie). À appeler
- * avant tout appel authentifié quand aucun site de démo n'a encore été touché.
- */
-export async function ensureDevSession(): Promise<void> {
-  await loadWorkspaces().catch(() => undefined);
-}
-
 export async function resolveWebsiteId(domain: string): Promise<string> {
   const real = realRegistry.get(domain);
-  if (real) return real;
-
-  const workspaces = await loadWorkspaces();
-  const entry = workspaces.get(domain);
-  if (!entry) {
+  if (!real) {
     throw new ApiError(404, `site « ${domain} » inconnu du backend`);
   }
-  return entry.id;
+  return real;
 }

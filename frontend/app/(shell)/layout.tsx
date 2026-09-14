@@ -6,7 +6,6 @@ import { CommandMenu } from "@/components/shell/command-menu";
 import { Topbar } from "@/components/shell/topbar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { fetchMeServer } from "@/lib/api/auth";
-import { getWorkspace } from "@/lib/mock/workspaces";
 import { ShellProvider, WORKSPACE_COOKIE } from "@/lib/shell/shell-context";
 
 export default async function ShellLayout({ children }: LayoutProps<"/">) {
@@ -16,9 +15,9 @@ export default async function ShellLayout({ children }: LayoutProps<"/">) {
   if (me === null) redirect("/login");
 
   const defaultOpen = cookieStore.get("sidebar_state")?.value !== "false";
-  const initialWorkspaceId = getWorkspace(
-    cookieStore.get(WORKSPACE_COOKIE)?.value ?? "",
-  ).id;
+  // Simple indice pour le premier rendu client : ShellProvider recale sur un
+  // vrai site (ou l'écran "aucun site") une fois `listWebsites()` chargé.
+  const initialWorkspaceId = cookieStore.get(WORKSPACE_COOKIE)?.value ?? "";
 
   return (
     <ShellProvider initialWorkspaceId={initialWorkspaceId}>

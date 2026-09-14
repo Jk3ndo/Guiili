@@ -1,12 +1,5 @@
 /** Formes de réponse du backend FastAPI (snake_case, telles quelles). */
 
-export interface DevWorkspaceDto {
-  id: string;
-  domain: string;
-  display_name: string;
-  detected_stack: string | null;
-}
-
 export interface WebsiteDto {
   id: string;
   domain: string;

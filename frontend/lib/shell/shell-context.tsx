@@ -9,8 +9,8 @@ import {
   useState,
 } from "react";
 
+import { EmptyWorkspaceState } from "@/components/shell/empty-workspace-state";
 import { listWebsites } from "@/lib/api/websites";
-import { MOCK_WORKSPACES } from "@/lib/mock/workspaces";
 import type { Workspace } from "@/lib/mock/types";
 
 export const WORKSPACE_COOKIE = "cc_workspace";
@@ -18,7 +18,7 @@ const COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
 
 interface ShellContextValue {
   workspace: Workspace;
-  /** Demo sites + real sites added by the user. */
+  /** Real sites belonging to the current user. */
   workspaces: Workspace[];
   setActiveWorkspace: (id: string) => void;
   /** Register a freshly created site and switch to it. */
@@ -41,46 +41,31 @@ export function ShellProvider({
   children: React.ReactNode;
 }) {
   const [workspaceId, setWorkspaceId] = useState(initialWorkspaceId);
-  const [realWorkspaces, setRealWorkspaces] = useState<Workspace[]>([]);
+  // `null` = pas encore chargé (premier rendu) ; `[]` = chargé, aucun site réel.
+  const [realWorkspaces, setRealWorkspaces] = useState<Workspace[] | null>(null);
   const [commandOpen, setCommandOpen] = useState(false);
 
-  // Charge les sites réels de l'utilisateur (ceux ajoutés via "+ Ajouter un
-  // domaine"). Échec silencieux : la démo reste utilisable hors-ligne.
+  // Charge les sites réels de l'utilisateur connecté (ceux ajoutés via
+  // "+ Ajouter un domaine"). Ce sont les SEULS sites affichés — voir plus bas
+  // pour le rendu pendant le chargement / si la liste est vide.
   useEffect(() => {
     let active = true;
     void listWebsites()
       .then((sites) => {
         if (active) setRealWorkspaces(sites);
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (active) setRealWorkspaces([]);
+      });
     return () => {
       active = false;
     };
   }, []);
 
-  const workspaces = useMemo<Workspace[]>(() => {
-    // Le backend renvoie AUSSI les 4 sites de démo (créés pour l'utilisateur dev
-    // par `/dev/workspaces`). On garde l'entrée mock (id/nom stables pour le
-    // cookie) en l'enrichissant du `websiteId` réel ; les vrais nouveaux sites
-    // sont ajoutés à la suite.
-    const realByDomain = new Map(realWorkspaces.map((ws) => [ws.domain, ws]));
-    const merged = MOCK_WORKSPACES.map((mock) => {
-      const real = realByDomain.get(mock.domain);
-      return real
-        ? {
-            ...mock,
-            websiteId: real.websiteId,
-            stack: real.stack,
-            stackLabel: real.stackLabel,
-            sslStatus: real.sslStatus,
-            sslExpiresAt: real.sslExpiresAt,
-          }
-        : mock;
-    });
-    const mockDomains = new Set(MOCK_WORKSPACES.map((mock) => mock.domain));
-    const extras = realWorkspaces.filter((ws) => !mockDomains.has(ws.domain));
-    return [...merged, ...extras];
-  }, [realWorkspaces]);
+  // `realWorkspaces ?? []` recreerait un nouveau tableau (donc une nouvelle
+  // reference) a chaque rendu tant que `realWorkspaces` est null — useMemo
+  // stabilise la reference pour le useMemo de `value` plus bas.
+  const workspaces = useMemo(() => realWorkspaces ?? [], [realWorkspaces]);
 
   // Cookie-backed (not localStorage) so the server layout reads the same value
   // on the next request — no post-mount effect, no flash.
@@ -92,7 +77,7 @@ export function ShellProvider({
   const addWorkspace = useCallback(
     (workspace: Workspace) => {
       setRealWorkspaces((current) => [
-        ...current.filter((ws) => ws.id !== workspace.id),
+        ...(current ?? []).filter((ws) => ws.id !== workspace.id),
         workspace,
       ]);
       setActiveWorkspace(workspace.id);
@@ -103,23 +88,21 @@ export function ShellProvider({
   const updateWorkspace = useCallback(
     (id: string, patch: Partial<Workspace>) => {
       setRealWorkspaces((current) =>
-        current.map((ws) => (ws.id === id ? { ...ws, ...patch } : ws)),
+        (current ?? []).map((ws) => (ws.id === id ? { ...ws, ...patch } : ws)),
       );
     },
     [],
   );
 
   const removeWorkspace = useCallback((id: string) => {
-    setRealWorkspaces((current) => current.filter((ws) => ws.id !== id));
-    setWorkspaceId((activeId) =>
-      activeId === id ? MOCK_WORKSPACES[0].id : activeId,
-    );
+    setRealWorkspaces((current) => (current ?? []).filter((ws) => ws.id !== id));
+    setWorkspaceId((activeId) => (activeId === id ? "" : activeId));
   }, []);
 
   const value = useMemo<ShellContextValue>(
     () => ({
       workspace:
-        workspaces.find((ws) => ws.id === workspaceId) ?? workspaces[0],
+        (workspaces.find((ws) => ws.id === workspaceId) ?? workspaces[0]) as Workspace,
       workspaces,
       setActiveWorkspace,
       addWorkspace,
@@ -138,6 +121,22 @@ export function ShellProvider({
       commandOpen,
     ],
   );
+
+  // Chargement en cours : rien de significatif à montrer encore (pas de
+  // sidebar/chrome tant qu'on ne sait pas si l'utilisateur a des sites).
+  if (realWorkspaces === null) {
+    return <div className="min-h-screen bg-canvas" />;
+  }
+
+  // Aucun site réel : pas de shell (sidebar/topbar) tant qu'il n'y a rien à
+  // piloter — un écran dédié invite à ajouter le premier site.
+  if (workspaces.length === 0) {
+    return (
+      <ShellContext value={value}>
+        <EmptyWorkspaceState />
+      </ShellContext>
+    );
+  }
 
   return <ShellContext value={value}>{children}</ShellContext>;
 }
