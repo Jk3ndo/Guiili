@@ -1,4 +1,4 @@
-import { API_BASE, apiGet, apiPost, apiPostNoContent, ApiError } from "./client";
+import { apiGet, apiPost, apiPostNoContent, ApiError, SERVER_API_BASE } from "./client";
 
 export interface MeDto {
   id: string;
@@ -46,7 +46,7 @@ export async function fetchMe(): Promise<MeDto | null> {
 export async function fetchMeServer(cookieHeader: string): Promise<MeDto | null> {
   let response: Response;
   try {
-    response = await fetch(`${API_BASE}/auth/me`, {
+    response = await fetch(`${SERVER_API_BASE}/auth/me`, {
       headers: { Accept: "application/json", Cookie: cookieHeader },
       cache: "no-store",
     });

@@ -1,10 +1,13 @@
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+import { SERVER_BACKEND_ORIGIN } from "./api/client";
 
 export type HealthResponse = { status: string };
 
+/**
+ * Appelee cote serveur (page /health) : a besoin d'une URL absolue.
+ * `/health` est hors prefixe `/api/v1` (route racine dans app/main.py).
+ */
 export async function getBackendHealth(): Promise<HealthResponse> {
-  const res = await fetch(`${API_BASE_URL}/health`, { cache: "no-store" });
+  const res = await fetch(`${SERVER_BACKEND_ORIGIN}/health`, { cache: "no-store" });
   if (!res.ok) {
     throw new Error(`Backend health check failed: ${res.status}`);
   }

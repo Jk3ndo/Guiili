@@ -7,6 +7,23 @@
 export const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8020/api/v1";
 
+/**
+ * Base absolue pour les appels emis cote serveur (Server Components, ex.
+ * `fetchMeServer`). `API_BASE` peut etre un chemin relatif en production
+ * (`/api/v1`, proxy Vercel vers le backend — voir next.config.ts) pour que
+ * les appels navigateur restent same-origin ; un `fetch` cote serveur n'a
+ * en revanche pas de notion d'origine courante et a besoin d'une URL
+ * absolue. `BACKEND_ORIGIN` (non `NEXT_PUBLIC_*`, jamais expose au
+ * navigateur) porte cette URL absolue ; en dev `API_BASE` l'est deja.
+ */
+export const SERVER_API_BASE = process.env.BACKEND_ORIGIN
+  ? `${process.env.BACKEND_ORIGIN}/api/v1`
+  : API_BASE;
+
+/** Racine absolue du backend (sans `/api/v1`) — endpoints hors prefixe, ex. `/health`. */
+export const SERVER_BACKEND_ORIGIN =
+  process.env.BACKEND_ORIGIN ?? "http://127.0.0.1:8020";
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
