@@ -1,5 +1,15 @@
+import os
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from uuid import UUID
+
+# La suite suppose GoogleOAuthClient == MockGoogleOAuthClient (codes
+# "mock:<identity>", aucun appel réseau). `.env` peut valoir false en local
+# quand on teste le vrai flux OAuth au navigateur ; un vrai OS env var gagne
+# toujours sur le fichier .env pour pydantic-settings, donc ceci isole la
+# suite de cet état local sans jamais toucher `.env` lui-même. Doit s'exécuter
+# avant le premier `get_settings()` (déclenché par `from app.main import app`
+# plus bas), donc avant tout import de `app.*`.
+os.environ.setdefault("GOOGLE_OAUTH_MOCK", "true")
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
