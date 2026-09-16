@@ -72,6 +72,7 @@ async def connections_google_callback(
             detail="state OAuth invalide, expire ou deja utilise",
         )
     if consumed.workspace_id is None:
+        await session.commit()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="transaction OAuth invalide pour une connexion de donnees",
@@ -79,10 +80,12 @@ async def connections_google_callback(
     try:
         token = await client.exchange_code(code=code, code_verifier=consumed.code_verifier)
     except InvalidGrantError:
+        await session.commit()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="code d'autorisation invalide"
         ) from None
     if token.refresh_token is None:
+        await session.commit()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Google n'a pas fourni de refresh token — reconsentement requis",
