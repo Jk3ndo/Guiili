@@ -63,6 +63,7 @@ class WebsiteOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    workspace_id: UUID
     domain: str
     display_name: str
     detected_stack: StackKind | None

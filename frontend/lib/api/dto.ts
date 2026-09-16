@@ -2,6 +2,7 @@
 
 export interface WebsiteDto {
   id: string;
+  workspace_id: string;
   domain: string;
   display_name: string;
   detected_stack: string | null;
@@ -34,6 +35,7 @@ export interface SslDto {
 
 export interface CreateWebsiteDto {
   id: string;
+  workspace_id: string;
   domain: string;
   display_name: string;
   detected_stack: string | null;

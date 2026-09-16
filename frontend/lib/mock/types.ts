@@ -36,6 +36,11 @@ export interface Workspace {
   tokenStatus: TokenStatus;
   /** Backend UUID for a real site added by the user (undefined for demo sites). */
   websiteId?: string;
+  /** Vrai workspace multi-tenant (backend) auquel appartient ce site —
+   * distinct de `id`/`websiteId` qui identifient le SITE, pas le
+   * workspace. Absent pour un site de demo (mock, non lie a un vrai
+   * backend). Voir la note terminologique de la spec §3.0. */
+  realWorkspaceId?: string;
   /** User-confirmed stack (free text) — overrides the badge when set. */
   stackLabel?: string | null;
   /** Latest HTTPS certificate status (real sites only). */

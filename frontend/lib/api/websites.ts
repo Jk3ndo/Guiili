@@ -62,6 +62,7 @@ export function websiteToWorkspace(
   return {
     id: dto.id,
     websiteId: dto.id,
+    realWorkspaceId: dto.workspace_id,
     name: dto.display_name,
     domain: dto.domain,
     stack: mapStack(dto.detected_stack),
