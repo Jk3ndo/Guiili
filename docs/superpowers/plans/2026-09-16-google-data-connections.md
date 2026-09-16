@@ -1138,9 +1138,8 @@ assignée au chargement de la page. `ConnectionSummary` (`GET
 
 **Fichiers :**
 - Modifier : `backend/app/api/v1/endpoints/google.py`
-- Test : `backend/tests/test_google_resources.py` (étendre le fichier
-  existant — vérifier son nom exact avant d'écrire, il peut différer
-  légèrement)
+- Test : `backend/tests/test_google_resources.py` (fichier confirmé existant,
+  à étendre)
 
 **Interfaces :**
 - Produit : `GET /websites/{website_id}/google-links` →
