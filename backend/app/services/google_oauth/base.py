@@ -14,6 +14,17 @@ from dataclasses import dataclass, field
 # connexion de donnees n'est creee a partir de ces scopes.
 GOOGLE_LOGIN_SCOPES: tuple[str, ...] = ("openid", "email", "profile")
 
+# Scopes lecture seule pour la connexion de DONNEES (GA4/GSC), distincte du
+# login ci-dessus. Pas de scope Tag Manager : aucune fonctionnalite livree
+# n'appelle l'API GTM (export/check statique/verification headless
+# travaillent directement sur la page rendue) — voir spec 2026-09-16.
+GOOGLE_DATA_SCOPES: tuple[str, ...] = (
+    "openid",
+    "email",
+    "https://www.googleapis.com/auth/analytics.readonly",
+    "https://www.googleapis.com/auth/webmasters.readonly",
+)
+
 # Scopes STRICTEMENT en lecture (aucun scope sensible/restreint -> pas de CASA).
 # Reserve a l'increment B ("connecter une source de donnees", `/connections/google/*`) —
 # non utilise par ce plan.
