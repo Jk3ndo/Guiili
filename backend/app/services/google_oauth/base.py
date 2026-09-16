@@ -25,16 +25,6 @@ GOOGLE_DATA_SCOPES: tuple[str, ...] = (
     "https://www.googleapis.com/auth/webmasters.readonly",
 )
 
-# Scopes STRICTEMENT en lecture (aucun scope sensible/restreint -> pas de CASA).
-# Reserve a l'increment B ("connecter une source de donnees", `/connections/google/*`) —
-# non utilise par ce plan.
-GOOGLE_OAUTH_SCOPES: tuple[str, ...] = (
-    "openid",
-    "email",
-    "https://www.googleapis.com/auth/analytics.readonly",
-    "https://www.googleapis.com/auth/webmasters.readonly",
-)
-
 
 class GoogleOAuthError(Exception):
     """Base des erreurs de l'adaptateur."""
