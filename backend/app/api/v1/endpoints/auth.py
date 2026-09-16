@@ -48,6 +48,7 @@ async def google_start(
     transaction = await create_oauth_transaction(
         session,
         user_id=None,
+        workspace_id=None,
         redirect_to=redirect_to,
         ttl_seconds=settings.oauth_state_ttl_seconds,
     )

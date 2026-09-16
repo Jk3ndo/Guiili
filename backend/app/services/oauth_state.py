@@ -22,6 +22,7 @@ class OAuthTransaction:
 class ConsumedOAuthState:
     code_verifier: str
     user_id: UUID | None
+    workspace_id: UUID | None
     redirect_to: str | None
 
 
@@ -29,6 +30,7 @@ async def create_oauth_transaction(
     session: AsyncSession,
     *,
     user_id: UUID | None,
+    workspace_id: UUID | None,
     redirect_to: str | None,
     ttl_seconds: int,
 ) -> OAuthTransaction:
@@ -39,6 +41,7 @@ async def create_oauth_transaction(
             state=state,
             code_verifier=verifier,
             user_id=user_id,
+            workspace_id=workspace_id,
             redirect_to=redirect_to,
             expires_at=datetime.now(UTC) + timedelta(seconds=ttl_seconds),
         )
@@ -58,6 +61,7 @@ async def consume_oauth_state(session: AsyncSession, state: str) -> ConsumedOAut
     snapshot = ConsumedOAuthState(
         code_verifier=row.code_verifier,
         user_id=row.user_id,
+        workspace_id=row.workspace_id,
         redirect_to=row.redirect_to,
     )
     expired = row.expires_at < datetime.now(UTC)
