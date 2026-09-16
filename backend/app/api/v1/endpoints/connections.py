@@ -7,7 +7,9 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from app.api.deps import CurrentUserDep, GoogleClientDep, SessionDep, SettingsDep, TokenCipherDep
-from app.services.connections import upsert_google_connection
+from app.models.enums import ConnectionStatus
+from app.models.google_connection import GoogleConnection
+from app.services.connections import decrypt_refresh_token, upsert_google_connection
 from app.services.google_oauth import InvalidGrantError
 from app.services.google_oauth.base import GOOGLE_DATA_SCOPES
 from app.services.oauth_state import consume_oauth_state, create_oauth_transaction
@@ -103,3 +105,32 @@ async def connections_google_callback(
         url=consumed.redirect_to or settings.frontend_base_url,
         status_code=status.HTTP_302_FOUND,
     )
+
+
+class DisconnectResponse(BaseModel):
+    status: str
+
+
+@router.delete("/{connection_id}", response_model=DisconnectResponse)
+async def disconnect_connection(
+    connection_id: UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+    client: GoogleClientDep,
+    cipher: TokenCipherDep,
+) -> DisconnectResponse:
+    connection = await session.get(GoogleConnection, connection_id)
+    if connection is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="connexion introuvable"
+        )
+    await require_owner(session, workspace_id=connection.workspace_id, user_id=user.id)
+    if connection.status == ConnectionStatus.ACTIVE:
+        try:
+            refresh_token = decrypt_refresh_token(connection, cipher=cipher)
+            await client.revoke(token=refresh_token)
+        except Exception:  # best-effort, l'intention locale prime (voir spec)
+            pass
+    connection.status = ConnectionStatus.REVOKED
+    await session.commit()
+    return DisconnectResponse(status="revoked")
