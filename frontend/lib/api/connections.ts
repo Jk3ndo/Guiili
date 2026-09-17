@@ -2,6 +2,9 @@ import { apiDelete, apiGet, apiPost } from "./client";
 
 export interface ConnectionSummaryDto {
   id: string;
+  // `/google/resources` agrege tous les workspaces de l'utilisateur : ce champ
+  // permet de ne garder que ceux du workspace courant.
+  workspace_id: string;
   email: string;
   status: "active" | "needs_reauth" | "revoked";
   granted_scopes: string[];

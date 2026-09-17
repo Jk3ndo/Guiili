@@ -20,6 +20,10 @@ router = APIRouter(tags=["google"])
 
 class ConnectionSummary(BaseModel):
     id: UUID
+    # Cette reponse agrege TOUS les workspaces de l'utilisateur : le client a
+    # besoin du workspace proprietaire pour n'afficher/n'agir que sur ceux du
+    # workspace courant.
+    workspace_id: UUID
     email: str
     status: ConnectionStatus
     granted_scopes: list[str]
@@ -229,6 +233,7 @@ async def list_website_google_links(
 def _summary(connection: GoogleConnection) -> ConnectionSummary:
     return ConnectionSummary(
         id=connection.id,
+        workspace_id=connection.workspace_id,
         email=connection.google_account_email,
         status=connection.status,
         granted_scopes=connection.granted_scopes,

@@ -25,7 +25,8 @@ interface WorkspaceMineDto {
 
 export function ConnectionsView() {
   const { workspace } = useShell();
-  const [status, setStatus] = useState<"loading" | "loaded">("loading");
+  const [status, setStatus] = useState<"loading" | "loaded" | "error">("loading");
+  const [error, setError] = useState<string | null>(null);
   const [connections, setConnections] = useState<ConnectionSummaryDto[]>([]);
   const [ga4Properties, setGa4Properties] = useState<Ga4PropertyDto[]>([]);
   const [gscSites, setGscSites] = useState<GscSiteDto[]>([]);
@@ -34,20 +35,42 @@ export function ConnectionsView() {
 
   async function load() {
     setStatus("loading");
-    const [resources, myWorkspaces] = await Promise.all([
-      listGoogleResources(),
-      apiGet<WorkspaceMineDto[]>("/workspaces/mine"),
-    ]);
-    setConnections(resources.connections);
-    setGa4Properties(resources.ga4_properties);
-    setGscSites(resources.gsc_sites);
-    setIsOwner(
-      myWorkspaces.some((w) => w.id === workspace.realWorkspaceId && w.role === "owner"),
-    );
-    if (workspace.websiteId) {
-      setLinks(await listWebsiteGoogleLinks(workspace.websiteId));
+    setError(null);
+    try {
+      const [resources, myWorkspaces] = await Promise.all([
+        listGoogleResources(),
+        apiGet<WorkspaceMineDto[]>("/workspaces/mine"),
+      ]);
+      // `/google/resources` agrege les connexions de TOUS les workspaces de
+      // l'utilisateur ; cette page n'agit que sur le workspace courant (c'est
+      // aussi lui qui determine `isOwner` plus bas). Sans ce filtrage, une
+      // connexion d'un autre workspace s'afficherait avec les mauvaises
+      // affordances et une re-synchro creerait un doublon dans le mauvais
+      // workspace.
+      const scopedConnections = resources.connections.filter(
+        (c) => c.workspace_id === workspace.realWorkspaceId,
+      );
+      const scopedConnectionIds = new Set(scopedConnections.map((c) => c.id));
+      setConnections(scopedConnections);
+      setGa4Properties(
+        resources.ga4_properties.filter((p) => scopedConnectionIds.has(p.source_connection_id)),
+      );
+      setGscSites(
+        resources.gsc_sites.filter((s) => scopedConnectionIds.has(s.source_connection_id)),
+      );
+      setIsOwner(
+        myWorkspaces.some((w) => w.id === workspace.realWorkspaceId && w.role === "owner"),
+      );
+      if (workspace.websiteId) {
+        setLinks(await listWebsiteGoogleLinks(workspace.websiteId));
+      } else {
+        setLinks([]); // sinon on garderait les liaisons du site precedent
+      }
+      setStatus("loaded");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erreur inconnue");
+      setStatus("error");
     }
-    setStatus("loaded");
   }
 
   useEffect(() => {
@@ -60,6 +83,28 @@ export function ConnectionsView() {
   }, [workspace.realWorkspaceId, workspace.websiteId]);
 
   if (status === "loading") return null;
+
+  if (status === "error") {
+    return (
+      <PageShell
+        title="Connexions Google"
+        subtitle="Identités Google reliées et ressources GA4 / Search Console assignées à ce site. Accès en lecture seule."
+      >
+        <div className="space-y-3">
+          <p className="text-xs text-ink-muted">
+            Impossible de charger les connexions Google{error ? ` : ${error}` : "."}
+          </p>
+          <button
+            type="button"
+            onClick={() => void load()}
+            className="inline-flex h-9 items-center rounded-lg border border-white/[0.08] bg-white/[0.03] px-3.5 text-xs font-medium text-ink-muted shadow-sm transition-colors hover:bg-white/[0.06] hover:text-ink"
+          >
+            Réessayer
+          </button>
+        </div>
+      </PageShell>
+    );
+  }
 
   return (
     <PageShell

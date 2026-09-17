@@ -20,6 +20,7 @@ from app.main import app
 from app.models.enums import ConnectionStatus, StackKind
 from app.models.google_connection import GoogleConnection
 from app.models.user import User
+from app.models.workspace_member import WorkspaceMember
 from app.security.token_crypto import load_token_cipher
 from app.services.audit_probe import MockAuditProbe
 from app.services.connections import upsert_google_connection
@@ -125,6 +126,55 @@ async def test_aggregates_resources_across_two_connections(
     gsc = {s["resource_id"] for s in body["gsc_sites"]}
     assert "sc-domain:boutique-verte.fr" in gsc
     assert len(body["connections"]) == 2
+
+
+async def test_summary_exposes_owning_workspace_id(
+    authed_client: tuple[AsyncClient, User], db_session: AsyncSession, make_user,
+) -> None:
+    """La reponse agrege TOUS les workspaces de l'utilisateur : chaque resume
+    doit porter son workspace proprietaire pour que le client puisse se
+    restreindre au workspace courant."""
+    client, user = authed_client
+    own_ws = await owner_workspace_id(db_session, user)
+
+    # Second workspace du MEME utilisateur (cree via un autre owner puis
+    # l'utilisateur y est ajoute comme membre : `user_workspace_ids` remonte
+    # bien les deux, exactement comme pour un utilisateur multi-workspaces).
+    other_owner = await make_user(sub="other-owner-ws-scope")
+    other_ws = await owner_workspace_id(db_session, other_owner)
+    db_session.add(WorkspaceMember(workspace_id=other_ws, user_id=user.id, role="member"))
+    await db_session.flush()
+
+    cipher = load_token_cipher(get_settings())
+    own_conn = await upsert_google_connection(
+        db_session,
+        workspace_id=own_ws,
+        userinfo=GoogleUserInfo(sub="google-sub-dev-agence", email="dev.agence@gmail.com"),
+        token=GoogleTokenResponse(
+            access_token="at",
+            refresh_token="mock-refresh|google-sub-dev-agence",
+            expires_in=3599,
+            scopes=_SCOPES,
+        ),
+        cipher=cipher,
+    )
+    other_conn = await upsert_google_connection(
+        db_session,
+        workspace_id=other_ws,
+        userinfo=GoogleUserInfo(sub="google-sub-client-perso", email="client.perso@gmail.com"),
+        token=GoogleTokenResponse(
+            access_token="at",
+            refresh_token="mock-refresh|google-sub-client-perso",
+            expires_in=3599,
+            scopes=_SCOPES,
+        ),
+        cipher=cipher,
+    )
+
+    body = (await client.get("/api/v1/google/resources")).json()
+    by_id = {c["id"]: c["workspace_id"] for c in body["connections"]}
+    assert by_id[str(own_conn.id)] == str(own_ws)
+    assert by_id[str(other_conn.id)] == str(other_ws)
 
 
 async def test_revoked_connection_flips_to_needs_reauth(
