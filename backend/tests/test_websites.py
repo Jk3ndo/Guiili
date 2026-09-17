@@ -104,6 +104,7 @@ async def test_create_runs_first_audit_and_returns_snapshot(
     assert body["detection"]["candidates"][0]["label"] == "Vercel"
     assert body["ssl"]["status"] == "valid"
     assert body["captured_at"] is not None
+    assert body["workspace_id"] == str(await owner_workspace_id(db_session, user))
 
     site = (await db_session.execute(select(Website).where(Website.id == body["id"]))).scalar_one()
     assert site.workspace_id == await owner_workspace_id(db_session, user)
@@ -117,6 +118,18 @@ async def test_create_runs_first_audit_and_returns_snapshot(
         )
     ).scalar_one()
     assert snap.website_id == site.id
+
+
+async def test_list_websites_exposes_workspace_id(
+    authed_client: tuple[AsyncClient, User],
+    db_session: AsyncSession,
+    fake_detector: None,
+) -> None:
+    client, user = authed_client
+    await client.post("/api/v1/websites", json={"name": "X", "domain": "expose-wsid.test"})
+    resp = await client.get("/api/v1/websites")
+    body = next(w for w in resp.json() if w["domain"] == "expose-wsid.test")
+    assert body["workspace_id"] == str(await owner_workspace_id(db_session, user))
 
 
 async def test_create_rejects_duplicate_domain_for_same_user(

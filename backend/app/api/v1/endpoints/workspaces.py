@@ -18,7 +18,7 @@ from app.services.workspace_invites import (
     create_invitation,
     get_invitation,
 )
-from app.services.workspaces import is_member
+from app.services.workspaces import require_owner
 
 router = APIRouter(tags=["workspaces"])
 
@@ -41,20 +41,6 @@ class InvitationOut(BaseModel):
     status: str
 
 
-async def _require_owner(session: SessionDep, workspace_id: UUID, user_id: UUID) -> None:
-    if not await is_member(session, workspace_id=workspace_id, user_id=user_id):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="workspace introuvable")
-    role = (
-        await session.execute(
-            select(WorkspaceMember.role).where(
-                WorkspaceMember.workspace_id == workspace_id, WorkspaceMember.user_id == user_id
-            )
-        )
-    ).scalar_one_or_none()
-    if role != "owner":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="reserve au proprietaire")
-
-
 @router.get("/workspaces/mine", response_model=list[WorkspaceOut])
 async def list_my_workspaces(user: CurrentUserDep, session: SessionDep) -> list[WorkspaceOut]:
     rows = (
@@ -74,7 +60,7 @@ async def invite_to_workspace(
     workspace_id: UUID, body: InviteRequest, user: CurrentUserDep, session: SessionDep,
     email_sender: EmailSenderDep, settings: SettingsDep,
 ) -> InvitationOut:
-    await _require_owner(session, workspace_id, user.id)
+    await require_owner(session, workspace_id=workspace_id, user_id=user.id)
     invitation = await create_invitation(
         session, workspace_id=workspace_id, invited_email=body.invited_email, invited_by_user_id=user.id
     )
@@ -117,7 +103,7 @@ async def accept_invitation_endpoint(token: str, user: CurrentUserDep, session: 
 async def remove_member(
     workspace_id: UUID, member_user_id: UUID, user: CurrentUserDep, session: SessionDep
 ) -> None:
-    await _require_owner(session, workspace_id, user.id)
+    await require_owner(session, workspace_id=workspace_id, user_id=user.id)
     if member_user_id == user.id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="le proprietaire ne peut pas se retirer")
     row = (

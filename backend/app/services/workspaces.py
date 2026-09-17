@@ -46,6 +46,20 @@ async def owned_website(session: AsyncSession, *, website_id: UUID, user_id: UUI
     return site
 
 
+async def require_owner(session: AsyncSession, *, workspace_id: UUID, user_id: UUID) -> None:
+    if not await is_member(session, workspace_id=workspace_id, user_id=user_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="workspace introuvable")
+    role = (
+        await session.execute(
+            select(WorkspaceMember.role).where(
+                WorkspaceMember.workspace_id == workspace_id, WorkspaceMember.user_id == user_id
+            )
+        )
+    ).scalar_one_or_none()
+    if role != "owner":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="reserve au proprietaire")
+
+
 async def create_workspace_for_user(
     session: AsyncSession, *, user: User, name: str | None = None
 ) -> Workspace:

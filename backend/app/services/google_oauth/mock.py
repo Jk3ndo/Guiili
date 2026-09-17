@@ -1,7 +1,7 @@
 """Adaptateur Google OAuth de test — fixtures deterministes, zero reseau.
 
 Active quand `GOOGLE_OAUTH_MOCK=true`. Les identites et ressources refletent
-`frontend/lib/mock/connections.ts` (workspace « Boutique Verte »).
+le jeu de demo historique du front (workspace « Boutique Verte »).
 
 Convention de pilotage depuis les tests :
 - `code` = ``"mock:<cle_fixture>"`` (ou tout autre chose -> fixture par defaut).
@@ -139,7 +139,13 @@ class MockGoogleOAuthClient(GoogleOAuthClient):
         # (qui ne font qu'inspecter la query string, jamais la suivre), mais
         # faisait echouer un vrai clic navigateur avec `invalid_client` — le
         # `client_id` factice n'existe evidemment pas cote Google.
-        self._authorize_endpoint = authorize_endpoint or redirect_uri
+        #
+        # On garde l'override BRUT (souvent None) au lieu de le figer sur
+        # `redirect_uri` des la construction : la cible de l'auto-redirection
+        # est calculee par appel, a partir du redirect_uri effectif, pour que
+        # le mock suive le flow qui l'a initie (login OU connexion de donnees)
+        # exactement comme le fera le client reel.
+        self._authorize_endpoint_override = authorize_endpoint
         self._mock_identity_key = mock_identity_key
 
     def build_authorization_url(
@@ -149,11 +155,13 @@ class MockGoogleOAuthClient(GoogleOAuthClient):
         code_challenge: str,
         login_hint: str | None = None,
         scopes: tuple[str, ...] = GOOGLE_LOGIN_SCOPES,
+        redirect_uri: str | None = None,
     ) -> str:
+        effective_redirect_uri = redirect_uri or self._redirect_uri
         params = {
             "response_type": "code",
             "client_id": self._client_id,
-            "redirect_uri": self._redirect_uri,
+            "redirect_uri": effective_redirect_uri,
             "scope": " ".join(scopes),
             "state": state,
             "code_challenge": code_challenge,
@@ -167,9 +175,15 @@ class MockGoogleOAuthClient(GoogleOAuthClient):
         }
         if login_hint:
             params["login_hint"] = login_hint
-        return f"{self._authorize_endpoint}?{urlencode(params)}"
+        authorize_endpoint = self._authorize_endpoint_override or effective_redirect_uri
+        return f"{authorize_endpoint}?{urlencode(params)}"
 
-    async def exchange_code(self, *, code: str, code_verifier: str) -> GoogleTokenResponse:
+    async def exchange_code(
+        self, *, code: str, code_verifier: str, redirect_uri: str | None = None
+    ) -> GoogleTokenResponse:
+        # `redirect_uri` ignore : le mock derive tout du `code`. Google, lui,
+        # verifie que l'autorisation et l'echange portent le meme redirect_uri.
+        _ = redirect_uri
         if not code_verifier:
             raise InvalidGrantError("code_verifier manquant")
         identity = _identity_from_code(code)

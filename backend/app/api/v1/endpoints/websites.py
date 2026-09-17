@@ -63,6 +63,7 @@ class WebsiteOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    workspace_id: UUID
     domain: str
     display_name: str
     detected_stack: StackKind | None
@@ -118,6 +119,7 @@ class CreateWebsiteRequest(BaseModel):
 
 class CreateWebsiteResponse(BaseModel):
     id: UUID
+    workspace_id: UUID
     domain: str
     display_name: str
     detected_stack: StackKind | None
@@ -269,6 +271,7 @@ async def create_website(
 
     return CreateWebsiteResponse(
         id=site.id,
+        workspace_id=site.workspace_id,
         domain=site.domain,
         display_name=site.display_name,
         detected_stack=site.detected_stack,

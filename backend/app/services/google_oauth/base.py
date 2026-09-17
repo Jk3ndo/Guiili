@@ -14,10 +14,11 @@ from dataclasses import dataclass, field
 # connexion de donnees n'est creee a partir de ces scopes.
 GOOGLE_LOGIN_SCOPES: tuple[str, ...] = ("openid", "email", "profile")
 
-# Scopes STRICTEMENT en lecture (aucun scope sensible/restreint -> pas de CASA).
-# Reserve a l'increment B ("connecter une source de donnees", `/connections/google/*`) —
-# non utilise par ce plan.
-GOOGLE_OAUTH_SCOPES: tuple[str, ...] = (
+# Scopes lecture seule pour la connexion de DONNEES (GA4/GSC), distincte du
+# login ci-dessus. Pas de scope Tag Manager : aucune fonctionnalite livree
+# n'appelle l'API GTM (export/check statique/verification headless
+# travaillent directement sur la page rendue) — voir spec 2026-09-16.
+GOOGLE_DATA_SCOPES: tuple[str, ...] = (
     "openid",
     "email",
     "https://www.googleapis.com/auth/analytics.readonly",
@@ -98,10 +99,18 @@ class GoogleOAuthClient(abc.ABC):
         code_challenge: str,
         login_hint: str | None = None,
         scopes: tuple[str, ...] = GOOGLE_LOGIN_SCOPES,
+        # None -> redirect_uri par defaut du client (celui du flow de LOGIN).
+        # Le flow de connexion de DONNEES passe le sien (`/connections/google/
+        # callback`) : les deux callbacks sont des routes distinctes et Google
+        # exige que le redirect_uri de l'autorisation et celui de l'echange de
+        # code soient identiques.
+        redirect_uri: str | None = None,
     ) -> str: ...
 
     @abc.abstractmethod
-    async def exchange_code(self, *, code: str, code_verifier: str) -> GoogleTokenResponse: ...
+    async def exchange_code(
+        self, *, code: str, code_verifier: str, redirect_uri: str | None = None
+    ) -> GoogleTokenResponse: ...
 
     @abc.abstractmethod
     async def refresh_access_token(self, *, refresh_token: str) -> GoogleTokenResponse: ...

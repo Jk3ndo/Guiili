@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     # Lire la valeur avec .get_secret_value().
     google_client_secret: SecretStr = SecretStr("")
     google_oauth_redirect_uri: str = "http://127.0.0.1:8020/api/v1/auth/google/callback"
+    # Redirect URI du flow de connexion de DONNEES (GA4/GSC), distinct du login
+    # ci-dessus : chaque flow a son propre callback et Google exige que le
+    # redirect_uri soit le meme a l'autorisation et a l'echange de code.
+    google_data_redirect_uri: str = "http://127.0.0.1:8020/api/v1/connections/google/callback"
     # true -> MockGoogleOAuthClient : aucun appel réseau, fixtures déterministes.
     google_oauth_mock: bool = False
     # true -> MockAuditProbe (fixtures). false -> RealAuditProbe (PageSpeed Insights).
