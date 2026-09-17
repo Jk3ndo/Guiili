@@ -4,6 +4,20 @@ export interface ConnectionSummaryDto {
   id: string;
   email: string;
   status: "active" | "needs_reauth" | "revoked";
+  granted_scopes: string[];
+  last_refreshed_at: string | null;
+}
+
+export interface WebsiteGoogleLinkDto {
+  id: string;
+  google_connection_id: string;
+  resource_type: "ga4_property" | "gtm_container" | "gsc_site";
+  resource_id: string;
+  resource_display_name: string | null;
+}
+
+export function listWebsiteGoogleLinks(websiteId: string): Promise<WebsiteGoogleLinkDto[]> {
+  return apiGet<WebsiteGoogleLinkDto[]>(`/websites/${websiteId}/google-links`);
 }
 
 export interface Ga4PropertyDto {
