@@ -1,17 +1,25 @@
 """GET /google/resources : decouverte agregee sur les connexions actives."""
 
+from urllib.parse import parse_qs, urlparse
+from uuid import uuid4
+
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.models.enums import ConnectionStatus
+from app.models.enums import ConnectionStatus, StackKind
 from app.models.google_connection import GoogleConnection
 from app.models.user import User
 from app.security.token_crypto import load_token_cipher
 from app.services.connections import upsert_google_connection
 from app.services.google_oauth.base import GoogleTokenResponse, GoogleUserInfo
+from app.services.stack_detector import StackDetection, StackGuess
 from tests.conftest import owner_workspace_id
+
+
+def _query(url: str) -> dict[str, str]:
+    return {k: v[0] for k, v in parse_qs(urlparse(url).query).items()}
 
 _SCOPES = ("openid", "email", "https://www.googleapis.com/auth/analytics.readonly")
 
@@ -107,3 +115,63 @@ async def test_revoked_connection_flips_to_needs_reauth(
         await db_session.execute(select(GoogleConnection).where(GoogleConnection.id == dead.id))
     ).scalar_one()
     assert refreshed.status == ConnectionStatus.NEEDS_REAUTH
+
+
+async def test_resources_summary_includes_scopes_and_last_refresh(
+    authed_client: tuple[AsyncClient, "User"], db_session: AsyncSession,
+) -> None:
+    client, user = authed_client
+    ws_id = await owner_workspace_id(db_session, user)
+
+    # Etablit une connexion active via le vrai flow HTTP start->callback
+    # (meme sequence que test_connections_google_callback.py::test_callback_creates_connection,
+    # ecrite en Task 5 — reprise ici telle quelle, pas de nouvel helper partage
+    # cree pour eviter d'introduire une dependance entre fichiers de test).
+    start = await client.get(
+        "/api/v1/connections/google/start", params={"workspace_id": str(ws_id)}
+    )
+    state = _query(start.json()["authorization_url"])["state"]
+    await client.get(
+        "/api/v1/connections/google/callback",
+        params={"code": "mock:client_perso", "state": state},
+        follow_redirects=False,
+    )
+
+    resp = await client.get("/api/v1/google/resources")
+    summary = resp.json()["connections"][0]
+    assert summary["granted_scopes"] == [
+        "openid", "email",
+        "https://www.googleapis.com/auth/analytics.readonly",
+    ]  # scopes de la fixture mock "client_perso", voir app/services/google_oauth/mock.py
+    assert summary["last_refreshed_at"] is not None
+
+
+async def test_website_google_links_returns_current_links(
+    authed_client: tuple[AsyncClient, "User"], db_session: AsyncSession, monkeypatch,
+) -> None:
+    # Mock detect_stack to avoid needing real detection
+    async def _mock_detect(url: str, *, allow_insecure: bool = False):
+        return StackDetection(
+            StackKind.NEXTJS,
+            ("next-static", "next-data"),
+            0.85,
+            candidates=(StackGuess("Vercel", "en-tetes Vercel"),),
+        )
+
+    monkeypatch.setattr("app.services.stack_detector.detect_stack", _mock_detect)
+
+    client, _ = authed_client
+    site_resp = await client.post("/api/v1/websites", json={"name": "L", "domain": "gg-links.test"})
+    site_id = site_resp.json()["id"]
+
+    resp = await client.get(f"/api/v1/websites/{site_id}/google-links")
+    assert resp.status_code == 200
+    assert resp.json() == []  # aucune liaison pour l'instant
+
+
+async def test_website_google_links_requires_membership(
+    authed_client: tuple[AsyncClient, "User"],
+) -> None:
+    client, _ = authed_client
+    resp = await client.get(f"/api/v1/websites/{uuid4()}/google-links")
+    assert resp.status_code == 404

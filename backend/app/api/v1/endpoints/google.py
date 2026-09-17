@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
@@ -21,6 +22,8 @@ class ConnectionSummary(BaseModel):
     id: UUID
     email: str
     status: ConnectionStatus
+    granted_scopes: list[str]
+    last_refreshed_at: datetime | None
 
 
 class Ga4PropertyOut(BaseModel):
@@ -67,6 +70,16 @@ class LinkResourceResponse(BaseModel):
 
     id: UUID
     website_id: UUID
+    google_connection_id: UUID
+    resource_type: ResourceType
+    resource_id: str
+    resource_display_name: str | None
+
+
+class WebsiteGoogleLinkOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
     google_connection_id: UUID
     resource_type: ResourceType
     resource_id: str
@@ -200,9 +213,24 @@ async def link_resource(
     return link
 
 
+@router.get("/websites/{website_id}/google-links", response_model=list[WebsiteGoogleLinkOut])
+async def list_website_google_links(
+    website_id: UUID, user: CurrentUserDep, session: SessionDep,
+) -> list[WebsiteGoogleLink]:
+    await owned_website(session, website_id=website_id, user_id=user.id)
+    rows = (
+        await session.execute(
+            select(WebsiteGoogleLink).where(WebsiteGoogleLink.website_id == website_id)
+        )
+    ).scalars().all()
+    return list(rows)
+
+
 def _summary(connection: GoogleConnection) -> ConnectionSummary:
     return ConnectionSummary(
         id=connection.id,
         email=connection.google_account_email,
         status=connection.status,
+        granted_scopes=connection.granted_scopes,
+        last_refreshed_at=connection.last_refreshed_at,
     )
