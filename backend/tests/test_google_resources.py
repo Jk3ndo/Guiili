@@ -1,20 +1,31 @@
 """GET /google/resources : decouverte agregee sur les connexions actives."""
 
+from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
+import pytest_asyncio
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import (
+    get_audit_probe,
+    get_gtm_checker,
+    get_live_stack_detector,
+    get_tls_checker,
+)
 from app.config import get_settings
+from app.main import app
 from app.models.enums import ConnectionStatus, StackKind
 from app.models.google_connection import GoogleConnection
 from app.models.user import User
 from app.security.token_crypto import load_token_cipher
+from app.services.audit_probe import MockAuditProbe
 from app.services.connections import upsert_google_connection
 from app.services.google_oauth.base import GoogleTokenResponse, GoogleUserInfo
 from app.services.stack_detector import StackDetection, StackGuess
+from app.services.tls_check import TlsStatus
 from tests.conftest import owner_workspace_id
 
 
@@ -37,6 +48,43 @@ async def _make_connection(
         ),
         cipher=cipher,
     )
+
+
+@pytest_asyncio.fixture
+def fake_detector():
+    """Mock all detection dependencies via FastAPI dependency overrides to avoid real network calls."""
+
+    async def _fake_detect(url: str, *, allow_insecure: bool = False) -> StackDetection:
+        _ = (url, allow_insecure)
+        return StackDetection(
+            StackKind.NEXTJS,
+            ("next-static", "next-data"),
+            0.85,
+            candidates=(StackGuess("Vercel", "en-tetes Vercel"),),
+        )
+
+    async def _fake_tls(domain: str) -> TlsStatus:
+        _ = domain
+        return TlsStatus(
+            host=domain,
+            status="valid",
+            checked_at=datetime.now(UTC),
+            expires_at=datetime.now(UTC) + timedelta(days=80),
+        )
+
+    async def _fake_gtm(domain: str) -> None:
+        _ = domain
+        return None
+
+    app.dependency_overrides[get_live_stack_detector] = lambda: _fake_detect
+    app.dependency_overrides[get_tls_checker] = lambda: _fake_tls
+    app.dependency_overrides[get_gtm_checker] = lambda: _fake_gtm
+    app.dependency_overrides[get_audit_probe] = MockAuditProbe
+    yield
+    app.dependency_overrides.pop(get_live_stack_detector, None)
+    app.dependency_overrides.pop(get_tls_checker, None)
+    app.dependency_overrides.pop(get_gtm_checker, None)
+    app.dependency_overrides.pop(get_audit_probe, None)
 
 
 async def test_requires_authentication(db_client: AsyncClient) -> None:
@@ -147,19 +195,8 @@ async def test_resources_summary_includes_scopes_and_last_refresh(
 
 
 async def test_website_google_links_returns_current_links(
-    authed_client: tuple[AsyncClient, "User"], db_session: AsyncSession, monkeypatch,
+    authed_client: tuple[AsyncClient, "User"], db_session: AsyncSession, fake_detector: None,
 ) -> None:
-    # Mock detect_stack to avoid needing real detection
-    async def _mock_detect(url: str, *, allow_insecure: bool = False):
-        return StackDetection(
-            StackKind.NEXTJS,
-            ("next-static", "next-data"),
-            0.85,
-            candidates=(StackGuess("Vercel", "en-tetes Vercel"),),
-        )
-
-    monkeypatch.setattr("app.services.stack_detector.detect_stack", _mock_detect)
-
     client, _ = authed_client
     site_resp = await client.post("/api/v1/websites", json={"name": "L", "domain": "gg-links.test"})
     site_id = site_resp.json()["id"]
