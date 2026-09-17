@@ -37,7 +37,10 @@ async def test_callback_creates_connection(
         follow_redirects=False,
     )
     assert resp.status_code == 302
-    assert resp.headers["location"].endswith("/connections")
+    # URL absolue vers le FRONTEND, jamais un chemin relatif : ce callback
+    # est appele sur l'origine du backend, un chemin relatif se resoudrait
+    # donc contre elle (404) au lieu du frontend.
+    assert resp.headers["location"] == f"{get_settings().frontend_base_url}/connections"
 
     conn = (
         await db_session.execute(

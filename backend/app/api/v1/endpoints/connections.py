@@ -38,7 +38,11 @@ async def connections_google_start(
         session,
         user_id=user.id,
         workspace_id=workspace_id,
-        redirect_to="/connections",
+        # URL absolue : ce callback est appele sur l'origine du BACKEND, un
+        # chemin relatif se resoudrait donc contre elle (404) au lieu du
+        # frontend — contrairement au login qui ne passe pas de redirect_to
+        # et retombe sur `settings.frontend_base_url` (deja absolu).
+        redirect_to=f"{settings.frontend_base_url}/connections",
         ttl_seconds=settings.oauth_state_ttl_seconds,
     )
     await session.commit()
