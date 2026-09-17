@@ -99,10 +99,18 @@ class GoogleOAuthClient(abc.ABC):
         code_challenge: str,
         login_hint: str | None = None,
         scopes: tuple[str, ...] = GOOGLE_LOGIN_SCOPES,
+        # None -> redirect_uri par defaut du client (celui du flow de LOGIN).
+        # Le flow de connexion de DONNEES passe le sien (`/connections/google/
+        # callback`) : les deux callbacks sont des routes distinctes et Google
+        # exige que le redirect_uri de l'autorisation et celui de l'echange de
+        # code soient identiques.
+        redirect_uri: str | None = None,
     ) -> str: ...
 
     @abc.abstractmethod
-    async def exchange_code(self, *, code: str, code_verifier: str) -> GoogleTokenResponse: ...
+    async def exchange_code(
+        self, *, code: str, code_verifier: str, redirect_uri: str | None = None
+    ) -> GoogleTokenResponse: ...
 
     @abc.abstractmethod
     async def refresh_access_token(self, *, refresh_token: str) -> GoogleTokenResponse: ...

@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.models.oauth_state import OAuthState
 from app.models.user import User
+from app.services.oauth_state import create_oauth_transaction
+from tests.conftest import owner_workspace_id
 
 
 def _query(url: str) -> dict[str, str]:
@@ -80,6 +82,34 @@ async def test_callback_rejects_unknown_state(db_client: AsyncClient) -> None:
         follow_redirects=False,
     )
     assert resp.status_code == 400
+
+
+async def test_callback_rejects_data_connection_state(
+    authed_client: tuple[AsyncClient, User], db_session: AsyncSession,
+) -> None:
+    """Symetrique de test_connections_google_callback.py::
+    test_callback_state_is_single_use_even_on_workspace_id_none_error : une
+    transaction portant un `workspace_id` vient du flow de connexion de
+    DONNEES et ne doit jamais etre traitee comme un login (sinon l'utilisateur
+    serait silencieusement reconnecte au lieu de voir sa connexion creee)."""
+    client, user = authed_client
+    ws_id = await owner_workspace_id(db_session, user)
+    transaction = await create_oauth_transaction(
+        db_session,
+        user_id=user.id,
+        workspace_id=ws_id,
+        redirect_to="/connections",
+        ttl_seconds=get_settings().oauth_state_ttl_seconds,
+    )
+    await db_session.commit()
+
+    resp = await client.get(
+        "/api/v1/auth/google/callback",
+        params={"code": "mock:client_perso", "state": transaction.state},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "transaction OAuth invalide pour un login"
 
 
 async def test_callback_rejects_denied_consent(db_client: AsyncClient) -> None:

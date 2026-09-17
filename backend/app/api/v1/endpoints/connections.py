@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
@@ -14,6 +15,8 @@ from app.services.google_oauth import InvalidGrantError
 from app.services.google_oauth.base import GOOGLE_DATA_SCOPES
 from app.services.oauth_state import consume_oauth_state, create_oauth_transaction
 from app.services.workspaces import require_owner
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/connections", tags=["connections"])
 
@@ -43,6 +46,10 @@ async def connections_google_start(
         state=transaction.state,
         code_challenge=transaction.code_challenge,
         scopes=GOOGLE_DATA_SCOPES,
+        # Sans ca, le consentement reviendrait sur le callback de LOGIN
+        # (`/auth/google/callback`) : l'utilisateur serait silencieusement
+        # reconnecte et aucune connexion de donnees ne serait creee.
+        redirect_uri=settings.google_data_redirect_uri,
     )
     return ConnectionStartResponse(authorization_url=url)
 
@@ -80,7 +87,12 @@ async def connections_google_callback(
             detail="transaction OAuth invalide pour une connexion de donnees",
         )
     try:
-        token = await client.exchange_code(code=code, code_verifier=consumed.code_verifier)
+        token = await client.exchange_code(
+            code=code,
+            code_verifier=consumed.code_verifier,
+            # Doit refleter exactement le redirect_uri de l'autorisation.
+            redirect_uri=settings.google_data_redirect_uri,
+        )
     except InvalidGrantError:
         await session.commit()
         raise HTTPException(
@@ -130,7 +142,15 @@ async def disconnect_connection(
             refresh_token = decrypt_refresh_token(connection, cipher=cipher)
             await client.revoke(token=refresh_token)
         except Exception:  # best-effort, l'intention locale prime (voir spec)
-            pass
+            # Jamais bloquant, mais jamais silencieux non plus : une revocation
+            # qui echoue systematiquement (cle de chiffrement, reseau, API
+            # Google) laisserait sinon des refresh tokens vivants cote Google
+            # sans aucune trace.
+            logger.warning(
+                "revocation Google best-effort echouee pour la connexion %s",
+                connection.id,
+                exc_info=True,
+            )
     connection.status = ConnectionStatus.REVOKED
     await session.commit()
     return DisconnectResponse(status="revoked")

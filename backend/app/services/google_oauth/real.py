@@ -57,11 +57,12 @@ class RealGoogleOAuthClient(GoogleOAuthClient):
         code_challenge: str,
         login_hint: str | None = None,
         scopes: tuple[str, ...] = GOOGLE_LOGIN_SCOPES,
+        redirect_uri: str | None = None,
     ) -> str:
         params = {
             "response_type": "code",
             "client_id": self._client_id,
-            "redirect_uri": self._redirect_uri,
+            "redirect_uri": redirect_uri or self._redirect_uri,
             "scope": " ".join(scopes),
             "state": state,
             "code_challenge": code_challenge,
@@ -83,7 +84,9 @@ class RealGoogleOAuthClient(GoogleOAuthClient):
             raise TokenExchangeError(f"token endpoint {resp.status_code}: {resp.text}")
         return _token_response(resp.json())
 
-    async def exchange_code(self, *, code: str, code_verifier: str) -> GoogleTokenResponse:
+    async def exchange_code(
+        self, *, code: str, code_verifier: str, redirect_uri: str | None = None
+    ) -> GoogleTokenResponse:
         return await self._post_token(
             {
                 "grant_type": "authorization_code",
@@ -91,7 +94,9 @@ class RealGoogleOAuthClient(GoogleOAuthClient):
                 "code_verifier": code_verifier,
                 "client_id": self._client_id,
                 "client_secret": self._client_secret,
-                "redirect_uri": self._redirect_uri,
+                # Doit etre IDENTIQUE a celui envoye a l'autorisation, sinon
+                # Google repond redirect_uri_mismatch.
+                "redirect_uri": redirect_uri or self._redirect_uri,
             }
         )
 

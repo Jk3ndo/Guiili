@@ -86,6 +86,17 @@ async def google_callback(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="state OAuth invalide, expire ou deja utilise",
         )
+    # Garde symetrique de celle de connections.py (`workspace_id is None`) :
+    # une transaction portant un workspace_id vient du flow de connexion de
+    # DONNEES et ne doit jamais etre traitee comme un login (sinon un
+    # redirect_uri mal configure reconnecterait silencieusement l'utilisateur
+    # au lieu de creer la connexion Google attendue).
+    if consumed.workspace_id is not None:
+        await session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="transaction OAuth invalide pour un login",
+        )
 
     try:
         token = await client.exchange_code(code=code, code_verifier=consumed.code_verifier)

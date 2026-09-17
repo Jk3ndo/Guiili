@@ -48,6 +48,31 @@ async def test_start_owner_gets_data_scopes(
     assert not any("tagmanager" in s for s in scopes)
 
 
+async def test_login_and_data_flows_use_distinct_redirect_uris(
+    authed_client: tuple[AsyncClient, User], db_session: AsyncSession,
+) -> None:
+    """Regression : les deux flows partagent le meme client OAuth. Tant que
+    `/connections/google/start` n'imposait pas son propre redirect_uri, le
+    consentement de donnees revenait sur le callback de LOGIN — l'utilisateur
+    etait silencieusement reconnecte et aucune connexion n'etait creee."""
+    client, user = authed_client
+    ws_id = await owner_workspace_id(db_session, user)
+
+    login = await client.get("/api/v1/auth/google/start")
+    assert login.status_code == 200, login.text
+    login_redirect = _query(login.json()["authorization_url"])["redirect_uri"]
+
+    data = await client.get(
+        "/api/v1/connections/google/start", params={"workspace_id": str(ws_id)}
+    )
+    assert data.status_code == 200, data.text
+    data_redirect = _query(data.json()["authorization_url"])["redirect_uri"]
+
+    assert login_redirect.endswith("/auth/google/callback")
+    assert data_redirect.endswith("/connections/google/callback")
+    assert login_redirect != data_redirect
+
+
 async def test_start_requires_authentication(db_client: AsyncClient) -> None:
     resp = await db_client.get("/api/v1/connections/google/start", params={"workspace_id": str(uuid4())})
     assert resp.status_code == 401

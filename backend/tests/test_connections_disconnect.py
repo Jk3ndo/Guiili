@@ -94,7 +94,7 @@ def _login_as(client: AsyncClient, user: User) -> None:
 
 
 async def test_disconnect_owner_can_disconnect(
-    authed_client: tuple[AsyncClient, User], db_session: AsyncSession, make_user,
+    authed_client: tuple[AsyncClient, User], db_session: AsyncSession,
 ) -> None:
     """Sanity check positif : le proprietaire peut se deconnecter lui-meme.
 
@@ -108,14 +108,8 @@ async def test_disconnect_owner_can_disconnect(
         await db_session.execute(select(GoogleConnection).where(GoogleConnection.workspace_id == ws_id))
     ).scalar_one()
 
-    other_owner = await make_user(sub="other-owner-disc")
-    other_ws = await owner_workspace_id(db_session, other_owner)
-    db_session.add(WorkspaceMember(workspace_id=ws_id, user_id=other_owner.id, role="member"))
-    await db_session.flush()
-
     resp = await client.delete(f"/api/v1/connections/{conn.id}")
     assert resp.status_code == 200  # l'appelant EST le proprietaire ici : sanity check positif
-    _ = other_ws  # utilise seulement pour construire un membre non-owner distinct
 
 
 async def test_disconnect_rejects_non_owner(
