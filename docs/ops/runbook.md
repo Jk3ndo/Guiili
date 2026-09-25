@@ -84,6 +84,24 @@ Le script fait cinq étapes, dans l'ordre, et s'arrête à la première erreur (
    (5 secondes d'écart). En cas d'échec, le script sort en erreur et affiche la commande de
    retour arrière (voir §5). Non exécutée avec `--dry-run`.
 
+**Attention après un retour arrière (§5)** : si le trafic a été épinglé sur une ancienne
+révision, `gcloud run deploy` crée la nouvelle révision **sans lui envoyer de trafic**.
+Le contrôle final de `/health/db` interroge l'URL du service, qui sert encore l'ancienne
+révision : le « OK » du script ne prouve donc pas que le nouveau code est en ligne. Pour
+reprendre les déploiements normaux :
+
+```bash
+gcloud run services update-traffic backend-guiili --to-latest --region us-central1 --project guiili
+```
+
+**Exposition** : le script passe **toujours** `--allow-unauthenticated`. Le service de
+préproduction est donc joignable publiquement : utiliser une URL de service non devinable,
+des secrets différents de la production et `ADVISOR_MOCK: "true"`.
+
+**Actions réservées au propriétaire** : `./scripts/deploy-backend.sh production` et le
+retour arrière `update-traffic` (§5) ne sont exécutés que par le propriétaire du projet
+GCP.
+
 **Le fichier `deploy/env.<env>.yaml` est la source de vérité** : `--env-vars-file`
 *remplace* toutes les variables du service (et du Job de migration). Une variable absente
 du fichier disparaît du service au prochain déploiement. Ces fichiers sont ignorés par git
@@ -161,6 +179,19 @@ pas les migrations. Règle : **toute migration doit rester compatible avec la ve
 précédente du code** : ajouter une colonne ou une table avant de l'utiliser, ne supprimer
 ou renommer qu'au déploiement suivant. Sinon la révision précédente échoue sur le schéma
 migré et le retour arrière casse.
+
+**Piège de Cloud Run** : après `update-traffic --to-revisions=<REVISION>=100`, le trafic
+reste épinglé sur cette révision. Le `gcloud run deploy` suivant (donc
+`deploy-backend.sh`) crée la nouvelle révision sans lui envoyer de trafic, et son
+contrôle `/health/db` répond « OK » depuis l'ancienne révision. Une fois le problème
+corrigé, pour reprendre les déploiements normaux (le trafic suit de nouveau la dernière
+révision) :
+
+```bash
+gcloud run services update-traffic backend-guiili --to-latest --region us-central1 --project guiili
+```
+
+Le retour arrière et cette commande sont des actions réservées au propriétaire.
 
 ## 6. Lire les logs
 
@@ -306,6 +337,10 @@ Prérequis, tous **[PROPRIÉTAIRE]** :
    - `GCP_SERVICE_ACCOUNT` : adresse du compte de service ;
    - `STAGING_ENV_YAML` : contenu **complet** de `deploy/env.staging.yaml`.
 4. La préproduction existe déjà (§4).
+5. Recommandé : restreindre l'environnement GitHub `staging` aux branches de déploiement
+   autorisées (Settings, Environments, Deployment branches, par exemple `main`
+   seulement). Sans cela, un workflow manuel peut être lancé depuis n'importe quelle
+   branche et recevrait les secrets de l'environnement.
 
 Le workflow écrit `STAGING_ENV_YAML` dans `deploy/env.staging.yaml` (mode 600) sur le
 runner, installe le venv (`uv sync --frozen`, nécessaire à `check_env`) et lance le
@@ -331,8 +366,12 @@ Liste de contrôle, dans l'ordre :
    l'utilisateur doit reconnecter son compte Google depuis l'application.
 6. **429 en rafale** : voir §8 ; identifier la clé (IP ou utilisateur) dans les logs
    d'accès.
-7. **Retour arrière** : §5, si le problème vient de la dernière révision.
-8. **Contacter** : le propriétaire du projet GCP `guiili` et, pour la base, le
+7. **Quelle révision reçoit le trafic ?** Après un retour arrière, le trafic peut rester
+   épinglé sur une ancienne révision et un déploiement récent ne serait pas en ligne :
+   `gcloud run services describe backend-guiili --region us-central1 --project guiili
+   --format="value(status.traffic)"`. Si besoin, `--to-latest` (voir §5).
+8. **Retour arrière** : §5, si le problème vient de la dernière révision.
+9. **Contacter** : le propriétaire du projet GCP `guiili` et, pour la base, le
    propriétaire du projet Neon ; noter l'heure, le `x-request-id` d'une requête en échec
    et la révision Cloud Run en cours.
 
