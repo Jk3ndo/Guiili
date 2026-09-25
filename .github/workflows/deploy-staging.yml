@@ -14,6 +14,9 @@ concurrency:
 
 jobs:
   deploy:
+    # Garde dans le depot (defense en profondeur) : la regle de branche de l'environnement
+    # `staging` cote GitHub reste a configurer par le proprietaire (runbook §11).
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: staging

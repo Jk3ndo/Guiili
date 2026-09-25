@@ -60,3 +60,11 @@ def test_no_workflow_hardcodes_a_secret(name: str) -> None:
         pytest.skip("workflow ajouté à la tâche 8")
     text = path.read_text(encoding="utf-8")
     assert "AIza" not in text and "sk-ant" not in text and "BEGIN PRIVATE KEY" not in text
+
+
+def test_deploy_staging_is_manual_and_restricted_to_main() -> None:
+    workflow = _load("deploy-staging.yml")
+    assert list(workflow["on"]) == ["workflow_dispatch"]
+    job = workflow["jobs"]["deploy"]
+    assert job["if"] == "github.ref == 'refs/heads/main'"
+    assert job["environment"] == "staging"
