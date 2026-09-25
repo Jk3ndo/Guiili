@@ -13,7 +13,11 @@ from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_gtm_headless_verifier
+from app.api.deps import (
+    get_gtm_headless_verifier,
+    get_measurement_reader_factory,
+    get_page_fetcher,
+)
 from app.config import get_settings
 from app.main import app
 from app.models.advisor import AdvisorThread
@@ -39,6 +43,7 @@ from app.security.token_crypto import load_token_cipher
 from app.services.connections import upsert_google_connection
 from app.services.google_oauth.base import GoogleTokenResponse, GoogleUserInfo
 from app.services.gtm_headless import GtmHeadlessResult
+from app.services.measurement.google_reader import GoogleReadError
 from tests.conftest import owner_workspace_id
 
 TENANT_PARAMS = ("{website_id}", "{workspace_id}", "{thread_id}", "{issue_id}", "{connection_id}")
@@ -148,14 +153,43 @@ async def _fake_headless_verify(url: str) -> GtmHeadlessResult:
     )
 
 
+async def _fake_page_fetcher(url: str, *, allow_insecure: bool = False):
+    _ = (url, allow_insecure)
+    return None  # site injoignable : aucun DNS, aucun réseau
+
+
+class _FakeReader:
+    gsc_state = "not_linked"
+
+    async def _unavailable(self):
+        raise GoogleReadError("ga4_not_connected")
+
+    event_stats = key_events = ads_links_count = measurement_id = _unavailable
+
+    async def sitemaps_count(self):
+        raise GoogleReadError("gsc_not_connected")
+
+
+async def _fake_reader_factory(session, website):
+    _ = (session, website)
+    return _FakeReader()
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def _no_real_browser() -> AsyncGenerator[None, None]:
-    """Jamais de vrai Chromium : même si le contrôle d'appartenance de la route headless
-    disparaissait, elle répondrait 200 (et le test échouerait) au lieu de lancer un
-    navigateur."""
+    """Jamais de vrai Chromium ni de réseau (page, robots.txt, Google) : même si un
+    contrôle d'appartenance disparaissait, la route répondrait 200 (et le test
+    échouerait) au lieu de sortir sur Internet."""
     app.dependency_overrides[get_gtm_headless_verifier] = lambda: _fake_headless_verify
+    app.dependency_overrides[get_page_fetcher] = lambda: _fake_page_fetcher
+    app.dependency_overrides[get_measurement_reader_factory] = lambda: _fake_reader_factory
     yield
-    app.dependency_overrides.pop(get_gtm_headless_verifier, None)
+    for dependency in (
+        get_gtm_headless_verifier,
+        get_page_fetcher,
+        get_measurement_reader_factory,
+    ):
+        app.dependency_overrides.pop(dependency, None)
 
 
 # Instantané de la victime : sans lui, /audit et /gtm/headless répondraient 404

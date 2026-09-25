@@ -96,6 +96,17 @@ def record_state_change(
     )
 
 
+async def lock_site(session: AsyncSession, website_id: Any) -> None:
+    """Verrou applicatif par site, tenu jusqu'à la fin de la transaction (réentrant dans
+    une même transaction). Toute écriture sur les états d'un site (rafraîchissement,
+    marquage manuel, item écarté) le prend d'abord : sinon un marquage committé pendant
+    un rafraîchissement serait écrasé, ou deux insertions de la même clé se percuteraient."""
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:website_id))"),
+        {"website_id": str(website_id)},
+    )
+
+
 async def _safe(call: Callable[[], Awaitable[Any]]) -> tuple[Any, str | None]:
     try:
         return await call(), None
@@ -143,10 +154,7 @@ async def refresh_plan(
     # attend la fin de la transaction du premier, relit son état (profil créé, délai de
     # 5 minutes du headless, transitions déjà écrites) et n'écrit rien en double. Coût
     # connu : la connexion à la base est tenue pendant toute la collecte (réseau compris).
-    await session.execute(
-        text("SELECT pg_advisory_xact_lock(hashtext(:website_id))"),
-        {"website_id": str(website.id)},
-    )
+    await lock_site(session, website.id)
     profile = await get_or_create_profile(session, website.id)
     confirmed = clean_confirmed_types(profile.confirmed_types)
 
