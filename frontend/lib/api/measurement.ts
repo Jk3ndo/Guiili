@@ -91,8 +91,9 @@ export interface MeasurementPlanDto {
   items: MeasurementItemDto[];
   /** Vrai quand un passage du navigateur a eu lieu il y a moins de 5 minutes (pas relancé). */
   headless_skipped: boolean;
-  /** Erreur du navigateur (texte du service de vérification), null si tout va bien. */
+  /** Texte français prêt à afficher (jamais le détail technique du navigateur). */
   headless_error: string | null;
+  headless_error_code?: string | null;
   /** Date de la dernière preuve « en conditions réelles » conservée. */
   headless_checked_at: string | null;
 }

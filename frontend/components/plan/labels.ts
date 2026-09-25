@@ -52,6 +52,14 @@ export const REASON_LABEL: Record<string, string> = {
   robots_unreadable: "Le fichier robots.txt n'a pas pu être lu.",
   cmp_not_detected: "Aucune bannière de consentement (CMP) détectée.",
   consent_default_not_seen: "Aucun consentement par défaut observé dans le navigateur.",
+  consent_may_block_tags:
+    "Ton site demande un consentement avant d'envoyer les balises : la vérification automatique ne clique pas la bannière, donc elle ne peut pas trancher.",
+  cmp_default_not_observed:
+    "Une bannière de consentement est détectée, mais son réglage par défaut n'est pas visible depuis l'extérieur.",
+  ads_conversion_needs_event:
+    "Une balise de conversion ne se déclenche que sur l'action mesurée (achat, formulaire) : on ne peut pas la voir depuis la page d'accueil.",
+  tls_unreachable:
+    "Le certificat n'a pas pu être contrôlé (site injoignable à ce moment-là). Clique sur « Vérifier maintenant ».",
 };
 
 /** Texte d'une raison ; un code inconnu (backend plus récent) n'affiche rien plutôt qu'un code brut. */
@@ -60,11 +68,21 @@ export function reasonLabel(reason: string | null): string | null {
   return REASON_LABEL[reason] ?? null;
 }
 
+/** Items « reçus » dont la preuve vient de l'API d'administration de GA4, pas de ses données. */
+const CONFIRMED_IN_GA4 = new Set(["ads_ga4_link", "key_events_marked", "conversion_value"]);
+
+/** Libellé du niveau « reçu » selon la source réelle de la preuve. */
+function receivedLabel(item: MeasurementItemDto): string {
+  if (item.layer === "seo") return "Confirmé par Search Console";
+  if (CONFIRMED_IN_GA4.has(item.id)) return "Confirmé dans GA4";
+  return "Reçu par GA4";
+}
+
 export function stateLabel(item: MeasurementItemDto): string {
-  if (item.done) return item.max_level === "on_page" ? "En place" : "Reçu par GA4";
+  if (item.done) return item.max_level === "on_page" ? "En place" : receivedLabel(item);
   switch (item.state) {
     case "received":
-      return "Reçu par GA4";
+      return receivedLabel(item);
     case "on_page":
       return "Présent sur la page";
     case "missing":

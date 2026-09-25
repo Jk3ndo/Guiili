@@ -14,7 +14,8 @@ import {
 
 const IMPORT_STEPS =
   "Dans Google Tag Manager : Administration > Importer un conteneur > choisis le fichier > " +
-  "espace de travail existant > « Fusionner » > confirme, puis clique sur « Envoyer » pour publier.";
+  "« Nouvel espace de travail » > « Fusionner » > « Renommer les conflits » > confirme, " +
+  "vérifie en mode Aperçu, puis clique sur « Envoyer » pour publier.";
 
 function siteCodeNote(ids: string[], items: MeasurementItemDto[]): string | null {
   if (ids.length === 0) return null;

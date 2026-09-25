@@ -42,7 +42,7 @@ export function GoogleStep({
           <p className="text-sm font-medium text-ink">Connecte Google pour voir tes vraies données</p>
           <p className="text-xs leading-relaxed text-ink-muted">
             Un clic : on relie automatiquement Google Analytics et Search Console à ce site, et les
-            lignes du plan passent à « Reçu par GA4 » quand les données arrivent.
+            lignes du plan passent en « Reçu par GA4 » ou « Confirmé » quand les données arrivent.
           </p>
         </div>
         <Link href="/connections" className={BUTTON}>

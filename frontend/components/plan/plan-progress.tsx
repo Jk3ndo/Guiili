@@ -33,16 +33,18 @@ export function PlanProgress({ plan }: { plan: MeasurementPlanDto }) {
         />
       </div>
       <ul className="mt-4 grid gap-x-6 gap-y-2 sm:grid-cols-2 lg:grid-cols-5">
-        {plan.layers.map((layer) => (
-          <li key={layer.layer} className="space-y-1">
-            <p className="text-2xs text-ink-faint">
-              {LAYER_LABEL[layer.layer] ?? layer.layer}
-            </p>
-            <p className="font-mono text-xs tabular-nums text-ink-muted">
-              {layer.done}/{layer.total}
-            </p>
-          </li>
-        ))}
+        {plan.layers
+          .filter((layer) => layer.total > 0)
+          .map((layer) => (
+            <li key={layer.layer} className="space-y-1">
+              <p className="text-2xs text-ink-faint">
+                {LAYER_LABEL[layer.layer] ?? layer.layer}
+              </p>
+              <p className="font-mono text-xs tabular-nums text-ink-muted">
+                {layer.done}/{layer.total}
+              </p>
+            </li>
+          ))}
       </ul>
     </section>
   );

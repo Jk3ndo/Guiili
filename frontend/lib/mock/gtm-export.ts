@@ -74,7 +74,7 @@ export const IMPORT_STEPS: ImportStep[] = [
   {
     title: "Espace de travail et mode de fusion",
     detail:
-      "Choisissez « Nouveau », puis les options « Fusionner » et « Renommer les conflits » — rien de votre configuration existante n'est écrasé.",
+      "Choisissez « Nouvel espace de travail », puis les options « Fusionner » et « Renommer les conflits » — rien de votre configuration existante n'est écrasé.",
   },
   {
     title: "Prévisualiser puis publier",

@@ -33,7 +33,7 @@ import { ProfileBanner } from "./profile-banner";
 const LAYERS: MeasurementLayer[] = ["foundations", "events", "conversions", "ads", "seo"];
 
 const SUBTITLE =
-  "Ce qu'il faut mettre en place pour mesurer ton trafic et tes conversions, dans l'ordre. Chaque « fait » est prouvé.";
+  "Ce qu'il faut mettre en place pour mesurer ton trafic et tes conversions, dans l'ordre. Chaque « fait » est prouvé ou déclaré par toi.";
 
 function needsGoogleLinks(plan: MeasurementPlanDto): boolean {
   return plan.google_connection === "active" && (!plan.ga4_connected || !plan.gsc_linked);
@@ -87,7 +87,7 @@ function PlanPanel({
           });
         }
         if (next.headless_error) {
-          // Texte libre du service de vérification : affiché en texte brut, tronqué.
+          // Texte français fixe du backend (jamais le détail du navigateur) : rendu en texte brut.
           toast.error("Le navigateur de vérification a échoué", {
             description: truncate(next.headless_error),
           });
