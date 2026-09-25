@@ -16,9 +16,11 @@ from app.api.deps import (
     SessionDep,
     SettingsDep,
 )
+from app.api.rate_limit import limit_by_ip
 from app.models.password_reset_token import PasswordResetToken
 from app.models.user import User
 from app.security.password import hash_password, verify_password
+from app.security.rate_limit import enforce, enforce_not_blocked, limiter
 from app.security.session import issue_session
 from app.services.google_oauth import InvalidGrantError
 from app.services.oauth_state import consume_oauth_state, create_oauth_transaction
@@ -38,7 +40,11 @@ class StartResponse(BaseModel):
     authorization_url: str
 
 
-@router.get("/start", response_model=StartResponse)
+@router.get(
+    "/start",
+    response_model=StartResponse,
+    dependencies=[limit_by_ip("google_start", limit=30, window=600)],
+)
 async def google_start(
     session: SessionDep,
     settings: SettingsDep,
@@ -60,7 +66,10 @@ async def google_start(
     return StartResponse(authorization_url=url)
 
 
-@router.get("/callback")
+@router.get(
+    "/callback",
+    dependencies=[limit_by_ip("google_callback", limit=60, window=600)],
+)
 async def google_callback(
     session: SessionDep,
     settings: SettingsDep,
@@ -176,7 +185,11 @@ def _set_session_cookie(response: Response, user_id, settings) -> None:
     )
 
 
-@auth_router.post("/register", status_code=status.HTTP_201_CREATED)
+@auth_router.post(
+    "/register",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[limit_by_ip("register", limit=10, window=3600)],
+)
 async def register(
     body: RegisterRequest, response: Response, session: SessionDep, settings: SettingsDep
 ) -> None:
@@ -204,14 +217,20 @@ async def register(
     _set_session_cookie(response, user.id, settings)
 
 
-@auth_router.post("/login")
+_LOGIN_FAILURES = {"limit": 10, "window": 900}
+
+
+@auth_router.post("/login", dependencies=[limit_by_ip("login", limit=30, window=900)])
 async def login(
     body: LoginRequest, response: Response, session: SessionDep, settings: SettingsDep
 ) -> None:
+    email_key = f"login_failures:email:{body.email.lower()}"
+    enforce_not_blocked(email_key, enabled=settings.rate_limit_enabled, **_LOGIN_FAILURES)
     user = (
         await session.execute(select(User).where(User.email == body.email))
     ).scalar_one_or_none()
     if user is None or user.password_hash is None:
+        limiter.record(email_key)
         detail = (
             "ce compte utilise Google, pas de mot de passe"
             if user is not None
@@ -219,6 +238,7 @@ async def login(
         )
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
     if not verify_password(body.password, user.password_hash):
+        limiter.record(email_key)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="email ou mot de passe incorrect")
     _set_session_cookie(response, user.id, settings)
 
@@ -248,10 +268,19 @@ class PasswordResetConfirm(BaseModel):
     new_password: str
 
 
-@auth_router.post("/password-reset/request")
+@auth_router.post(
+    "/password-reset/request",
+    dependencies=[limit_by_ip("password_reset", limit=20, window=3600)],
+)
 async def password_reset_request(
     body: PasswordResetRequest, session: SessionDep, settings: SettingsDep, email_sender: EmailSenderDep
 ) -> dict[str, str]:
+    enforce(
+        f"password_reset:email:{body.email.lower()}",
+        limit=5,
+        window=3600,
+        enabled=settings.rate_limit_enabled,
+    )
     user = (
         await session.execute(
             select(User).where(User.email == body.email, User.password_hash.is_not(None))

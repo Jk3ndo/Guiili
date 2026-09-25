@@ -27,6 +27,7 @@ from app.api.deps import (
     StackDetectorDep,
     TlsCheckerDep,
 )
+from app.api.rate_limit import limit_by_user
 from app.models.advisor import AdvisorMessage, AdvisorThread, AdvisorUsage, UserAdvisorSettings
 from app.services.advisor.chat import AdvisorMessageCapReached, run_chat_turn
 from app.services.advisor.personas import (
@@ -158,7 +159,11 @@ async def put_settings_endpoint(
 # --------------------------------------------------------------------------- #
 
 
-@router.post("/websites/{website_id}/advisor/brief", response_model=BriefOut)
+@router.post(
+    "/websites/{website_id}/advisor/brief",
+    response_model=BriefOut,
+    dependencies=[limit_by_user("advisor_brief", limit=5, window=60)],
+)
 async def create_brief_endpoint(
     website_id: UUID,
     user: CurrentUserDep,
@@ -282,7 +287,10 @@ async def archive_thread_endpoint(
     await session.commit()
 
 
-@router.post("/advisor/threads/{thread_id}/messages")
+@router.post(
+    "/advisor/threads/{thread_id}/messages",
+    dependencies=[limit_by_user("advisor_message", limit=20, window=60)],
+)
 async def post_message_endpoint(
     thread_id: UUID,
     body: PostMessageRequest,

@@ -4,6 +4,7 @@ import json
 import uuid
 from datetime import UTC, datetime
 
+import pytest
 import pytest_asyncio
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -240,8 +241,12 @@ async def test_chat_message_respects_daily_cap(
     authed_client: tuple[AsyncClient, User],
     db_session: AsyncSession,
     mock_advisor: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, user = authed_client
+    # Le plafond quotidien (40) dépasse le débit par minute (20) : on isole ici le
+    # plafond quotidien du limiteur de débit, testé dans test_rate_limit_endpoints.py.
+    monkeypatch.setattr(get_settings(), "rate_limit_enabled", False)
     site = await _site(db_session, user=user)
     brief = await client.post(f"/api/v1/websites/{site.id}/advisor/brief")
     thread_id = brief.json()["thread_id"]
