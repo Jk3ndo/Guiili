@@ -1,4 +1,3 @@
-import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated
@@ -12,13 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.router import api_router
 from app.config import Settings, get_settings
 from app.db.session import engine, get_session
-
-# Le logger racine n'a par défaut aucun handler (niveau WARNING) : sans ceci,
-# tout logger.info() applicatif (ex. ConsoleEmailSender) est silencieusement
-# avalé au runtime. Remplacé à la tâche 2 par `configure_logging`.
-logging.basicConfig(
-    level=logging.INFO, format="%(levelname)s %(name)s: %(message)s", force=True
-)
+from app.logging_config import RequestContextMiddleware, configure_logging
 
 
 @asynccontextmanager
@@ -29,6 +22,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
+    configure_logging(settings)
     docs = settings.api_docs_enabled
     application = FastAPI(
         title="Control Center Marketing Agentique",
@@ -46,6 +40,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
         expose_headers=["Content-Disposition"],
     )
+    application.add_middleware(RequestContextMiddleware)
     application.include_router(api_router, prefix="/api/v1")
 
     @application.get("/health")

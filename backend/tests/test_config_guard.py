@@ -2,8 +2,16 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 
-from app.config import Settings
+from app.config import Settings, get_settings
+from app.logging_config import configure_logging
 from app.main import create_app
+
+
+@pytest.fixture(autouse=True)
+def _restore_logging():
+    yield
+    configure_logging(get_settings())
+
 
 _LOCAL = {
     "database_url": "postgresql+asyncpg://u:p@h/prod",
