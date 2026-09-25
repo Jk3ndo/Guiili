@@ -100,3 +100,23 @@ async def test_docs_are_served_locally() -> None:
     app = create_app(_settings(_LOCAL))
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
         assert (await client.get("/openapi.json")).status_code == 200
+
+
+_LEAKY_SECRET = "ZZ-secret-value-must-never-appear-" + "q" * 20
+
+
+def test_validation_error_never_echoes_input_values() -> None:
+    # Règle de production violée : la valeur (secret) ne doit pas figurer dans str(exc),
+    # qui finit dans les traces uvicorn et les logs du Job de migration.
+    with pytest.raises(ValidationError) as rule_violation:
+        _settings(_PROD, google_oauth_mock=True, app_secret_key=_LEAKY_SECRET[:10])
+    assert "input_value" not in str(rule_violation.value)
+    assert _LEAKY_SECRET[:10] not in str(rule_violation.value)
+
+    # Champ obligatoire manquant : Pydantic affiche sinon le dict d'entrée complet.
+    incomplete = {k: v for k, v in _PROD.items() if k != "database_url"}
+    with pytest.raises(ValidationError) as missing:
+        _settings(incomplete, app_secret_key=_LEAKY_SECRET)
+    assert "input_value" not in str(missing.value)
+    assert _LEAKY_SECRET not in str(missing.value)
+    assert "database_url" in str(missing.value).lower()
