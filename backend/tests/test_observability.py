@@ -2,7 +2,7 @@ import pytest
 import sentry_sdk
 
 from app.config import Settings
-from app.observability import init_sentry, scrub_event
+from app.observability import init_sentry, scrub_event, scrub_transaction
 
 
 def _settings(**overrides: object) -> Settings:
@@ -63,6 +63,16 @@ def test_scrub_event_masks_url_query_strings_in_exceptions_and_messages() -> Non
         "breadcrumbs": {
             "values": [
                 {"message": f"HTTP {leaky}", "data": {"url": leaky, "status_code": 403}},
+                {  # forme réelle de l'intégration httpx (sentry-sdk 2.70)
+                    "category": "httplib",
+                    "data": {
+                        "http.method": "GET",
+                        "url": "https://www.googleapis.com/pagespeedonline/v5/runPagespeed",
+                        "http.query": "url=x&key=SECRET123",
+                        "http.fragment": "frag",
+                        "http.response.status_code": 403,
+                    },
+                },
             ]
         },
     }
@@ -84,6 +94,70 @@ def test_scrub_event_masks_url_query_strings_in_exceptions_and_messages() -> Non
     crumb = cleaned["breadcrumbs"]["values"][0]
     assert crumb["data"]["url"].endswith("runPagespeed?[Filtered]")
     assert crumb["data"]["status_code"] == 403
+    real = cleaned["breadcrumbs"]["values"][1]["data"]
+    assert real["http.query"] == "[Filtered]" and real["http.fragment"] == "[Filtered]"
+    assert real["url"].endswith("/runPagespeed")
+    assert real["http.response.status_code"] == 403
+
+
+def test_scrub_event_masks_logentry_params() -> None:
+    leaky = "https://www.googleapis.com/x?key=SECRET123"
+    event = {
+        "logentry": {
+            "message": "failed %s %s",
+            "formatted": "failed https://www.googleapis.com/x?[Filtered]",
+            "params": (leaky, {"api_key": "SECRET123", "n": 1}),
+        }
+    }
+    cleaned = scrub_event(event, {})
+    assert cleaned is not None
+    assert "SECRET123" not in repr(cleaned)
+    assert cleaned["logentry"]["params"][0].endswith("/x?[Filtered]")
+    assert cleaned["logentry"]["params"][1] == {"api_key": "[Filtered]", "n": 1}
+
+
+def test_sensitive_keys_are_matched_header_style() -> None:
+    extra = {"x-api-key": "A", "X-Goog-Api-Key": "B", "x-request-id": "ok"}
+    cleaned = scrub_event({"extra": extra}, {})
+    assert cleaned is not None
+    assert cleaned["extra"] == {
+        "x-api-key": "[Filtered]",
+        "X-Goog-Api-Key": "[Filtered]",
+        "x-request-id": "ok",
+    }
+
+
+def test_scrub_transaction_cleans_spans_and_request() -> None:
+    event = {
+        "type": "transaction",
+        "request": {
+            "url": "https://api.example.com/api/v1/audit?token=T",
+            "query_string": "token=T",
+            "headers": {"Authorization": "Bearer X"},
+        },
+        "spans": [
+            {  # forme réelle d'un span httpx (sentry-sdk 2.70)
+                "op": "http.client",
+                "description": "GET https://www.googleapis.com/pagespeedonline/v5/runPagespeed",
+                "data": {
+                    "http.method": "GET",
+                    "url": "https://www.googleapis.com/pagespeedonline/v5/runPagespeed",
+                    "http.query": "url=x&key=SECRET123",
+                    "http.fragment": "",
+                    "http.response.status_code": 200,
+                },
+            },
+            {"op": "db", "description": "GET https://h/p?key=SECRET123", "data": {}},
+        ],
+    }
+    cleaned = scrub_transaction(event, {})
+    assert cleaned is not None
+    assert "SECRET123" not in repr(cleaned) and "token=T" not in repr(cleaned)
+    assert "query_string" not in cleaned["request"] and "headers" not in cleaned["request"]
+    data = cleaned["spans"][0]["data"]
+    assert data["http.query"] == "[Filtered]"
+    assert data["http.response.status_code"] == 200
+    assert cleaned["spans"][1]["description"].endswith("?[Filtered]")
 
 
 def test_init_is_a_no_op_without_dsn() -> None:
@@ -111,3 +185,4 @@ def test_init_configures_a_private_client(monkeypatch: pytest.MonkeyPatch) -> No
     assert captured["max_request_body_size"] == "never"
     assert captured["include_local_variables"] is False
     assert captured["before_send"] is scrub_event
+    assert captured["before_send_transaction"] is scrub_transaction

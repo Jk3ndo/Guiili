@@ -36,9 +36,18 @@ _DROPPED_REQUEST_KEYS = ("query_string", "cookies", "headers", "data")
 _URL_QUERY = re.compile(r"(https?://[^\s?'\"<>)\]]*)\?[^\s'\"<>)\]]*")
 
 
+# Chaîne de requête et fragment d'URL tels que les posent les intégrations httpx/stdlib
+# (`http.query`, `http.fragment`, `url.query`...) : brute, donc jamais reconnue comme URL.
+_QUERY_KEY_SUFFIXES = ("query", "query_string", "fragment")
+
+
 def _is_sensitive(key: str) -> bool:
-    lowered = key.lower()
-    return lowered in _EXACT_KEYS or any(part in lowered for part in _SUBSTRING_KEYS)
+    lowered = key.lower().replace("-", "_")  # « x-api-key » -> « x_api_key »
+    return (
+        lowered in _EXACT_KEYS
+        or lowered.endswith(_QUERY_KEY_SUFFIXES)
+        or any(part in lowered for part in _SUBSTRING_KEYS)
+    )
 
 
 def _mask_url_queries(text: str) -> str:
@@ -51,7 +60,7 @@ def _redact(value: Any) -> Any:
             key: _FILTERED if isinstance(key, str) and _is_sensitive(key) else _redact(item)
             for key, item in value.items()
         }
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [_redact(item) for item in value]
     if isinstance(value, str):
         return _mask_url_queries(value)
@@ -67,6 +76,8 @@ def _scrub_texts(event: dict[str, Any]) -> None:
         for key in ("message", "formatted"):
             if isinstance(logentry.get(key), str):
                 logentry[key] = _mask_url_queries(logentry[key])
+        if "params" in logentry:  # arguments de `logger.error("... %s", url)`
+            logentry["params"] = _redact(logentry["params"])
     exception = event.get("exception")
     values = exception.get("values") if isinstance(exception, dict) else None
     if isinstance(values, list):
@@ -75,7 +86,22 @@ def _scrub_texts(event: dict[str, Any]) -> None:
                 item["value"] = _mask_url_queries(item["value"])
 
 
+def _scrub_spans(event: dict[str, Any]) -> None:
+    """Nettoie les spans d'une transaction (`http.query`, `data.url`, description)."""
+    spans = event.get("spans")
+    if not isinstance(spans, list):
+        return
+    for span in spans:
+        if not isinstance(span, dict):
+            continue
+        if "data" in span:
+            span["data"] = _redact(span["data"])
+        if isinstance(span.get("description"), str):
+            span["description"] = _mask_url_queries(span["description"])
+
+
 def scrub_event(event: dict[str, Any], hint: dict[str, Any]) -> dict[str, Any] | None:
+    """Purge un événement d'erreur avant envoi (`before_send`)."""
     request = event.get("request")
     if isinstance(request, dict):
         for key in _DROPPED_REQUEST_KEYS:
@@ -88,7 +114,18 @@ def scrub_event(event: dict[str, Any], hint: dict[str, Any]) -> dict[str, Any] |
         if section in event:
             event[section] = _redact(event[section])
     _scrub_texts(event)
+    _scrub_spans(event)
     return event
+
+
+def scrub_transaction(event: dict[str, Any], hint: dict[str, Any]) -> dict[str, Any] | None:
+    """Même purge pour les transactions de traçage (`before_send_transaction`).
+
+    Sentry n'appelle pas `before_send` pour les transactions : sans ceci, les spans
+    httpx (`http.query`, `data.url`) partiraient bruts dès que le taux d'échantillonnage
+    est non nul.
+    """
+    return scrub_event(event, hint)
 
 
 def init_sentry(settings: Settings) -> bool:
@@ -104,5 +141,6 @@ def init_sentry(settings: Settings) -> bool:
         max_request_body_size="never",
         include_local_variables=False,
         before_send=scrub_event,
+        before_send_transaction=scrub_transaction,
     )
     return True
