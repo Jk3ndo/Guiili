@@ -66,10 +66,15 @@ modifications non committées ne sont pas dans l'image), venv backend installé
 Le script fait cinq étapes, dans l'ordre, et s'arrête à la première erreur (`set -e`) :
 
 1. **Vérification du fichier d'environnement** :
-   `python -m app.tools.check_env deploy/env.<env>.yaml` (mêmes règles que le démarrage
-   du service, plus les variables obligatoires). Aucune valeur du fichier n'est affichée,
-   seulement des noms de variables et des messages. Cette étape est exécutée même avec
-   `--dry-run`.
+   `python -m app.tools.check_env deploy/env.<env>.yaml --expect <env>` (mêmes règles que
+   le démarrage du service, plus les variables obligatoires). Aucune valeur du fichier
+   n'est affichée, seulement des noms de variables et des messages. Cette étape est
+   exécutée même avec `--dry-run`. Trois contrôles s'y ajoutent :
+   `--expect` refuse un fichier dont `ENVIRONMENT` est absent (il vaudrait `local` et
+   toutes les règles de production seraient sautées) ou différent de la cible ;
+   `TOKEN_ENC_KEYS` est chargé comme le fait l'API (JSON, base64 valide, 32 octets par
+   clé, version active présente) ; toute valeur non textuelle (`true`, `42`, `null` sans
+   guillemets) est refusée, car `gcloud --env-vars-file` n'accepte que des chaînes.
 2. **Construction de l'image** : `gcloud builds submit backend --tag
    <région>-docker.pkg.dev/<projet>/cloud-run-source-deploy/<service>:<sha-court>`.
 3. **Migrations** : déploie puis exécute immédiatement le Cloud Run Job
@@ -114,15 +119,16 @@ la main :
 ```bash
 ./scripts/export-service-env.sh production     # écrit deploy/env.production.yaml (mode 600)
 cd backend
-.venv/Scripts/python.exe -m app.tools.check_env ../deploy/env.production.yaml   # Windows
-.venv/bin/python -m app.tools.check_env ../deploy/env.production.yaml           # Linux/macOS
+.venv/Scripts/python.exe -m app.tools.check_env ../deploy/env.production.yaml --expect production   # Windows
+.venv/bin/python -m app.tools.check_env ../deploy/env.production.yaml --expect production           # Linux/macOS
 ```
 
 `export-service-env.sh` refuse d'écraser un fichier existant (le supprimer d'abord pour
 régénérer), n'exporte pas `DATABASE_URL_TEST`, `DATABASE_URL_MIGRATIONS_TEST` ni
 `REDIS_URL`, et signale sur la sortie d'erreur toute variable provenant d'un secret Cloud
 Run (à renseigner à la main). `check_env` sort avec le code 0 si le fichier est valide,
-1 s'il ne l'est pas (liste des problèmes), 2 en cas d'usage incorrect.
+1 s'il ne l'est pas (liste des problèmes), 2 en cas d'usage incorrect (par exemple
+`--expect` avec une valeur autre que `local`, `staging` ou `production`).
 
 ## 3. Amorçage unique de la production [PROPRIÉTAIRE]
 
@@ -137,7 +143,7 @@ Run (à renseigner à la main). `check_env` sort avec le code 0 si le fichier es
    à la main les valeurs qui viendraient de secrets Cloud Run (message « ATTENTION » du
    script), et éventuellement `SENTRY_DSN` (voir §7).
 3. **[PROPRIÉTAIRE]** Valider :
-   `cd backend && .venv/Scripts/python.exe -m app.tools.check_env ../deploy/env.production.yaml`.
+   `cd backend && .venv/Scripts/python.exe -m app.tools.check_env ../deploy/env.production.yaml --expect production`.
 4. **[PROPRIÉTAIRE]** Premier déploiement : `./scripts/deploy-backend.sh production`
    (idéalement précédé d'un `--dry-run`). Il crée le Cloud Run Job de migration
    `backend-guiili-migrate`, l'exécute, puis met à jour le service et **retire du service
@@ -156,7 +162,7 @@ Rien dans le dépôt ne crée cet environnement. Étapes manuelles :
    l'environnement de préproduction (`FRONTEND_BASE_URL`, `CORS_ORIGINS`, les deux
    redirections Google).
 3. **[PROPRIÉTAIRE]** `cd backend && .venv/Scripts/python.exe -m app.tools.check_env
-   ../deploy/env.staging.yaml`, puis `./scripts/deploy-backend.sh staging` (le service
+   ../deploy/env.staging.yaml --expect staging`, puis `./scripts/deploy-backend.sh staging` (le service
    `backend-guiili-staging` et son Job de migration sont créés au premier passage).
 4. **[PROPRIÉTAIRE]** Créer un projet Vercel (ou une prévisualisation) dont la variable
    `BACKEND_ORIGIN` pointe sur l'URL du service de préproduction.
@@ -193,12 +199,21 @@ gcloud run services update-traffic backend-guiili --to-latest --region us-centra
 
 Le retour arrière et cette commande sont des actions réservées au propriétaire.
 
+**Retour arrière = trafic uniquement.** On redirige le trafic vers une révision existante ;
+on ne redéploie pas un commit antérieur à ce lot avec le nouveau fichier d'environnement.
+Ce code plus ancien exige encore `DATABASE_URL_TEST` et `REDIS_URL` dans ses `Settings` :
+il échouerait au démarrage avec le nouveau fichier (qui ne les contient plus). Une
+révision existante garde ses propres variables d'environnement, donc rediriger le trafic
+vers une ancienne révision fonctionne.
+
 ## 6. Lire les logs
 
 En production (et préproduction), chaque événement est une ligne JSON (`severity`,
 `message`, `logger`, `time`, `request_id`) que Cloud Logging structure seul. Une ligne
-d'accès par requête (logger `app.access`) porte `method`, `path` (le **gabarit** de route,
-par exemple `/api/v1/websites/{website_id}/scan`, jamais l'URL brute), `status` et
+d'accès par requête (logger `app.access`) porte `method`, `path` (le **gabarit** de route tel
+qu'observé, relatif au routeur, donc **sans** le préfixe `/api/v1` : par exemple
+`/auth/me` ou `/websites/{website_id}/scan`, jamais l'URL brute ; `unmatched` si aucune
+route ne correspond), `status` et
 `duration_ms`. Il n'y a ni chaîne de requête, ni corps, ni cookie, ni en-tête
 d'autorisation dans les logs ; `/health` et `/health/db` ne sont pas journalisés au niveau
 INFO. Les logs d'accès de uvicorn sont coupés et `httpx`/`httpcore` sont réduits à
@@ -215,6 +230,9 @@ jsonPayload.request_id="<id>"
 
 # Lenteurs (plus de 2 secondes)
 jsonPayload.duration_ms>2000
+
+# Une route précise (gabarit relatif, sans /api/v1)
+jsonPayload.path="/auth/me" AND jsonPayload.status>=400
 ```
 
 Un client peut fournir son propre `x-request-id` (8 à 64 caractères
@@ -272,8 +290,27 @@ par jour).
 **La limite est par instance** : l'état est en mémoire du processus. Avec `--max-instances
 3`, la limite effective peut être jusqu'à trois fois supérieure, et elle repart de zéro
 à chaque nouvelle instance ; c'est suffisant contre la force brute et les boucles
-clientes. Pour les clés par IP, `X-Forwarded-For` est pris tel quel (meilleur effort,
-falsifiable derrière le proxy Vercel) : la clé par e-mail est le frein fiable.
+clientes. Les compteurs par IP et ceux par e-mail ou utilisateur sont dans deux stockages
+distincts : une inondation d'IP forgées qui sature le premier ne remet pas à zéro les
+verrous de connexion par e-mail.
+
+**L'IP n'est pas fiable.** `X-Forwarded-For` est pris tel quel (premier maillon, meilleur
+effort). Quiconque appelle directement l'URL publique `*.run.app` (sans passer par le
+proxy Vercel) choisit lui-même cet en-tête : la clé par IP est alors **forgeable** et
+contournable. La clé par e-mail / utilisateur est le frein fiable.
+
+L'inverse est un risque de disponibilité : si le rewrite Vercel ne relaie pas l'IP du
+vrai client, tous les utilisateurs partagent les IP de sortie de Vercel, et les limites
+par IP (inscription 10/h, connexion 30/15 min, démarrage OAuth 30/10 min, par instance)
+deviennent une panne d'inscription.
+
+**[PROPRIÉTAIRE] Avant le premier déploiement de production**, en préproduction :
+inspecter la forme brute de l'en-tête `X-Forwarded-For` reçu par le backend à travers le
+rewrite Vercel (par exemple en le journalisant temporairement, ou en appelant une route
+qui l'affiche) et vérifier que Vercel transmet bien l'IP du vrai client. Si ce n'est pas
+le cas, un réglage `TRUSTED_PROXY_HOPS` (nombre de proxys de confiance dont on saute les
+maillons à droite de l'en-tête) sera nécessaire : **il n'est pas implémenté**, à traiter
+avant d'ouvrir les inscriptions.
 
 ## 9. Protection de la branche `main` [PROPRIÉTAIRE]
 

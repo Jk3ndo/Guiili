@@ -48,4 +48,4 @@ mv "$TMP" "$OUT"
 
 chmod 600 "$OUT" 2>/dev/null || true
 echo "Ecrit : $OUT (contient des secrets, ne pas committer)."
-echo "Verifier ensuite : (cd backend && .venv/Scripts/python.exe -m app.tools.check_env ../deploy/env.${ENVIRONMENT_NAME}.yaml)"
+echo "Verifier ensuite : (cd backend && .venv/Scripts/python.exe -m app.tools.check_env ../deploy/env.${ENVIRONMENT_NAME}.yaml --expect ${ENVIRONMENT_NAME})"
