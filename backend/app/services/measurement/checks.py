@@ -109,6 +109,7 @@ class Facts:
     sitemaps_count: int | None = None
     sitemaps_reason: str | None = None
     robots_ok: bool | None = None
+    robots_reason: str | None = None
     ssl_status: str | None = None
     effective_types: tuple[str, ...] = ("other",)
     manual_done: frozenset[str] = field(default_factory=frozenset)
@@ -378,7 +379,7 @@ def _gsc_sitemaps(item: MeasurementItem, f: Facts) -> Outcome:
 
 def _robots(item: MeasurementItem, f: Facts) -> Outcome:
     if f.robots_ok is None:
-        return _unverifiable("not_checked")
+        return _unverifiable(f.robots_reason or "not_checked")
     return Outcome("on_page" if f.robots_ok else "missing", {"robots_ok": f.robots_ok}, None)
 
 

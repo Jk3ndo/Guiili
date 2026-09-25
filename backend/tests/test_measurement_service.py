@@ -1,16 +1,23 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import httpx
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+import pytest
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models.enums import StackKind
+from app.models.enums import ConnectionStatus, ResourceType, StackKind
+from app.models.google_connection import GoogleConnection
 from app.models.measurement_item_event import MeasurementItemEvent
 from app.models.measurement_item_status import MeasurementItemStatus
+from app.models.user import User
 from app.models.website import Website
+from app.models.website_google_link import WebsiteGoogleLink
 from app.models.website_profile import WebsiteProfile
+from app.models.workspace import Workspace
 from app.services.gtm_headless import GtmHeadlessResult
 from app.services.measurement import fetch as fetch_module
+from app.services.measurement.catalog import ITEMS
 from app.services.measurement.google_reader import GoogleReadError
 from app.services.measurement.service import (
     COOLDOWN,
@@ -43,18 +50,28 @@ def _snapshot(url: str, html: str, status: int = 200, ctype: str = "text/html") 
 
 
 class _Fetcher:
-    def __init__(self, html: str | None = _SHOP_HTML, robots_status: int = 200) -> None:
+    def __init__(
+        self,
+        html: str | None = _SHOP_HTML,
+        robots_status: int = 200,
+        robots_ctype: str = "text/plain",
+        page_status: int = 200,
+        page_ctype: str = "text/html",
+    ) -> None:
         self.html = html
         self.robots_status = robots_status
+        self.robots_ctype = robots_ctype
+        self.page_status = page_status
+        self.page_ctype = page_ctype
         self.calls: list[str] = []
 
     async def __call__(self, url: str, *, allow_insecure: bool = False):
         self.calls.append(url)
         if url.endswith("/robots.txt"):
-            return _snapshot(url, "User-agent: *", self.robots_status, "text/plain")
+            return _snapshot(url, "User-agent: *", self.robots_status, self.robots_ctype)
         if self.html is None:
             return None
-        return _snapshot(url, self.html)
+        return _snapshot(url, self.html, self.page_status, self.page_ctype)
 
 
 class _Reader:
@@ -339,6 +356,35 @@ async def test_headless_error_keeps_the_previous_result(
     assert result.headless_error == "TimeoutError: boom"
     profile = await db_session.get(WebsiteProfile, site.id)
     assert profile.headless_result is None
+    view = await build_plan_view(db_session, site)
+    assert view["headless_checked_at"] is None
+
+
+async def test_a_good_headless_result_survives_a_later_failed_run(
+    db_session: AsyncSession, make_user
+) -> None:
+    site = await _site(db_session, make_user, "svc-headless-keep.test")
+    now = datetime(2026, 9, 24, 12, 0, tzinfo=UTC)
+    await refresh_plan(
+        db_session, site, fetcher=_Fetcher(), reader=_Reader(), verifier=_Verifier(),
+        run_headless=True, now=now,
+    )
+    profile = await db_session.get(WebsiteProfile, site.id)
+    kept = dict(profile.headless_result)
+    kept_at = profile.headless_checked_at
+    assert kept["ga4_ids"] == ["G-ABC123XYZ"]
+
+    later = now + COOLDOWN + timedelta(minutes=1)
+    result = await refresh_plan(
+        db_session, site, fetcher=_Fetcher(), reader=_Reader(),
+        verifier=_Verifier(error="TimeoutError: boom"), run_headless=True, now=later,
+    )
+    assert result.headless_ran is False and result.headless_error == "TimeoutError: boom"
+    assert profile.headless_result == kept
+    assert profile.headless_checked_at == kept_at
+    view = await build_plan_view(db_session, site)
+    assert view["headless_checked_at"] == kept_at
+    assert _item(view, "ga4_tag")["state"] == "on_page"  # la preuve précédente reste utilisée
 
 
 async def test_dismissed_and_manual_done_survive_a_refresh(
@@ -512,3 +558,215 @@ async def test_fetch_page_safe_never_raises(monkeypatch) -> None:
 
     monkeypatch.setattr(fetch_module, "fetch_page", boom)
     assert await fetch_module.fetch_page_safe("https://x.test") is None
+
+
+@pytest.mark.parametrize("reason", ["api_error", "network"])
+async def test_google_read_failures_are_unverifiable_never_missing(
+    db_session: AsyncSession, make_user, reason: str
+) -> None:
+    site = await _site(db_session, make_user, f"svc-{reason}.test")
+    db_session.add(
+        WebsiteProfile(website_id=site.id, detected_types=[], params={"uses_google_ads": True})
+    )
+    await db_session.flush()
+    await refresh_plan(
+        db_session, site, fetcher=_Fetcher(), reader=_Reader(reason=reason),
+        verifier=_Verifier(), run_headless=False,
+    )
+    view = await build_plan_view(db_session, site)
+    for item_id in ("event_purchase", "purchase_params", "key_events_marked", "ads_ga4_link"):
+        item = _item(view, item_id)
+        assert item["state"] == "unverifiable", item_id
+        assert item["reason"] == reason, item_id
+        assert item["done"] is False
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "reason"),
+    [
+        ({"page_status": 503}, "http_error"),
+        ({"page_ctype": "application/pdf"}, "non_html"),
+    ],
+)
+async def test_unusable_page_makes_page_items_unverifiable(
+    db_session: AsyncSession, make_user, kwargs: dict, reason: str
+) -> None:
+    site = await _site(db_session, make_user, f"svc-{reason}.test")
+    await refresh_plan(
+        db_session, site, fetcher=_Fetcher(**kwargs), reader=_Reader(),
+        verifier=_Verifier(), run_headless=False,
+    )
+    view = await build_plan_view(db_session, site)
+    gtm = _item(view, "gtm_installed")
+    assert gtm["state"] == "unverifiable" and gtm["reason"] == reason
+    assert view["profile"]["effective_types"] == ["other"]  # aucune détection sans HTML
+
+
+@pytest.mark.parametrize(
+    ("robots_status", "robots_ctype", "state", "reason"),
+    [
+        (404, "text/plain", "missing", None),
+        (410, "text/plain", "missing", None),
+        (503, "text/plain", "unverifiable", "robots_unreadable"),
+        (403, "text/plain", "unverifiable", "robots_unreadable"),
+        (200, "text/html; charset=utf-8", "unverifiable", "robots_unreadable"),
+        (200, "text/plain", "on_page", None),
+        (200, "", "on_page", None),
+    ],
+)
+async def test_robots_txt_is_only_judged_on_clear_evidence(
+    db_session: AsyncSession,
+    make_user,
+    robots_status: int,
+    robots_ctype: str,
+    state: str,
+    reason: str | None,
+) -> None:
+    site = await _site(db_session, make_user, f"svc-robots-{robots_status}-{len(robots_ctype)}.test")
+    fetcher = _Fetcher(robots_status=robots_status, robots_ctype=robots_ctype)
+    await refresh_plan(
+        db_session, site, fetcher=fetcher, reader=_Reader(), verifier=_Verifier(),
+        run_headless=False,
+    )
+    item = _item(await build_plan_view(db_session, site), "robots_txt")
+    assert item["state"] == state
+    assert item["reason"] == reason
+
+
+async def test_google_connection_and_links_are_reflected_in_the_view(
+    db_session: AsyncSession, make_user
+) -> None:
+    site = await _site(db_session, make_user, "svc-google.test")
+    connection = GoogleConnection(
+        workspace_id=site.workspace_id,
+        google_account_email="owner@example.com",
+        google_sub="google-sub-1",
+        granted_scopes=[],
+        refresh_token_encrypted=b"x",
+        encryption_key_version=1,
+        status=ConnectionStatus.ACTIVE,
+    )
+    db_session.add(connection)
+    await db_session.flush()
+    for resource_type, resource_id in (
+        (ResourceType.GA4_PROPERTY, "properties/1"),
+        (ResourceType.GSC_SITE, "sc-domain:svc-google.test"),
+    ):
+        db_session.add(
+            WebsiteGoogleLink(
+                website_id=site.id,
+                google_connection_id=connection.id,
+                resource_type=resource_type,
+                resource_id=resource_id,
+            )
+        )
+    await db_session.flush()
+    view = await build_plan_view(db_session, site)
+    assert view["google_connection"] == "active"
+    assert view["ga4_connected"] is True and view["gsc_linked"] is True
+
+    connection.status = ConnectionStatus.NEEDS_REAUTH
+    await db_session.flush()
+    view = await build_plan_view(db_session, site)
+    assert view["google_connection"] == "needs_reauth"
+    assert view["ga4_connected"] is True and view["gsc_linked"] is True
+
+
+async def test_next_actions_break_ties_in_catalog_order(
+    db_session: AsyncSession, make_user
+) -> None:
+    site = await _site(db_session, make_user, "svc-ties.test")
+    await refresh_plan(
+        db_session, site, fetcher=_Fetcher(html="<html><head></head><body>x</body></html>"),
+        reader=_Reader(), verifier=_Verifier(), run_headless=False,
+    )
+    view = await build_plan_view(db_session, site)
+    by_id = {item["id"]: item for item in view["items"]}
+    catalog_pos = {item.id: index for index, item in enumerate(ITEMS)}
+    for first, second in zip(view["next_actions"], view["next_actions"][1:], strict=False):
+        a, b = by_id[first], by_id[second]
+        if (a["weight"], a["quick_win"], a["layer"]) == (b["weight"], b["quick_win"], b["layer"]):
+            assert catalog_pos[first] < catalog_pos[second]
+    # Deux calculs successifs donnent le même classement.
+    assert (await build_plan_view(db_session, site))["next_actions"] == view["next_actions"]
+
+
+async def test_fetch_page_safe_swallows_invalid_urls(monkeypatch) -> None:
+    async def boom(url: str, *, allow_insecure: bool = False):
+        raise httpx.InvalidURL("bad url")
+
+    monkeypatch.setattr(fetch_module, "fetch_page", boom)
+    assert await fetch_module.fetch_page_safe("https://exa mple.test") is None
+
+
+class _SlowFetcher(_Fetcher):
+    """Force l'entrelacement des deux rafraîchissements (sans verrou, ils se chevauchent)."""
+
+    async def __call__(self, url: str, *, allow_insecure: bool = False):
+        await asyncio.sleep(0.05)
+        return await super().__call__(url, allow_insecure=allow_insecure)
+
+
+async def test_concurrent_refreshes_of_one_site_write_a_single_history(engine) -> None:
+    maker = async_sessionmaker(bind=engine, expire_on_commit=False)
+    async with maker() as setup:
+        user = User(email="race@example.com", google_sub="race-sub")
+        setup.add(user)
+        await setup.flush()
+        workspace = Workspace(name="race", owner_user_id=user.id)
+        setup.add(workspace)
+        await setup.flush()
+        site = Website(
+            workspace_id=workspace.id,
+            domain="svc-race.test",
+            display_name="race",
+            detected_stack=StackKind.GENERIC,
+            ssl_status="valid",
+        )
+        setup.add(site)
+        await setup.commit()
+        site_id, workspace_id, user_id = site.id, workspace.id, user.id
+
+    ready = asyncio.Barrier(2)  # les deux connexions sont ouvertes avant de commencer
+
+    async def one_refresh() -> None:
+        async with maker() as session:
+            website = await session.get(Website, site_id)
+            await ready.wait()
+            await refresh_plan(
+                session, website, fetcher=_SlowFetcher(), reader=_Reader(),
+                verifier=_Verifier(), run_headless=False,
+            )
+            await session.commit()
+
+    try:
+        await asyncio.gather(one_refresh(), one_refresh())
+        async with maker() as check:
+            profiles = (
+                await check.execute(
+                    select(WebsiteProfile).where(WebsiteProfile.website_id == site_id)
+                )
+            ).scalars().all()
+            events = (
+                await check.execute(
+                    select(MeasurementItemEvent.item_id).where(
+                        MeasurementItemEvent.website_id == site_id
+                    )
+                )
+            ).scalars().all()
+            statuses = (
+                await check.execute(
+                    select(MeasurementItemStatus.item_id).where(
+                        MeasurementItemStatus.website_id == site_id
+                    )
+                )
+            ).scalars().all()
+        assert len(profiles) == 1
+        assert len(events) == len(set(events))  # une seule première observation par item
+        assert len(statuses) == len(set(statuses)) > 0
+    finally:
+        async with maker() as cleanup:
+            await cleanup.execute(delete(Website).where(Website.id == site_id))
+            await cleanup.execute(delete(Workspace).where(Workspace.id == workspace_id))
+            await cleanup.execute(delete(User).where(User.id == user_id))
+            await cleanup.commit()

@@ -14,5 +14,5 @@ async def fetch_page_safe(url: str, *, allow_insecure: bool = False) -> PageSnap
     """`fetch_page` qui ne lève jamais : `None` si le site est injoignable."""
     try:
         return await fetch_page(url, allow_insecure=allow_insecure)
-    except httpx.HTTPError:
+    except (httpx.HTTPError, httpx.InvalidURL):
         return None

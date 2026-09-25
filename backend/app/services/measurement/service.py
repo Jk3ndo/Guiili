@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.enums import ConnectionStatus, ResourceType
@@ -103,6 +103,19 @@ async def _safe(call: Callable[[], Awaitable[Any]]) -> tuple[Any, str | None]:
         return None, exc.reason
 
 
+def _robots_ok(robots: Any) -> bool | None:
+    """`True` : 200 et contenu non HTML (un repli SPA en `text/html` n'est pas un
+    robots.txt). `False` : 404 ou 410 seulement. Sinon `None` (403, 429, 5xx, injoignable,
+    HTML) : on ne conclut pas."""
+    if robots is None:
+        return None
+    if robots.status == 200:
+        return None if "html" in robots.headers.get("content-type", "").lower() else True
+    if robots.status in (404, 410):
+        return False
+    return None
+
+
 def _page_facts(page: Any) -> tuple[str | None, str | None]:
     """(html, erreur) à partir d'un `PageSnapshot` ou de `None`."""
     if page is None:
@@ -126,6 +139,14 @@ async def refresh_plan(
 ) -> RefreshResult:
     """Recalcule et enregistre l'état de chaque item. Ne fait pas de commit."""
     now = now or datetime.now(UTC)
+    # Un rafraîchissement à la fois par site (deux onglets, StrictMode...) : le second
+    # attend la fin de la transaction du premier, relit son état (profil créé, délai de
+    # 5 minutes du headless, transitions déjà écrites) et n'écrit rien en double. Coût
+    # connu : la connexion à la base est tenue pendant toute la collecte (réseau compris).
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:website_id))"),
+        {"website_id": str(website.id)},
+    )
     profile = await get_or_create_profile(session, website.id)
     confirmed = clean_confirmed_types(profile.confirmed_types)
 
@@ -140,7 +161,7 @@ async def refresh_plan(
     effective = tuple(resolve_effective_types(profile.detected_types, confirmed))
 
     robots = await fetcher(f"{base_url}/robots.txt", allow_insecure=insecure)
-    robots_ok = None if robots is None else robots.status == 200
+    robots_ok = _robots_ok(robots)
 
     # -- navigateur headless (action explicite, délai de 5 minutes) ---------------
     headless = HeadlessFacts.from_dict(profile.headless_result)
@@ -201,6 +222,7 @@ async def refresh_plan(
         sitemaps_count=sitemaps,
         sitemaps_reason=sitemaps_reason,
         robots_ok=robots_ok,
+        robots_reason=None if robots_ok is not None else "robots_unreadable",
         ssl_status=website.ssl_status,
         effective_types=effective,
         manual_done=manual_done,
@@ -391,6 +413,7 @@ async def build_plan_view(session: AsyncSession, website: Website) -> dict[str, 
         "google_connection": google_connection,
         "next_actions": _next_action_ids(items) if last_checked is not None else [],
         "last_checked_at": last_checked,
+        "headless_checked_at": profile.headless_checked_at if profile else None,
         "overall_done": overall_done,
         "overall_total": overall_total,
         "overall_percent": round(100 * overall_done / overall_total) if overall_total else 0,
