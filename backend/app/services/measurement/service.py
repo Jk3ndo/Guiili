@@ -4,6 +4,7 @@ persistance de l'état courant et construction de la vue API."""
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -19,6 +20,7 @@ from app.models.measurement_item_status import MeasurementItemStatus
 from app.models.website import Website
 from app.models.website_google_link import WebsiteGoogleLink
 from app.models.website_profile import WebsiteProfile
+from app.services.audit_engine import TlsChecker, apply_tls_status
 from app.services.gtm_check import analyze_gtm
 from app.services.gtm_headless import GtmHeadlessVerifier
 from app.services.measurement.catalog import (
@@ -32,6 +34,11 @@ from app.services.measurement.fetch import PageFetcher
 from app.services.measurement.google_reader import GoogleReader, GoogleReadError
 from app.services.measurement.site_types import detect_site_types, resolve_effective_types
 from app.services.measurement.types import SITE_TYPES, MeasurementItem, Outcome
+
+logger = logging.getLogger(__name__)
+
+# Code stable renvoyé quand le navigateur headless échoue ; le détail reste dans les logs.
+HEADLESS_ERROR_CODE = "headless_failed"
 
 COOLDOWN = timedelta(minutes=5)
 # Au-delà, le dernier résultat du navigateur n'est plus une observation fiable : on
@@ -146,9 +153,14 @@ async def refresh_plan(
     reader: GoogleReader,
     verifier: GtmHeadlessVerifier,
     run_headless: bool,
+    tls_checker: TlsChecker | None = None,
     now: datetime | None = None,
 ) -> RefreshResult:
-    """Recalcule et enregistre l'état de chaque item. Ne fait pas de commit."""
+    """Recalcule et enregistre l'état de chaque item. Ne fait pas de commit.
+
+    `tls_checker` (injectable, absent par défaut : aucun réseau) relance le contrôle du
+    certificat HTTPS avant l'évaluation. Seul le bouton « Vérifier maintenant » le fournit ;
+    les autres rafraîchissements réutilisent le dernier contrôle de l'audit."""
     now = now or datetime.now(UTC)
     # Un rafraîchissement à la fois par site (deux onglets, StrictMode...) : le second
     # attend la fin de la transaction du premier, relit son état (profil créé, délai de
@@ -190,7 +202,14 @@ async def refresh_plan(
                 profile.headless_checked_at = now
                 ran = True
             else:
-                error = result.error
+                # Le détail (journal du navigateur, chemins) reste dans les logs : seul un
+                # code stable sort de ce service.
+                logger.warning("Vérification headless en échec pour %s: %s", website.domain, result.error)
+                error = HEADLESS_ERROR_CODE
+
+    # -- certificat HTTPS (relancé seulement sur demande explicite) -----------------
+    if tls_checker is not None:
+        apply_tls_status(website, await tls_checker(website.domain))
 
     # -- lectures Google -------------------------------------------------------
     ga4_stats, ga4_reason = await _safe(reader.event_stats)
@@ -232,6 +251,7 @@ async def refresh_plan(
         robots_ok=robots_ok,
         robots_reason=None if robots_ok is not None else "robots_unreadable",
         ssl_status=website.ssl_status,
+        ssl_checked_at=website.ssl_checked_at.isoformat() if website.ssl_checked_at else None,
         effective_types=effective,
         manual_done=manual_done,
     )

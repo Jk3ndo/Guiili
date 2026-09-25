@@ -160,9 +160,22 @@ def test_non_collect_requests_are_ignored() -> None:
 
 
 def test_ads_request_detection() -> None:
-    assert _is_ads_request("https://www.googleadservices.com/pagead/conversion/123/?label=x")
-    assert _is_ads_request("https://googleads.g.doubleclick.net/pagead/viewthroughconversion/1/")
+    assert _is_ads_request(
+        "https://www.googleadservices.com/pagead/conversion/123456789/?label=x"
+    )
+    assert _is_ads_request(
+        "https://googleads.g.doubleclick.net/pagead/viewthroughconversion/123456789/"
+    )
     assert not _is_ads_request("https://www.googletagmanager.com/gtag/js?id=G-1")
+
+
+def test_ads_request_ignores_youtube_embed_and_generic_ad_calls() -> None:
+    # Un embed YouTube appelle googleads.g.doubleclick.net/pagead/id : ce n'est pas
+    # une conversion Google Ads du site.
+    assert not _is_ads_request("https://googleads.g.doubleclick.net/pagead/id")
+    assert not _is_ads_request("https://googleads.g.doubleclick.net/pagead/ads?client=x")
+    assert not _is_ads_request("https://www.googleadservices.com/pagead/conversion/1/")
+    assert not _is_ads_request("https://example.com/pagead/conversion/123456789/")
 
 
 def test_headless_result_dict_exposes_new_fields_with_defaults() -> None:

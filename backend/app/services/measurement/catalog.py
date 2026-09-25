@@ -156,8 +156,8 @@ _FOUNDATIONS: tuple[MeasurementItem, ...] = (
             "mesure (il commence par G-).",
             "Clique sur « Générer mon pack de démarrage » (en haut de cette page) : le "
             "fichier contient la balise GA4 et les événements essentiels de ton type de "
-            "site. Importe-le dans GTM (Administration > Importer un conteneur > Fusionner) "
-            "et publie.",
+            "site. Importe-le dans GTM (Administration > Importer un conteneur > « Nouvel "
+            "espace de travail » > « Fusionner » > « Renommer les conflits ») et publie.",
             "Dans « Connexions Google », connecte ton compte pour que la plateforme voie "
             "les données arriver.",
             "Clique sur « Vérifier maintenant ».",
@@ -286,7 +286,7 @@ _EVENTS: tuple[MeasurementItem, ...] = (
         applies_to=_ECOM,
         weight=90,
         quick_win=False,
-        title="Achat avec montant, devise et numéro de commande",
+        title="Achat avec montant",
         why=(
             "Un achat sans montant ne dit pas combien tu gagnes : les revenus restent à zéro "
             "dans GA4 et dans tes campagnes."

@@ -5,6 +5,7 @@ import pytest
 from app.models.enums import StackKind
 from app.services.gtm_generator import (
     _ADS_UNVALIDATED_WARNING,
+    _DOUBLE_PAGE_VIEW_WARNING,
     _RECIPES,
     build_selected_container,
     requires_site_code,
@@ -35,7 +36,8 @@ def test_only_selected_events_are_generated() -> None:
     assert "GA4 Configuration" in tags
     assert "GA4 - purchase" in tags and "GA4 - generate_lead" in tags
     assert "GA4 - view_item" not in tags
-    assert warnings == []
+    # Une balise GA4 Configuration part toujours avec l'avertissement de double page_view.
+    assert warnings == [_DOUBLE_PAGE_VIEW_WARNING]
     json.dumps(container)  # sérialisable
 
 
@@ -90,7 +92,7 @@ def test_ads_conversion_tag_uses_the_provided_ids_and_first_key_event() -> None:
     assert ads["firingTriggerId"] == [lead_trigger]
     assert "Conversion Linker" in tags
     assert tags["Conversion Linker"]["type"] == "gclidw"
-    assert warnings == [_ADS_UNVALIDATED_WARNING]
+    assert warnings == [_DOUBLE_PAGE_VIEW_WARNING, _ADS_UNVALIDATED_WARNING]
 
 
 def test_ads_tag_without_ids_warns_and_is_skipped() -> None:
@@ -224,18 +226,32 @@ def test_output_is_deterministic_with_a_fixed_export_time() -> None:
 def test_unknown_or_non_container_items_warn_once_each() -> None:
     container, warnings = _build(["ga4_tag", "consent_mode", "fautedefrappe"])
     assert "GA4 Configuration" in _names(container, "tag")
-    assert len(warnings) == 2
+    assert len(warnings) == 3  # dont l'avertissement de double page_view
     assert any("consent_mode" in w for w in warnings)
     assert any("fautedefrappe" in w for w in warnings)
 
 
-def test_implicit_ga4_configuration_warns_about_duplicated_page_views() -> None:
+def test_ga4_configuration_always_warns_about_duplicated_page_views() -> None:
     _, implicit = _build(["event_login"])
     assert any("page_view" in w for w in implicit)
     _, explicit = _build(["ga4_tag", "event_login"])
-    assert not any("page_view" in w for w in explicit)
+    # Désormais aussi quand la balise est demandée explicitement (I4 de la revue finale).
+    assert any("page_view" in w for w in explicit)
 
 
 def test_invalid_import_mode_raises() -> None:
     with pytest.raises(ValueError, match="import_mode inconnu"):
         _build(["ga4_tag"], import_mode="nimporte")
+
+
+def test_double_page_view_warning_when_the_config_is_added_implicitly() -> None:
+    # Événements seuls : la balise GA4 Configuration est ajoutée d'office.
+    container, warnings = _build(["event_generate_lead"])
+    assert "GA4 Configuration" in _names(container, "tag")
+    assert warnings == [_DOUBLE_PAGE_VIEW_WARNING]
+
+
+def test_no_double_page_view_warning_without_a_config_tag() -> None:
+    container, warnings = _build(["ads_conversion_linker"])
+    assert "GA4 Configuration" not in _names(container, "tag")
+    assert _DOUBLE_PAGE_VIEW_WARNING not in warnings

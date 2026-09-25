@@ -8,6 +8,9 @@ L'état d'un item est le niveau de preuve le plus haut atteint (`received` > `on
 Limites connues, à ne pas présenter comme des preuves d'absence :
 - `consent_default_seen` ne voit que les `consent default` poussés dans le dataLayer :
   un CMP à modèle GTM peut le définir sans qu'on le voie.
+- Une absence vue par le navigateur headless n'est jamais une preuve : il ne clique pas la
+  bannière de consentement (un CMP peut bloquer les balises) et une balise de conversion
+  Ads ne se déclenche que sur son événement, pas sur la page d'accueil.
 - `ga4_tag` et `gtm_in_head` supposent implicitement que GTM est installé
   (`gtm_installed`) : sans conteneur, `gtm_in_head` vaut « manquant » (`gtm_absent`).
 """
@@ -33,6 +36,11 @@ _KEY_EVENTS_BY_TYPE: dict[str, frozenset[str]] = {
     "saas": frozenset({"sign_up", "begin_trial", "subscribe"}),
     "content": frozenset({"newsletter_signup"}),
 }
+
+# Statuts de `tls_check` : le certificat est prouvé sain, ou prouvé mauvais. Tout le reste
+# (« unreachable », inconnu) est une absence d'observation.
+_TLS_OK = frozenset({"valid", "expiring_soon"})
+_TLS_BAD = frozenset({"expired", "self_signed", "hostname_mismatch", "untrusted"})
 
 _PAGE_KINDS = frozenset({"gtm_installed", "gtm_in_head", "no_double", "datalayer"})
 
@@ -111,6 +119,7 @@ class Facts:
     robots_ok: bool | None = None
     robots_reason: str | None = None
     ssl_status: str | None = None
+    ssl_checked_at: str | None = None  # ISO 8601, date du dernier contrôle du certificat
     effective_types: tuple[str, ...] = ("other",)
     manual_done: frozenset[str] = field(default_factory=frozenset)
 
@@ -126,6 +135,17 @@ def html_has_event(html: str, name: str) -> bool:
 
 def _unverifiable(reason: str) -> Outcome:
     return Outcome("unverifiable", {}, reason)
+
+
+def _consent_may_block(f: Facts) -> bool:
+    """Vrai si un CMP est reconnu ou un `consent default` est visible (HTML ou navigateur) :
+    le navigateur headless ne clique pas la bannière, donc les balises soumises au
+    consentement peuvent ne jamais partir sans que le site soit fautif."""
+    if f.gtm is not None and f.gtm.consent_platform:
+        return True
+    if f.headless is not None and f.headless.consent_default_seen:
+        return True
+    return bool(f.page_html and _CONSENT_DEFAULT.search(f.page_html))
 
 
 # ---- fondations ---------------------------------------------------------------
@@ -180,6 +200,10 @@ def _ga4_tag(item: MeasurementItem, f: Facts) -> Outcome:
     if on_page:
         return Outcome("on_page", evidence, None)
     if f.headless is not None:
+        if _consent_may_block(f):
+            # Rien n'est parti, mais le consentement par défaut est « refusé » et personne
+            # n'a cliqué la bannière : ce n'est pas une preuve d'absence.
+            return _unverifiable("consent_may_block_tags")
         return Outcome("missing", evidence, None)
     return _unverifiable("headless_not_run")
 
@@ -217,7 +241,10 @@ def _consent(item: MeasurementItem, f: Facts) -> Outcome:
         # Consent Mode vu mais aucun CMP reconnu : sans conteneur GTM, `consent_platform`
         # n'est pas analysé, et la liste des CMP connus est finie. Jamais « manquant ».
         return Outcome("unverifiable", evidence, "cmp_not_detected")
-    # « Non vu » n'est pas « absent » : un CMP à modèle GTM échappe à cette détection.
+    if cmp_name:
+        # « Non vu » n'est pas « absent » : un CMP à modèle GTM ne pousse rien dans le
+        # dataLayer, donc son consentement par défaut échappe à cette détection.
+        return Outcome("unverifiable", evidence, "cmp_default_not_observed")
     return Outcome("missing", evidence, "consent_default_not_seen")
 
 
@@ -350,9 +377,14 @@ def _ads_conversion_tag(item: MeasurementItem, f: Facts) -> Outcome:
         evidence["ads_requests"] = ads_requests
     if ids or ads_requests > 0:
         return Outcome("on_page", evidence, None)
-    if f.headless is not None:
-        return Outcome("missing", evidence, None)
-    return _unverifiable("headless_not_run")
+    if f.headless is None:
+        return _unverifiable("headless_not_run")
+    # Une balise de conversion (importée via notre conteneur) ne se déclenche que sur
+    # l'événement de conversion : son absence sur la page d'accueil n'est jamais une
+    # preuve. Seule une présence (AW-<id> ou requête de conversion) se prouve.
+    if _consent_may_block(f):
+        return _unverifiable("consent_may_block_tags")
+    return _unverifiable("ads_conversion_needs_event")
 
 
 def _manual(item: MeasurementItem, f: Facts) -> Outcome:
@@ -386,8 +418,15 @@ def _robots(item: MeasurementItem, f: Facts) -> Outcome:
 def _tls(item: MeasurementItem, f: Facts) -> Outcome:
     if f.ssl_status is None:
         return _unverifiable("not_checked")
-    ok = f.ssl_status in ("valid", "expiring_soon")
-    return Outcome("on_page" if ok else "missing", {"ssl_status": f.ssl_status}, None)
+    evidence: dict[str, Any] = {"ssl_status": f.ssl_status}
+    if f.ssl_checked_at:
+        evidence["checked_at"] = f.ssl_checked_at
+    if f.ssl_status in _TLS_OK:
+        return Outcome("on_page", evidence, None)
+    if f.ssl_status in _TLS_BAD:
+        return Outcome("missing", evidence, None)
+    # « unreachable » (timeout, DNS) ou statut inconnu : on n'a rien constaté du certificat.
+    return Outcome("unverifiable", evidence, "tls_unreachable")
 
 
 _CHECKS: dict[str, Callable[[MeasurementItem, Facts], Outcome]] = {

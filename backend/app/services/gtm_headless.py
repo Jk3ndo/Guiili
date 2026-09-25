@@ -19,6 +19,7 @@ chargement initial de la page compte comme "avant interaction utilisateur".
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -30,9 +31,15 @@ from playwright.async_api import async_playwright
 
 from app.services.gtm_check import GtmFinding
 
+logger = logging.getLogger(__name__)
+
+# Code stable exposé à la place du détail technique (journal Playwright, chemins disque).
+HEADLESS_FAILED = "headless_failed"
+
 _GTM_HOST_HINT = "googletagmanager.com"
 _GA4_HOSTS = ("google-analytics.com", "analytics.google.com")
 _ADS_HOSTS = ("googleadservices.com", "googleads.g.doubleclick.net")
+_ADS_CONVERSION_PATH = re.compile(r"/pagead/(?:conversion|viewthroughconversion)/\d{6,}(?:/|$)")
 _GA4_ID_RE = re.compile(r"^G-[A-Z0-9]{4,20}$")
 _MAX_GA4_IDS = 10
 _CSP_HINT = "content security policy"
@@ -94,7 +101,15 @@ def _record_ga4_id(ids: list[str], url: str) -> None:
 
 
 def _is_ads_request(url: str) -> bool:
-    return any(host in url for host in _ADS_HOSTS)
+    """Requête de conversion Google Ads (avec identifiant AW dans le chemin).
+
+    Les autres appels aux mêmes hôtes ne prouvent rien : un embed YouTube appelle
+    `googleads.g.doubleclick.net/pagead/id` sans qu'aucune conversion du site existe."""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if not any(host == h or host.endswith("." + h) for h in _ADS_HOSTS):
+        return False
+    return _ADS_CONVERSION_PATH.match(parsed.path) is not None
 
 
 def _derive_findings(
@@ -245,6 +260,10 @@ async def verify_gtm(url: str, *, timeout: float = 20.0) -> GtmHeadlessResult:
             finally:
                 await browser.close()
     except Exception as exc:  # pragma: no cover - jamais exerce en test (voir docstring)
+        # Le detail (journal Playwright, chemins) reste dans les logs du serveur ; le
+        # resultat n'expose qu'un code stable.
+        logger.warning("Verification headless en echec pour %s: %s", url, type(exc).__name__)
+        logger.debug("Detail de l'echec headless", exc_info=True)
         return GtmHeadlessResult(
             gtm_js_loaded=False,
             containers_initialised=(),
@@ -254,7 +273,7 @@ async def verify_gtm(url: str, *, timeout: float = 20.0) -> GtmHeadlessResult:
             csp_console_errors=(),
             findings=(),
             checked_at=datetime.now(UTC),
-            error=f"{type(exc).__name__}: {exc}",
+            error=HEADLESS_FAILED,
         )
 
     csp_blocked = tuple(e for e in console_errors if _is_gtm_csp_violation(e))

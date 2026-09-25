@@ -35,23 +35,23 @@ LinkStatus = Literal["linked", "already_linked", "ambiguous", "none", "skipped",
 # seul ne suffit pas. Le code décide, l'interface ne fait qu'afficher ce texte.
 MESSAGES: dict[tuple[str, str | None], str] = {
     ("linked", None): "Liaison faite automatiquement.",
-    ("already_linked", None): "Déjà lié : votre choix est conservé.",
-    ("ambiguous", None): "Plusieurs correspondances : choisissez celle à lier.",
+    ("already_linked", None): "Déjà lié : ton choix est conservé.",
+    ("ambiguous", None): "Plusieurs correspondances : choisis celle à lier.",
     ("ambiguous", "incomplete"): (
-        "Vérification incomplète : rien n'a été lié. Réessayez, ou choisissez à la main."
+        "Vérification incomplète : rien n'a été lié. Réessaie, ou choisis à la main."
     ),
     ("none", None): "Aucune correspondance pour ce domaine dans le compte connecté.",
     ("none", "unverified"): (
         "Le site n'apparaît que comme propriété non validée dans Search Console : "
-        "validez-le, ou liez-le à la main."
+        "valide-le, ou lie-le à la main."
     ),
     ("none", "path_only"): (
         "Seul un préfixe de chemin (sous-dossier) existe dans Search Console : "
         "ce n'est pas le site entier, rien n'a été lié."
     ),
-    ("skipped", None): "Aucune connexion Google utilisable : reconnectez votre compte.",
+    ("skipped", None): "Aucune connexion Google utilisable : reconnecte ton compte.",
     ("incomplete", None): (
-        "Vérification incomplète : réessayez, ou liez à la main."
+        "Vérification incomplète : réessaie, ou lie à la main."
     ),
 }
 

@@ -20,6 +20,12 @@ _ALL_PAGES_TRIGGER_ID = "2147479553"
 _SPA_STACKS = frozenset({StackKind.NEXTJS, StackKind.NUXT, StackKind.ANGULAR, StackKind.VUE})
 _FINGERPRINT = "1700000000000"
 
+_DOUBLE_PAGE_VIEW_WARNING = (
+    "Ce conteneur contient une balise « GA4 Configuration ». Si ton site a déjà GA4 (une "
+    "autre balise dans GTM, ou un code posé en dur dans les pages), ne l'importe pas telle "
+    "quelle : en mode « Fusionner », tes page_view seraient comptés deux fois."
+)
+
 _IMPORT_METADATA: dict[ImportMode, dict] = {
     "merge": {
         "mode": "merge",
@@ -28,10 +34,10 @@ _IMPORT_METADATA: dict[ImportMode, dict] = {
         "conflict_option": "Renommer les conflits",
         "steps": [
             "GTM > Administration > Importer un conteneur.",
-            "Selectionnez ce fichier JSON.",
-            "Espace de travail : « Nouveau ».",
+            "Sélectionne ce fichier JSON.",
+            "Espace de travail : « Nouvel espace de travail ».",
             "Option d'import : « Fusionner », puis « Renommer les conflits ».",
-            "Verifiez en mode Apercu, remplacez G-XXXXXXXXXX, puis publiez.",
+            "Vérifie en mode Aperçu, remplace G-XXXXXXXXXX, puis publie.",
         ],
     },
     "overwrite": {
@@ -574,12 +580,11 @@ def build_selected_container(
                 f"« {item_id} » n'est pas généré dans le conteneur GTM (inconnu ou fourni "
                 "autrement, par exemple en snippet) : ignoré."
             )
-    if recipes and "ga4_tag" not in selected:
-        warnings.append(
-            "La balise « GA4 Configuration » a été ajoutée pour que les événements partent. "
-            "Si ton conteneur en a déjà une, ne la fusionne pas : en mode « Fusionner », "
-            "elle peut doubler les page_view."
-        )
+    if wants_config:
+        # Émis chaque fois qu'une balise GA4 Configuration part dans le conteneur, qu'elle
+        # soit demandée ou ajoutée pour que les événements partent : sur un site qui a déjà
+        # GA4, l'import en « Fusionner » double les page_view.
+        warnings.append(_DOUBLE_PAGE_VIEW_WARNING)
 
     triggers: list[dict] = []
     tags: list[dict] = []

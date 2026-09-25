@@ -105,7 +105,9 @@ def test_consent_mode() -> None:
     cmp_only = Facts(
         page_html="<html></html>", gtm=_gtm(consent_platform="cookiebot"), headless=_headless()
     )
-    assert _state("consent_mode", cmp_only) == "missing"
+    # CMP connu mais « consent default » non observé : jamais « manquant » (un CMP à
+    # modèle GTM ne pousse rien dans le dataLayer), voir test dédié plus bas.
+    assert _state("consent_mode", cmp_only) == "unverifiable"
     complete = Facts(
         page_html="<html></html>",
         gtm=_gtm(consent_platform="cookiebot"),
@@ -133,13 +135,20 @@ def test_consent_absence_is_never_stated_without_a_real_browser() -> None:
     assert outcome.state == "unverifiable" and outcome.reason == "headless_not_run"
 
 
-def test_consent_missing_after_a_real_browser_run_is_flagged_as_not_seen() -> None:
+def test_consent_missing_after_a_real_browser_run_without_any_cmp_is_flagged_as_not_seen() -> None:
+    facts = Facts(page_html="<html></html>", gtm=_gtm(), headless=_headless())
+    outcome = evaluate(ITEMS_BY_ID["consent_mode"], facts)
+    assert outcome.state == "missing"
+    assert outcome.reason == "consent_default_not_seen"
+
+
+def test_consent_with_a_known_cmp_but_no_default_observed_is_unverifiable() -> None:
     facts = Facts(
         page_html="<html></html>", gtm=_gtm(consent_platform="cookiebot"), headless=_headless()
     )
     outcome = evaluate(ITEMS_BY_ID["consent_mode"], facts)
-    assert outcome.state == "missing"
-    assert outcome.reason == "consent_default_not_seen"
+    assert outcome.state == "unverifiable"
+    assert outcome.reason == "cmp_default_not_observed"
 
 
 def test_datalayer_standard() -> None:
@@ -237,8 +246,10 @@ def test_ads_link_and_conversion_tag() -> None:
     assert _state("ads_conversion_tag", in_html) == "on_page"
     seen = Facts(page_html="", headless=_headless(ads_requests=2))
     assert _state("ads_conversion_tag", seen) == "on_page"
+    # Une balise de conversion ne se déclenche que sur l'événement : son absence sur la
+    # page d'accueil ne prouve rien (voir tests dédiés plus bas).
     absent = Facts(page_html="", headless=_headless())
-    assert _state("ads_conversion_tag", absent) == "missing"
+    assert _state("ads_conversion_tag", absent) == "unverifiable"
     undecided = evaluate(ITEMS_BY_ID["ads_conversion_tag"], Facts(page_html=""))
     assert undecided.state == "unverifiable" and undecided.reason == "headless_not_run"
 
@@ -435,3 +446,75 @@ def test_headless_facts_roundtrip_and_conversion() -> None:
     assert HeadlessFacts.from_dict(facts.to_dict()) == facts
     assert HeadlessFacts.from_dict({}) is None
     assert HeadlessFacts.from_dict({"gtm_js_loaded": True}) is not None  # tolère l'ancien format
+
+
+# ---- absence vue par le navigateur headless : jamais une preuve ---------------
+def test_ga4_absent_but_default_consent_seen_is_unverifiable() -> None:
+    facts = Facts(gtm=_gtm(), headless=_headless(consent_default_seen=True))
+    outcome = evaluate(ITEMS_BY_ID["ga4_tag"], facts)
+    assert outcome.state == "unverifiable"
+    assert outcome.reason == "consent_may_block_tags"
+
+
+def test_ga4_absent_with_a_known_cmp_is_unverifiable() -> None:
+    facts = Facts(gtm=_gtm(consent_platform="cookiebot"), headless=_headless())
+    outcome = evaluate(ITEMS_BY_ID["ga4_tag"], facts)
+    assert outcome.state == "unverifiable"
+    assert outcome.reason == "consent_may_block_tags"
+
+
+def test_ga4_default_consent_in_html_also_counts() -> None:
+    facts = Facts(
+        page_html="gtag('consent', 'default', {})", gtm=_gtm(), headless=_headless()
+    )
+    outcome = evaluate(ITEMS_BY_ID["ga4_tag"], facts)
+    assert outcome.state == "unverifiable" and outcome.reason == "consent_may_block_tags"
+
+
+def test_ga4_absent_without_consent_signal_stays_missing() -> None:
+    assert _state("ga4_tag", Facts(gtm=_gtm(), headless=_headless())) == "missing"
+
+
+def test_ga4_seen_is_still_on_page_under_consent() -> None:
+    facts = Facts(
+        gtm=_gtm(consent_platform="cookiebot"),
+        headless=_headless(consent_default_seen=True, ga4_ids=("G-AAAA1111",)),
+    )
+    assert _state("ga4_tag", facts) == "on_page"
+
+
+def test_ads_conversion_absence_on_the_home_page_is_never_missing() -> None:
+    outcome = evaluate(
+        ITEMS_BY_ID["ads_conversion_tag"], Facts(page_html="<html></html>", headless=_headless())
+    )
+    assert outcome.state == "unverifiable"
+    assert outcome.reason == "ads_conversion_needs_event"
+
+
+def test_ads_conversion_absence_under_consent_names_the_consent() -> None:
+    for gtm, headless in (
+        (_gtm(consent_platform="axeptio"), _headless()),
+        (_gtm(), _headless(consent_default_seen=True)),
+    ):
+        outcome = evaluate(
+            ITEMS_BY_ID["ads_conversion_tag"],
+            Facts(page_html="<html></html>", gtm=gtm, headless=headless),
+        )
+        assert outcome.state == "unverifiable"
+        assert outcome.reason == "consent_may_block_tags"
+
+
+def test_ads_conversion_presence_is_still_proven_by_an_aw_id_or_a_request() -> None:
+    assert _state("ads_conversion_tag", Facts(page_html="gtag('config','AW-123456789')")) == "on_page"
+    assert (
+        _state("ads_conversion_tag", Facts(page_html="", headless=_headless(ads_requests=1)))
+        == "on_page"
+    )
+
+
+def test_tls_status_mapping() -> None:
+    for bad in ("expired", "self_signed", "hostname_mismatch", "untrusted"):
+        assert _state("tls_valid", Facts(ssl_status=bad)) == "missing"
+    for unknown in ("unreachable", "something_new"):
+        outcome = evaluate(ITEMS_BY_ID["tls_valid"], Facts(ssl_status=unknown))
+        assert outcome.state == "unverifiable" and outcome.reason == "tls_unreachable"

@@ -14,6 +14,7 @@ from app.api.deps import (
     get_measurement_reader_factory,
     get_page_fetcher,
     get_stream_hosts_fetcher,
+    get_tls_checker,
 )
 from app.api.v1.endpoints import measurement as measurement_endpoints
 from app.config import get_settings
@@ -39,6 +40,7 @@ from app.services.gtm_headless import GtmHeadlessResult
 from app.services.measurement.google_reader import GoogleReadError
 from app.services.measurement.service import lock_site
 from app.services.page_fetch import PageSnapshot
+from app.services.tls_check import TlsStatus
 from tests.conftest import owner_workspace_id
 from tests.measurement_fakes import FakeOAuth, fake_stream_hosts
 
@@ -80,6 +82,10 @@ async def _fetcher(url: str, *, allow_insecure: bool = False):
     )
 
 
+async def _tls_checker(domain: str) -> TlsStatus:
+    return TlsStatus(host=domain, status="valid", checked_at=datetime.now(UTC))
+
+
 async def _verifier(url: str) -> GtmHeadlessResult:
     return GtmHeadlessResult(
         gtm_js_loaded=True,
@@ -102,8 +108,14 @@ def measurement_overrides():
     app.dependency_overrides[get_page_fetcher] = lambda: _fetcher
     app.dependency_overrides[get_measurement_reader_factory] = lambda: _factory
     app.dependency_overrides[get_gtm_headless_verifier] = lambda: _verifier
+    app.dependency_overrides[get_tls_checker] = lambda: _tls_checker
     yield
-    for dep in (get_page_fetcher, get_measurement_reader_factory, get_gtm_headless_verifier):
+    for dep in (
+        get_page_fetcher,
+        get_measurement_reader_factory,
+        get_gtm_headless_verifier,
+        get_tls_checker,
+    ):
         app.dependency_overrides.pop(dep, None)
 
 
@@ -298,7 +310,8 @@ async def test_gtm_container_endpoint(
         t for t in body["container"]["containerVersion"]["tag"] if t["name"] == "GA4 Configuration"
     )
     assert config["parameter"][0]["value"] == "G-ABC123XYZ"  # lu depuis GA4 (lecteur factice)
-    assert body["warnings"] == []
+    # Une balise GA4 Configuration part dans le conteneur : avertissement de double page_view.
+    assert len(body["warnings"]) == 1 and "page_view" in body["warnings"][0]
 
     bad = await client.post(_url(site, "/gtm-container"), json={"item_ids": ["nope"]})
     assert bad.status_code == 400
@@ -645,3 +658,58 @@ async def test_google_autolink_without_connection_is_skipped(
     assert resp.json()["ga4"]["status"] == "skipped"
     assert resp.json()["gsc"]["status"] == "skipped"
     assert resp.json()["plan"]["google_connection"] == "none"
+
+
+async def test_refresh_reruns_the_certificate_check_and_hides_headless_details(
+    authed_client: tuple[AsyncClient, User], db_session: AsyncSession, measurement_overrides
+) -> None:
+    client, user = authed_client
+    site = await _site(db_session, user, "mpe-tls-rerun.test")
+    site.ssl_status = "unreachable"
+    await db_session.commit()
+
+    plan = (await client.post(_url(site, "/refresh"))).json()
+    tls = {i["id"]: i for i in plan["items"]}["tls_valid"]
+    assert tls["state"] == "on_page"  # le contrôle a été relancé (double injectable)
+    assert plan["headless_error"] is None and plan["headless_error_code"] is None
+
+    async def failing(url: str) -> GtmHeadlessResult:
+        return GtmHeadlessResult(
+            gtm_js_loaded=False,
+            containers_initialised=(),
+            datalayer_present=False,
+            gtm_events=(),
+            requests_before_consent=False,
+            csp_console_errors=(),
+            findings=(),
+            checked_at=datetime.now(UTC),
+            error="Error: browserType.launch: Executable doesn't exist at /opt/secret/chrome",
+        )
+
+    app.dependency_overrides[get_gtm_headless_verifier] = lambda: failing
+    resp = await client.post(_url(site, "/refresh"), params={"headless": "true"})
+    body = resp.json()
+    assert body["headless_error"] == "La vérification en conditions réelles n'a pas pu s'exécuter."
+    assert body["headless_error_code"] == "headless_failed"
+    assert "secret" not in resp.text and "Executable" not in resp.text
+
+
+async def test_starter_pack_skips_ga4_config_when_ga4_is_already_in_place(
+    authed_client: tuple[AsyncClient, User], db_session: AsyncSession, measurement_overrides
+) -> None:
+    client, user = authed_client
+    site = await _site(db_session, user, "mpe-starter-ga4.test")
+    await client.post(_url(site, "/refresh"), params={"headless": "true"})
+    plan = (await client.get(_url(site))).json()
+    assert {i["id"]: i for i in plan["items"]}["ga4_tag"]["state"] == "on_page"
+
+    resp = await client.post(_url(site, "/gtm-container"), json={"pack": "starter"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert any("déjà en place" in w for w in body["warnings"])
+    assert any("page_view" in w for w in body["warnings"])  # avertissement du générateur
+    # Sans état enregistré (site jamais vérifié), le pack garde la balise et prévient aussi.
+    other = await _site(db_session, user, "mpe-starter-fresh.test")
+    fresh = (await client.post(_url(other, "/gtm-container"), json={"pack": "starter"})).json()
+    assert not any("déjà en place" in w for w in fresh["warnings"])
+    assert any("page_view" in w for w in fresh["warnings"])

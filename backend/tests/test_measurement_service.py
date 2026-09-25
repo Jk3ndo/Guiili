@@ -25,6 +25,7 @@ from app.services.measurement.service import (
     refresh_plan,
 )
 from app.services.page_fetch import PageSnapshot
+from app.services.tls_check import TlsStatus
 from tests.conftest import owner_workspace_id
 
 _SHOP_HTML = """
@@ -353,7 +354,8 @@ async def test_headless_error_keeps_the_previous_result(
         run_headless=True,
     )
     assert result.headless_ran is False
-    assert result.headless_error == "TimeoutError: boom"
+    # Le détail du navigateur ne sort jamais du service : un code stable seulement.
+    assert result.headless_error == "headless_failed"
     profile = await db_session.get(WebsiteProfile, site.id)
     assert profile.headless_result is None
     view = await build_plan_view(db_session, site)
@@ -379,7 +381,7 @@ async def test_a_good_headless_result_survives_a_later_failed_run(
         db_session, site, fetcher=_Fetcher(), reader=_Reader(),
         verifier=_Verifier(error="TimeoutError: boom"), run_headless=True, now=later,
     )
-    assert result.headless_ran is False and result.headless_error == "TimeoutError: boom"
+    assert result.headless_ran is False and result.headless_error == "headless_failed"
     assert profile.headless_result == kept
     assert profile.headless_checked_at == kept_at
     view = await build_plan_view(db_session, site)
@@ -770,3 +772,52 @@ async def test_concurrent_refreshes_of_one_site_write_a_single_history(engine) -
             await cleanup.execute(delete(Workspace).where(Workspace.id == workspace_id))
             await cleanup.execute(delete(User).where(User.id == user_id))
             await cleanup.commit()
+
+
+async def test_unreachable_certificate_is_unverifiable_not_missing(
+    db_session: AsyncSession, make_user
+) -> None:
+    site = await _site(db_session, make_user, "svc-tls-unreachable.test")
+    site.ssl_status = "unreachable"
+    await refresh_plan(
+        db_session, site, fetcher=_Fetcher(), reader=_Reader(), verifier=_Verifier(),
+        run_headless=False,
+    )
+    tls = _item(await build_plan_view(db_session, site), "tls_valid")
+    assert tls["state"] == "unverifiable" and tls["reason"] == "tls_unreachable"
+
+
+async def test_refresh_reruns_the_certificate_check_when_a_checker_is_given(
+    db_session: AsyncSession, make_user
+) -> None:
+    site = await _site(db_session, make_user, "svc-tls-rerun.test")
+    site.ssl_status = "expired"
+    now = datetime(2026, 9, 24, 12, 0, tzinfo=UTC)
+    calls: list[str] = []
+
+    async def checker(domain: str) -> TlsStatus:
+        calls.append(domain)
+        return TlsStatus(host=domain, status="valid", checked_at=now)
+
+    await refresh_plan(
+        db_session, site, fetcher=_Fetcher(), reader=_Reader(), verifier=_Verifier(),
+        run_headless=False, tls_checker=checker, now=now,
+    )
+    assert calls == ["svc-tls-rerun.test"]
+    assert site.ssl_status == "valid" and site.ssl_checked_at == now
+    tls = _item(await build_plan_view(db_session, site), "tls_valid")
+    assert tls["state"] == "on_page"
+    assert tls["evidence"]["checked_at"] == now.isoformat()  # date du dernier contrôle
+
+
+async def test_refresh_without_a_checker_never_touches_the_certificate(
+    db_session: AsyncSession, make_user
+) -> None:
+    site = await _site(db_session, make_user, "svc-tls-norerun.test")
+    site.ssl_status = "expired"
+    await refresh_plan(
+        db_session, site, fetcher=_Fetcher(), reader=_Reader(), verifier=_Verifier(),
+        run_headless=False,
+    )
+    assert site.ssl_status == "expired"
+    assert _item(await build_plan_view(db_session, site), "tls_valid")["state"] == "missing"

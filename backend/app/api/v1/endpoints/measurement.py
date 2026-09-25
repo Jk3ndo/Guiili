@@ -9,6 +9,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, field_validator, model_validator
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.deps import (
@@ -20,6 +21,7 @@ from app.api.deps import (
     SessionDep,
     SettingsDep,
     StreamHostsFetcherDep,
+    TlsCheckerDep,
     TokenCipherDep,
 )
 from app.api.rate_limit import limit_by_user
@@ -50,6 +52,8 @@ from app.services.workspaces import owned_website, require_owner
 
 router = APIRouter(tags=["measurement"])
 logger = logging.getLogger(__name__)
+
+_HEADLESS_ERROR_TEXT = "La vérification en conditions réelles n'a pas pu s'exécuter."
 
 _ADS_ID = re.compile(r"^AW-\d{6,}$")
 _ADS_LABEL = re.compile(r"^[A-Za-z0-9_-]{6,}$")
@@ -124,7 +128,10 @@ class PlanOut(BaseModel):
     layers: list[LayerProgressOut]
     items: list[ItemOut]
     headless_skipped: bool = False
+    # Texte français prêt à afficher, et code stable correspondant : jamais le détail
+    # technique du navigateur (il reste dans les logs du serveur).
     headless_error: str | None = None
+    headless_error_code: str | None = None
     # Date du dernier passage du navigateur : l'interface s'en sert pour la fraîcheur
     # de la preuve « en conditions réelles ».
     headless_checked_at: datetime | None = None
@@ -261,6 +268,7 @@ async def refresh_measurement_plan(
     fetcher: PageFetcherDep,
     reader_factory: ReaderFactoryDep,
     verifier: GtmHeadlessVerifierDep,
+    tls_checker: TlsCheckerDep,
     headless: Annotated[bool, Query()] = False,
 ) -> PlanOut:
     site = await owned_website(session, website_id=website_id, user_id=user.id)
@@ -281,11 +289,15 @@ async def refresh_measurement_plan(
         reader=reader,
         verifier=verifier,
         run_headless=headless,
+        tls_checker=tls_checker,
     )
     await session.commit()
     view = await build_plan_view(session, site)
     return PlanOut(
-        **view, headless_skipped=result.headless_skipped, headless_error=result.headless_error
+        **view,
+        headless_skipped=result.headless_skipped,
+        headless_error=_HEADLESS_ERROR_TEXT if result.headless_error else None,
+        headless_error_code=result.headless_error,
     )
 
 
@@ -503,8 +515,24 @@ async def build_measurement_container(
     detected = list(profile.detected_types) if profile else []
     confirmed = clean_confirmed_types(profile.confirmed_types) if profile else None
     params: dict[str, Any] = dict(profile.params) if profile else {}
+    pack_warnings: list[str] = []
     if body.pack == "starter":
         item_ids = starter_pack(resolve_effective_types(detected, confirmed))
+        ga4_state = await session.scalar(
+            select(MeasurementItemStatus.state).where(
+                MeasurementItemStatus.website_id == site.id,
+                MeasurementItemStatus.item_id == "ga4_tag",
+            )
+        )
+        if ga4_state in ("on_page", "received"):
+            # GA4 est déjà en place : le pack ne redemande pas la balise « GA4 Configuration ».
+            item_ids = [item_id for item_id in item_ids if item_id != "ga4_tag"]
+            pack_warnings.append(
+                "GA4 est déjà en place sur ton site : le pack ne demande pas de nouvelle balise "
+                "« GA4 Configuration ». Les événements en ont tout de même besoin dans ce "
+                "conteneur : à l'import, ne fusionne pas cette balise si ton conteneur en a "
+                "déjà une."
+            )
     else:
         item_ids = list(dict.fromkeys(body.item_ids or []))
     unknown = [item_id for item_id in item_ids if item_id not in ITEMS_BY_ID]
@@ -533,7 +561,7 @@ async def build_measurement_container(
     )
     return ContainerOut(
         container=container,
-        warnings=warnings,
+        warnings=[*warnings, *pack_warnings],
         filename=f"gtm-plan-{site.domain}.json",
         needs_site_code=[item_id for item_id in item_ids if requires_site_code(item_id)],
     )
