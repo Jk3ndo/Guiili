@@ -6,7 +6,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from app.config import Settings
+from app.config import Settings, get_settings
 from app.logging_config import (
     JsonFormatter,
     RequestContextMiddleware,
@@ -115,11 +115,7 @@ async def test_access_log_uses_the_route_template_and_never_the_query(
     assert record.path == "/items/{item_id}"
     assert record.status == 200 and record.method == "GET"
     assert record.duration_ms >= 0
-    # Uniquement les journaux applicatifs : le client httpx du test journalise lui-même
-    # l'URL qu'il appelle (côté client), ce qui n'a rien à voir avec l'API.
-    everything = " ".join(
-        f"{r.getMessage()} {r.__dict__}" for r in caplog.records if r.name.startswith("app")
-    )
+    everything = " ".join(f"{r.getMessage()} {r.__dict__}" for r in caplog.records)
     assert "SECRET-TOKEN-VALUE" not in everything
     assert "OAUTH-CODE" not in everything
 
@@ -176,5 +172,23 @@ def test_configure_logging_is_idempotent_and_leaves_foreign_handlers() -> None:
         assert foreign in root.handlers
     finally:
         root.removeHandler(foreign)
+        for handler in [h for h in root.handlers if getattr(h, "_cc_managed", False)]:
+            root.removeHandler(handler)
+
+
+def test_configure_logging_silences_loggers_that_print_full_urls() -> None:
+    names = ("uvicorn.access", "httpx", "httpcore")
+    previous = {n: logging.getLogger(n).level for n in names}
+    root = logging.getLogger()
+    try:
+        for n in names:
+            logging.getLogger(n).setLevel(logging.NOTSET)
+        configure_logging(get_settings())
+        for n in names:
+            assert logging.getLogger(n).level == logging.WARNING, n
+        assert not logging.getLogger("httpx").isEnabledFor(logging.INFO)
+    finally:
+        for n, level in previous.items():
+            logging.getLogger(n).setLevel(level)
         for handler in [h for h in root.handlers if getattr(h, "_cc_managed", False)]:
             root.removeHandler(handler)

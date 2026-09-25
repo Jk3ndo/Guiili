@@ -84,7 +84,11 @@ def configure_logging(settings: Settings) -> None:
     root.setLevel(logging.INFO)
     # uvicorn journalise le chemin COMPLET, chaîne de requête comprise (codes OAuth) :
     # la ligne d'accès de `RequestContextMiddleware` la remplace.
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    # httpx (et httpcore) journalisent en INFO l'URL COMPLÈTE des appels sortants,
+    # paramètres compris (ex. la clé d'API PageSpeed passée en `key=`, codes OAuth) :
+    # on les réduit à WARNING pour qu'aucun secret n'atteigne les journaux.
+    for noisy in ("uvicorn.access", "httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 def _incoming_request_id(headers: list[tuple[bytes, bytes]]) -> str:
