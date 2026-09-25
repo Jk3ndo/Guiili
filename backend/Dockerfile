@@ -34,7 +34,8 @@ ENV PATH="/app/.venv/bin:${PATH}"
 
 EXPOSE 8080
 
-# Cloud Run injecte $PORT (8080 par defaut) ; alembic upgrade head est
-# idempotent (no-op si deja a jour) donc sur a rejouer a chaque demarrage
-# de conteneur plutot que de gerer une etape de migration separee.
-CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
+# Cloud Run injecte $PORT (8080 par defaut). Les migrations ne tournent PLUS au
+# demarrage : avec plusieurs instances, deux `alembic upgrade head` simultanes se
+# marchent dessus. Elles sont executees par un Cloud Run Job avant chaque
+# deploiement (voir scripts/deploy-backend.sh et docs/ops/runbook.md).
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]

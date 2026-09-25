@@ -18,6 +18,7 @@ from app.api.deps import (
     StackDetectorDep,
     TlsCheckerDep,
 )
+from app.api.rate_limit import limit_by_user
 from app.models.audit_log import AuditLog
 from app.models.audit_snapshot import AuditSnapshot
 from app.models.enums import (
@@ -65,6 +66,7 @@ class ScanResponse(BaseModel):
     "/websites/{website_id}/scan",
     response_model=ScanResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[limit_by_user("scan", limit=10, window=60)],
 )
 async def scan_website(
     website_id: UUID,
@@ -681,7 +683,11 @@ class GtmHeadlessOut(BaseModel):
     error: str | None
 
 
-@router.post("/websites/{website_id}/gtm/headless", response_model=GtmHeadlessOut)
+@router.post(
+    "/websites/{website_id}/gtm/headless",
+    response_model=GtmHeadlessOut,
+    dependencies=[limit_by_user("headless", limit=3, window=600)],
+)
 async def verify_gtm_headless_endpoint(
     website_id: UUID,
     user: CurrentUserDep,

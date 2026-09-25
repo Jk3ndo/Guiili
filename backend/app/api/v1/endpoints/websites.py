@@ -19,6 +19,7 @@ from app.api.deps import (
     SessionDep,
     TlsCheckerDep,
 )
+from app.api.rate_limit import limit_by_user
 from app.models.audit_snapshot import AuditSnapshot
 from app.models.enums import StackKind
 from app.models.website import Website
@@ -196,6 +197,7 @@ async def list_websites(
     "/websites",
     response_model=CreateWebsiteResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[limit_by_user("website_create", limit=20, window=3600)],
 )
 async def create_website(
     body: CreateWebsiteRequest,

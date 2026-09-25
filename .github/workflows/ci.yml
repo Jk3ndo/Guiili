@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: cc
+          POSTGRES_PASSWORD: cc
+          POSTGRES_DB: control_center
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U cc -d control_center"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      ENVIRONMENT: local
+      DATABASE_URL: postgresql+asyncpg://cc:cc@localhost:5432/control_center
+      DATABASE_URL_TEST: postgresql+asyncpg://cc:cc@localhost:5432/control_center_test
+      DATABASE_URL_MIGRATIONS_TEST: postgresql+asyncpg://cc:cc@localhost:5432/control_center_migrations
+      REDIS_URL: redis://localhost:6379/0
+      TOKEN_ENC_KEYS: '{"1":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}'
+      TOKEN_ENC_ACTIVE_VERSION: "1"
+      APP_SECRET_KEY: ci-only-secret-never-used-in-a-deployed-environment
+      GOOGLE_OAUTH_MOCK: "true"
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Installer les dépendances
+        run: uv sync --frozen
+      - name: Créer les bases jetables
+        run: |
+          PGPASSWORD=cc psql -h localhost -U cc -d control_center -c "CREATE DATABASE control_center_test"
+          PGPASSWORD=cc psql -h localhost -U cc -d control_center -c "CREATE DATABASE control_center_migrations"
+      - name: Lint
+        run: uv run ruff check app tests
+      - name: Migrations à jour (upgrade puis check)
+        env:
+          ALEMBIC_DATABASE_URL: postgresql+asyncpg://cc:cc@localhost:5432/control_center_migrations
+        run: |
+          uv run alembic upgrade head
+          uv run alembic check
+      - name: Tests
+        run: uv run pytest -W error -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - name: Lint (zéro avertissement)
+        run: npm run lint
+      - name: Build
+        run: npm run build

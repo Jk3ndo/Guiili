@@ -8,9 +8,13 @@ from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.config import get_settings
+from tests.db_safety import assert_safe_test_database
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 MIG_URL = get_settings().database_url_migrations_test
+assert_safe_test_database(
+    "DATABASE_URL_MIGRATIONS_TEST", MIG_URL, get_settings().database_url
+)
 EXPECTED_TABLES = {
     "users",
     "google_connections",

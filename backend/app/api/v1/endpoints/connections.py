@@ -8,6 +8,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from app.api.deps import CurrentUserDep, GoogleClientDep, SessionDep, SettingsDep, TokenCipherDep
+from app.api.rate_limit import limit_by_ip
 from app.models.enums import ConnectionStatus
 from app.models.google_connection import GoogleConnection
 from app.services.connections import decrypt_refresh_token, upsert_google_connection
@@ -25,7 +26,11 @@ class ConnectionStartResponse(BaseModel):
     authorization_url: str
 
 
-@router.get("/google/start", response_model=ConnectionStartResponse)
+@router.get(
+    "/google/start",
+    response_model=ConnectionStartResponse,
+    dependencies=[limit_by_ip("connections_start", limit=30, window=600)],
+)
 async def connections_google_start(
     workspace_id: UUID,
     user: CurrentUserDep,
