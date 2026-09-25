@@ -1,0 +1,42 @@
+name: Deploy staging
+
+# Déclenchement manuel uniquement. Prérequis : voir docs/ops/runbook.md §11.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Installer l'outil de vérification
+        working-directory: backend
+        run: uv sync --frozen
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Écrire le fichier d'environnement
+        env:
+          STAGING_ENV_YAML: ${{ secrets.STAGING_ENV_YAML }}
+        run: |
+          mkdir -p deploy
+          printf '%s\n' "$STAGING_ENV_YAML" > deploy/env.staging.yaml
+          chmod 600 deploy/env.staging.yaml
+      - name: Déployer
+        run: ./scripts/deploy-backend.sh staging
