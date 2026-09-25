@@ -29,6 +29,9 @@ EXPECTED_TABLES = {
     "advisor_usage",
     "advisor_tool_calls",
     "user_advisor_settings",
+    "website_profiles",
+    "measurement_item_statuses",
+    "measurement_item_events",
 }
 
 
