@@ -54,22 +54,24 @@ document.addEventListener("click", (e) => {
   const link = e.target.closest('__SELECTOR__');
   if (!link) return;
   window.dataLayer = window.dataLayer || [];
-  window.dataLayer.push({ event: "__EVENT__", link_url: link.href });
+  window.dataLayer.push({ event: "__EVENT__"__PARAMS__ });
 });
 """
 
-_CONSENT = """// À placer AVANT le snippet Google Tag Manager, dans le <head>
-window.dataLayer = window.dataLayer || [];
-function gtag() { dataLayer.push(arguments); }
-gtag('consent', 'default', {
-  ad_storage: 'denied',
-  ad_user_data: 'denied',
-  ad_personalization: 'denied',
-  analytics_storage: 'denied',
-  wait_for_update: 500,
-});
-// Ta bannière de consentement doit ensuite appeler gtag('consent', 'update', {...})
-// quand le visiteur accepte.
+_CONSENT = """<!-- À placer AVANT le snippet Google Tag Manager, dans le <head> -->
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag() { dataLayer.push(arguments); }
+  gtag('consent', 'default', {
+    ad_storage: 'denied',
+    ad_user_data: 'denied',
+    ad_personalization: 'denied',
+    analytics_storage: 'denied',
+    wait_for_update: 500,
+  });
+  // Ta bannière de consentement doit ensuite appeler gtag('consent', 'update', {...})
+  // quand le visiteur accepte.
+</script>
 """
 
 _ECOM_WHEN = {
@@ -94,10 +96,16 @@ _SIMPLE_EVENTS: dict[str, tuple[str, str]] = {
     ),
 }
 
-_LINK_EVENTS: dict[str, str] = {
-    "click_to_call": 'a[href^="tel:"]',
-    "click_email": 'a[href^="mailto:"]',
-    "click_whatsapp": 'a[href*="wa.me"], a[href*="whatsapp.com"]',
+# (sélecteur, paramètres poussés). Jamais de `link.href` brut pour tel: et mailto: (numéro,
+# adresse e-mail : données personnelles interdites dans GA4) ; WhatsApp : sans query string
+# (`?text=` peut contenir un message libre).
+_LINK_EVENTS: dict[str, tuple[str, str]] = {
+    "click_to_call": ('a[href^="tel:"]', ""),
+    "click_email": ('a[href^="mailto:"]', ""),
+    "click_whatsapp": (
+        'a[href*="wa.me"], a[href*="whatsapp.com"]',
+        ', link_url: link.href.split("?")[0]',
+    ),
 }
 
 
@@ -126,7 +134,12 @@ def snippet_for_event(event: str, stack: StackKind | None) -> ItemSnippet | None
         )
         return ItemSnippet("js", code, "assets/analytics.js", _GENERIC_NOTE)
     if event in _LINK_EVENTS:
-        code = _LINK.replace("__SELECTOR__", _LINK_EVENTS[event]).replace("__EVENT__", event)
+        selector, params = _LINK_EVENTS[event]
+        code = (
+            _LINK.replace("__SELECTOR__", selector)
+            .replace("__EVENT__", event)
+            .replace("__PARAMS__", params)
+        )
         return ItemSnippet(
             "js",
             code,
@@ -135,10 +148,11 @@ def snippet_for_event(event: str, stack: StackKind | None) -> ItemSnippet | None
         )
     if event == "consent_default":
         return ItemSnippet(
-            "js",
+            "html",
             _CONSENT,
             "<head> (avant le snippet GTM)",
-            "À placer avant le snippet Google Tag Manager. Si ta bannière de consentement "
+            "Bloc HTML complet (balise <script> incluse) à coller tel quel dans le <head>, "
+            "avant le snippet Google Tag Manager. Si ta bannière de consentement "
             "envoie déjà cet état par défaut, ne l'ajoute pas en double.",
         )
     return None
