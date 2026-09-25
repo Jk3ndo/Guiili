@@ -1,7 +1,10 @@
 import json
 
+import pytest
+
 from app.models.enums import StackKind
 from app.services.gtm_generator import (
+    _ADS_UNVALIDATED_WARNING,
     _RECIPES,
     build_selected_container,
     requires_site_code,
@@ -87,14 +90,15 @@ def test_ads_conversion_tag_uses_the_provided_ids_and_first_key_event() -> None:
     assert ads["firingTriggerId"] == [lead_trigger]
     assert "Conversion Linker" in tags
     assert tags["Conversion Linker"]["type"] == "gclidw"
-    assert warnings == []
+    assert warnings == [_ADS_UNVALIDATED_WARNING]
 
 
 def test_ads_tag_without_ids_warns_and_is_skipped() -> None:
     container, warnings = _build(["ads_conversion_tag", "event_view_item"])
     assert "Google Ads - Conversion" not in _names(container, "tag")
-    assert len(warnings) == 1
-    assert "Réglages Ads" in warnings[0]
+    ads_warnings = [w for w in warnings if "Réglages Ads" in w]
+    assert len(ads_warnings) == 1
+    assert _ADS_UNVALIDATED_WARNING not in warnings  # aucune balise Ads émise
 
 
 def test_ads_tag_without_a_key_event_warns() -> None:
@@ -146,3 +150,92 @@ def test_import_metadata_and_mode() -> None:
     assert merge["importMetadata"]["mode"] == "merge"
     overwrite, _ = _build(["ga4_tag"], import_mode="overwrite")
     assert overwrite["importMetadata"]["mode"] == "overwrite"
+
+
+def test_conversion_linker_alone_warns_that_ads_tags_are_unvalidated() -> None:
+    _, warnings = _build(["ads_conversion_linker"])
+    assert warnings == [_ADS_UNVALIDATED_WARNING]
+
+
+def _event_parameter_values(tag: dict) -> list[str]:
+    values = []
+    for parameter in tag["parameter"]:
+        if parameter["key"] != "eventParameters":
+            continue
+        for entry in parameter["list"]:
+            values += [item["value"] for item in entry["map"]]
+    return values
+
+
+def test_contact_click_events_never_send_the_click_url() -> None:
+    container, _ = _build(["event_click_to_call", "event_click_email", "event_click_whatsapp"])
+    tags = {t["name"]: t for t in container["containerVersion"]["tag"]}
+    for name, method in (
+        ("GA4 - click_to_call", "tel"),
+        ("GA4 - click_email", "email"),
+        ("GA4 - click_whatsapp", "whatsapp"),
+    ):
+        values = _event_parameter_values(tags[name])
+        assert "{{Click URL}}" not in values
+        assert method in values
+    assert "{{Click URL}}" not in json.dumps([t["parameter"] for t in tags.values()])
+
+
+def test_ads_tag_on_purchase_sends_value_and_currency() -> None:
+    container, _ = _build(
+        ["event_purchase", "ads_conversion_tag"],
+        ads_conversion_id="AW-123456789",
+        ads_conversion_label="AbCdEfGhIjK",
+    )
+    ads = next(t for t in container["containerVersion"]["tag"] if t["type"] == "awct")
+    params = {p["key"]: p["value"] for p in ads["parameter"]}
+    assert params["conversionValue"] == "{{dlv - value}}"
+    assert params["currencyCode"] == "{{dlv - currency}}"
+
+
+def test_ads_tag_on_a_non_ecommerce_event_has_no_value() -> None:
+    container, _ = _build(
+        ["event_generate_lead", "ads_conversion_tag"],
+        ads_conversion_id="AW-123456789",
+        ads_conversion_label="AbCdEfGhIjK",
+    )
+    ads = next(t for t in container["containerVersion"]["tag"] if t["type"] == "awct")
+    assert {p["key"] for p in ads["parameter"]} == {"conversionId", "conversionLabel"}
+
+
+def test_duplicate_item_ids_are_generated_once() -> None:
+    container, _ = _build(["event_purchase", "event_purchase", "ga4_tag", "ga4_tag"])
+    version = container["containerVersion"]
+    assert _names(container, "tag").count("GA4 - purchase") == 1
+    assert len(version["trigger"]) == len({t["triggerId"] for t in version["trigger"]})
+    assert [t["name"] for t in version["trigger"]].count("CE - purchase") == 1
+
+
+def test_output_is_deterministic_with_a_fixed_export_time() -> None:
+    ids = ["ga4_tag", "event_purchase", "event_click_to_call", "ads_conversion_tag"]
+    kwargs = {
+        "ads_conversion_id": "AW-123456789",
+        "ads_conversion_label": "AbCdEfGhIjK",
+        "export_time": "2026-09-25 00:00:00",
+    }
+    assert _build(ids, **kwargs) == _build(list(ids), **kwargs)
+
+
+def test_unknown_or_non_container_items_warn_once_each() -> None:
+    container, warnings = _build(["ga4_tag", "consent_mode", "fautedefrappe"])
+    assert "GA4 Configuration" in _names(container, "tag")
+    assert len(warnings) == 2
+    assert any("consent_mode" in w for w in warnings)
+    assert any("fautedefrappe" in w for w in warnings)
+
+
+def test_implicit_ga4_configuration_warns_about_duplicated_page_views() -> None:
+    _, implicit = _build(["event_login"])
+    assert any("page_view" in w for w in implicit)
+    _, explicit = _build(["ga4_tag", "event_login"])
+    assert not any("page_view" in w for w in explicit)
+
+
+def test_invalid_import_mode_raises() -> None:
+    with pytest.raises(ValueError, match="import_mode inconnu"):
+        _build(["ga4_tag"], import_mode="nimporte")

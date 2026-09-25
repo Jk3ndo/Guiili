@@ -399,25 +399,31 @@ _RECIPES: dict[str, _Recipe] = {
     "event_click_to_call": _Recipe(
         "click_to_call",
         "link_click",
-        params=(("link_url", "{{Click URL}}"),),
+        params=(("contact_method", "tel"),),
         link_op="startsWith",
         link_value="tel:",
     ),
     "event_click_email": _Recipe(
         "click_email",
         "link_click",
-        params=(("link_url", "{{Click URL}}"),),
+        params=(("contact_method", "email"),),
         link_op="startsWith",
         link_value="mailto:",
     ),
     "event_click_whatsapp": _Recipe(
         "click_whatsapp",
         "link_click",
-        params=(("link_url", "{{Click URL}}"),),
+        params=(("contact_method", "whatsapp"),),
         link_op="contains",
         link_value="wa.me",
     ),
 }
+
+# Les clics sur tel:/mailto:/wa.me n'envoient jamais {{Click URL}} à GA4 (numéro, adresse e-mail
+# ou texte WhatsApp = données personnelles) : seulement une constante `contact_method`.
+
+# Items du conteneur traités hors `_RECIPES`.
+_SPECIAL_ITEMS = frozenset({"ga4_tag", "ads_conversion_tag", "ads_conversion_linker"})
 
 # Événements sur lesquels déclencher la conversion Ads, par ordre de préférence.
 _ADS_KEY_EVENTS = ("event_purchase", "event_generate_lead", "event_sign_up", "event_subscribe")
@@ -465,6 +471,63 @@ def _link_click_trigger(base: dict, trigger_id: str, recipe: _Recipe) -> dict:
     }
 
 
+# NON VALIDÉ par import réel — voir étape propriétaire de la tâche 8 ; clés conversionId,
+# conversionLabel, conversionValue, currencyCode. Tant que l'import dans un conteneur GTM de
+# test n'a pas eu lieu, ces deux types de balise (awct, gclidw) sont une hypothèse.
+_ADS_UNVALIDATED_WARNING = (
+    "Les balises Google Ads de ce conteneur n'ont pas encore été validées par un import réel : "
+    "vérifie-les après l'import."
+)
+
+
+def _ads_conversion_tag(
+    base: dict,
+    tag_id: str,
+    numeric_id: str,
+    label: str,
+    firing_trigger_id: str,
+    *,
+    ecommerce: bool,
+) -> dict:
+    # NON VALIDÉ par import réel — voir étape propriétaire de la tâche 8 ;
+    # clés conversionId, conversionLabel, conversionValue, currencyCode.
+    parameter = [
+        {"type": "template", "key": "conversionId", "value": numeric_id},
+        {"type": "template", "key": "conversionLabel", "value": label},
+    ]
+    if ecommerce:
+        parameter += [
+            {"type": "template", "key": "conversionValue", "value": "{{dlv - value}}"},
+            {"type": "template", "key": "currencyCode", "value": "{{dlv - currency}}"},
+        ]
+    return {
+        **base,
+        "tagId": tag_id,
+        "name": "Google Ads - Conversion",
+        "type": "awct",
+        "parameter": parameter,
+        "fingerprint": _FINGERPRINT,
+        "firingTriggerId": [firing_trigger_id],
+        "tagFiringOption": "oncePerEvent",
+        "consentSettings": {"consentStatus": "notSet"},
+    }
+
+
+def _conversion_linker_tag(base: dict, tag_id: str) -> dict:
+    # NON VALIDÉ par import réel — voir étape propriétaire de la tâche 8 (type gclidw).
+    return {
+        **base,
+        "tagId": tag_id,
+        "name": "Conversion Linker",
+        "type": "gclidw",
+        "parameter": [],
+        "fingerprint": _FINGERPRINT,
+        "firingTriggerId": [_ALL_PAGES_TRIGGER_ID],
+        "tagFiringOption": "oncePerEvent",
+        "consentSettings": {"consentStatus": "notSet"},
+    }
+
+
 def requires_site_code(item_id: str) -> bool:
     """Vrai si l'événement n'existera que si le site pousse lui-même l'événement dans le
     dataLayer (le conteneur ne fait que l'écouter). Les clics sur liens téléphone, e-mail
@@ -488,6 +551,7 @@ def build_selected_container(
     if import_mode not in _IMPORT_METADATA:
         raise ValueError(f"import_mode inconnu : {import_mode!r}")
 
+    item_ids = list(dict.fromkeys(item_ids))  # sans doublon, ordre conservé
     selected = set(item_ids)
     warnings: list[str] = []
     account_id = _numeric_id(f"acct:{domain}", 10)
@@ -504,6 +568,18 @@ def build_selected_container(
 
     recipes = [(item_id, _RECIPES[item_id]) for item_id in item_ids if item_id in _RECIPES]
     wants_config = "ga4_tag" in selected or bool(recipes)
+    for item_id in item_ids:
+        if item_id not in _RECIPES and item_id not in _SPECIAL_ITEMS:
+            warnings.append(
+                f"« {item_id} » n'est pas généré dans le conteneur GTM (inconnu ou fourni "
+                "autrement, par exemple en snippet) : ignoré."
+            )
+    if recipes and "ga4_tag" not in selected:
+        warnings.append(
+            "La balise « GA4 Configuration » a été ajoutée pour que les événements partent. "
+            "Si ton conteneur en a déjà une, ne la fusionne pas : en mode « Fusionner », "
+            "elle peut doubler les page_view."
+        )
 
     triggers: list[dict] = []
     tags: list[dict] = []
@@ -601,46 +677,24 @@ def build_selected_container(
                 "contact, inscription ou abonnement) pour que la conversion se déclenche."
             )
         else:
-            parameter = [
-                {"type": "template", "key": "conversionId", "value": numeric_id},
-                {"type": "template", "key": "conversionLabel", "value": ads_conversion_label},
-            ]
-            if _RECIPES[key_event].ecommerce:
-                parameter += [
-                    {"type": "template", "key": "conversionValue", "value": "{{dlv - value}}"},
-                    {"type": "template", "key": "currencyCode", "value": "{{dlv - currency}}"},
-                ]
             tags.append(
-                {
-                    **base,
-                    "tagId": str(next_tag),
-                    "name": "Google Ads - Conversion",
-                    "type": "awct",
-                    "parameter": parameter,
-                    "fingerprint": _FINGERPRINT,
-                    "firingTriggerId": [trigger_by_item[key_event]],
-                    "tagFiringOption": "oncePerEvent",
-                    "consentSettings": {"consentStatus": "notSet"},
-                }
+                _ads_conversion_tag(
+                    base,
+                    str(next_tag),
+                    numeric_id,
+                    ads_conversion_label,
+                    trigger_by_item[key_event],
+                    ecommerce=_RECIPES[key_event].ecommerce,
+                )
             )
             next_tag += 1
 
     ads_tag_added = any(t["name"] == "Google Ads - Conversion" for t in tags)
     if "ads_conversion_linker" in selected or ads_tag_added:
-        tags.append(
-            {
-                **base,
-                "tagId": str(next_tag),
-                "name": "Conversion Linker",
-                "type": "gclidw",
-                "parameter": [],
-                "fingerprint": _FINGERPRINT,
-                "firingTriggerId": [_ALL_PAGES_TRIGGER_ID],
-                "tagFiringOption": "oncePerEvent",
-                "consentSettings": {"consentStatus": "notSet"},
-            }
-        )
+        tags.append(_conversion_linker_tag(base, str(next_tag)))
         next_tag += 1
+    if any(t["type"] in ("awct", "gclidw") for t in tags):
+        warnings.append(_ADS_UNVALIDATED_WARNING)
 
     variables = [
         _dlv_variable(base, "1", "dlv - value", "ecommerce.value"),
