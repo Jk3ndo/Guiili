@@ -27,9 +27,11 @@ from app.models.enums import (
 )
 from app.models.google_connection import GoogleConnection
 from app.models.issue_item import IssueItem
+from app.models.measurement_item_status import MeasurementItemStatus
 from app.models.user import User
 from app.models.website import Website
 from app.models.website_google_link import WebsiteGoogleLink
+from app.models.website_profile import WebsiteProfile
 from app.models.workspace_invitation import WorkspaceInvitation
 from app.models.workspace_member import WorkspaceMember
 from app.security.session import issue_session
@@ -69,6 +71,7 @@ class World:
             "issue_id": str(self.victim_issue_id),
             "connection_id": str(self.victim_connection_id),
             "member_user_id": str(self.victim_user_id),
+            "item_id": "robots_txt",
         }
 
 
@@ -89,6 +92,11 @@ CASES: dict[tuple[str, str], Body] = {
     ("POST", "/websites/{website_id}/gtm/headless"): None,
     ("POST", "/websites/{website_id}/advisor/brief"): None,
     ("POST", "/websites/{website_id}/redetect"): {},
+    ("GET", "/websites/{website_id}/measurement-plan"): None,
+    ("POST", "/websites/{website_id}/measurement-plan/refresh"): None,
+    ("PATCH", "/websites/{website_id}/measurement-plan/profile"): {"uses_google_ads": True},
+    ("PATCH", "/websites/{website_id}/measurement-plan/items/{item_id}"): {"dismissed": True},
+    ("POST", "/websites/{website_id}/measurement-plan/gtm-container"): {"pack": "starter"},
     ("POST", "/websites/{website_id}/link-resource"): lambda w: {
         "google_connection_id": str(w.attacker_connection_id),
         "resource_type": "ga4_property",
@@ -310,6 +318,8 @@ async def test_a_stranger_cannot_reach_or_alter_another_workspace(
     )
     links = await db_session.scalar(select(func.count()).select_from(WebsiteGoogleLink))
     assert invitations == 0 and members == 1 and links == 0
+    assert await db_session.scalar(select(func.count()).select_from(WebsiteProfile)) == 0
+    assert await db_session.scalar(select(func.count()).select_from(MeasurementItemStatus)) == 0
 
 
 async def test_the_real_owner_reaches_the_seeded_routes(
