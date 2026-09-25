@@ -34,6 +34,10 @@ _SUBSTRING_KEYS = (
 _DROPPED_REQUEST_KEYS = ("query_string", "cookies", "headers", "data")
 # Une URL http(s) suivie de sa chaîne de requête, jusqu'au premier espace ou guillemet.
 _URL_QUERY = re.compile(r"(https?://[^\s?'\"<>)\]]*)\?[^\s'\"<>)\]]*")
+# Les liens d'invitation portent un jeton porteur DANS le chemin (`/invitations/<jeton>`,
+# `/invitations/<jeton>/accept`) : il peut se retrouver dans une ligne de log, un
+# breadcrumb ou un nom de transaction brut.
+_INVITATION_PATH = re.compile(r"(/invitations/)[^/\s?#'\"<>)\]]+")
 
 
 # Chaîne de requête et fragment d'URL tels que les posent les intégrations httpx/stdlib
@@ -50,8 +54,9 @@ def _is_sensitive(key: str) -> bool:
     )
 
 
-def _mask_url_queries(text: str) -> str:
-    return _URL_QUERY.sub(rf"\1?{_FILTERED}", text)
+def _mask_text(text: str) -> str:
+    masked = _URL_QUERY.sub(rf"\1?{_FILTERED}", text)
+    return _INVITATION_PATH.sub(rf"\1{_FILTERED}", masked)
 
 
 def _redact(value: Any) -> Any:
@@ -63,19 +68,19 @@ def _redact(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_redact(item) for item in value]
     if isinstance(value, str):
-        return _mask_url_queries(value)
+        return _mask_text(value)
     return value
 
 
 def _scrub_texts(event: dict[str, Any]) -> None:
     """Masque les chaînes de requête d'URL dans les messages et valeurs d'exception."""
     if isinstance(event.get("message"), str):
-        event["message"] = _mask_url_queries(event["message"])
+        event["message"] = _mask_text(event["message"])
     logentry = event.get("logentry")
     if isinstance(logentry, dict):
         for key in ("message", "formatted"):
             if isinstance(logentry.get(key), str):
-                logentry[key] = _mask_url_queries(logentry[key])
+                logentry[key] = _mask_text(logentry[key])
         if "params" in logentry:  # arguments de `logger.error("... %s", url)`
             logentry["params"] = _redact(logentry["params"])
     exception = event.get("exception")
@@ -83,7 +88,7 @@ def _scrub_texts(event: dict[str, Any]) -> None:
     if isinstance(values, list):
         for item in values:
             if isinstance(item, dict) and isinstance(item.get("value"), str):
-                item["value"] = _mask_url_queries(item["value"])
+                item["value"] = _mask_text(item["value"])
 
 
 def _scrub_spans(event: dict[str, Any]) -> None:
@@ -97,7 +102,7 @@ def _scrub_spans(event: dict[str, Any]) -> None:
         if "data" in span:
             span["data"] = _redact(span["data"])
         if isinstance(span.get("description"), str):
-            span["description"] = _mask_url_queries(span["description"])
+            span["description"] = _mask_text(span["description"])
 
 
 def scrub_event(event: dict[str, Any], hint: dict[str, Any]) -> dict[str, Any] | None:
@@ -108,11 +113,14 @@ def scrub_event(event: dict[str, Any], hint: dict[str, Any]) -> dict[str, Any] |
             request.pop(key, None)
         url = request.get("url")
         if isinstance(url, str):
+            # Chemin supprimé : il peut contenir un jeton (`/invitations/<jeton>/accept`).
             parts = urlsplit(url)
-            request["url"] = urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+            request["url"] = urlunsplit((parts.scheme, parts.netloc, "", "", ""))
     for section in ("extra", "contexts", "tags", "breadcrumbs"):
         if section in event:
             event[section] = _redact(event[section])
+    if isinstance(event.get("transaction"), str):  # chemin brut si aucune route ne correspond
+        event["transaction"] = _mask_text(event["transaction"])
     _scrub_texts(event)
     _scrub_spans(event)
     return event

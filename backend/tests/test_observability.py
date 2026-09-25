@@ -34,7 +34,7 @@ def test_scrub_event_drops_request_payloads_and_secrets() -> None:
     request = cleaned["request"]
     assert "query_string" not in request and "cookies" not in request
     assert "headers" not in request and "data" not in request
-    assert "code=abc" not in request["url"] and request["url"].endswith("/callback")
+    assert request["url"] == "https://api.example.com"  # ni requête ni chemin
     assert cleaned["extra"]["refresh_token"] == "[Filtered]"
     assert cleaned["extra"]["access_token"] == "[Filtered]"
     assert cleaned["extra"]["code"] == "[Filtered]"
@@ -186,3 +186,24 @@ def test_init_configures_a_private_client(monkeypatch: pytest.MonkeyPatch) -> No
     assert captured["include_local_variables"] is False
     assert captured["before_send"] is scrub_event
     assert captured["before_send_transaction"] is scrub_transaction
+
+
+def test_scrub_event_drops_bearer_tokens_carried_in_the_url_path() -> None:
+    event = {
+        "request": {
+            "url": "https://x/api/v1/workspaces/invitations/SECRETTOKEN/accept?a=b",
+        },
+        "transaction": "/api/v1/workspaces/invitations/SECRETTOKEN/accept",
+        "message": 'POST /api/v1/workspaces/invitations/SECRETTOKEN HTTP/1.1" 200',
+        "breadcrumbs": {
+            "values": [{"message": "GET /api/v1/workspaces/invitations/SECRETTOKEN/accept"}]
+        },
+    }
+    cleaned = scrub_event(event, {})
+    assert cleaned is not None
+    assert "SECRETTOKEN" not in repr(cleaned)
+    assert cleaned["request"]["url"] == "https://x"
+    # Le nom de transaction sous forme de gabarit de route reste lisible.
+    templated = scrub_event({"transaction": "/api/v1/workspaces/invitations/{token}/accept"}, {})
+    assert templated is not None
+    assert templated["transaction"].endswith("/accept")
