@@ -49,7 +49,7 @@ echo "== 1/5 Verification du fichier d'environnement"
 PY="$ROOT/backend/.venv/Scripts/python.exe"
 [ -x "$PY" ] || PY="$ROOT/backend/.venv/bin/python"
 [ -x "$PY" ] || { echo "venv backend introuvable (uv sync dans backend/)" >&2; exit 2; }
-( cd "$ROOT/backend" && "$PY" -m app.tools.check_env "$ENV_FILE" )
+( cd "$ROOT/backend" && "$PY" -m app.tools.check_env "$ENV_FILE" --expect "$ENVIRONMENT_NAME" )
 
 echo "== 2/5 Construction de l'image $IMAGE"
 run gcloud builds submit "$ROOT/backend" --tag "$IMAGE" --project "$PROJECT" --region "$REGION"

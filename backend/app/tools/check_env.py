@@ -1,6 +1,10 @@
 """Vérifie un fichier d'environnement de déploiement AVANT de le pousser sur Cloud Run.
 
-    python -m app.tools.check_env deploy/env.production.yaml
+    python -m app.tools.check_env deploy/env.production.yaml [--expect production]
+
+`--expect ENV` refuse un fichier dont ENVIRONMENT (défaut `local` s'il est absent) diffère de
+la cible du déploiement : sans cela, un fichier sans ENVIRONMENT passe toutes les règles de
+production sans qu'aucune ne s'applique.
 
 Le fichier remplace l'ensemble des variables du service : un fichier incomplet ou
 dangereux (mock activé, secret court…) doit être refusé ici, pas en production.
@@ -19,17 +23,21 @@ from pydantic import ValidationError
 from pydantic_core import ErrorDetails
 
 from app.config import Settings
+from app.security.token_crypto import TokenCryptoConfigError, load_token_cipher
 
 _JSON_KEYS = {"token_enc_keys", "cors_origins"}
 _CLOUD_RUN_MANAGED = {"PORT", "K_SERVICE", "K_REVISION", "K_CONFIGURATION"}
+_ENVIRONMENTS = ("local", "staging", "production")
 
 
-def validate_env(mapping: dict[str, str]) -> list[str]:
+def validate_env(mapping: dict[str, str], *, expect: str | None = None) -> list[str]:
     """Liste de problèmes (vide si la configuration est valide).
 
     Les messages ne contiennent JAMAIS de valeur du fichier (secrets) : uniquement
-    des noms de variables et des messages de validation.
+    des noms de variables et des messages de validation. `expect` : environnement cible
+    du déploiement, que le fichier doit déclarer.
     """
+    problems = _check_expected_environment(mapping, expect) if expect else []
     try:
         values: dict[str, object] = {}
         for key, raw in mapping.items():
@@ -39,15 +47,49 @@ def validate_env(mapping: dict[str, str]) -> list[str]:
             values[name] = json.loads(raw) if name in _JSON_KEYS else raw
         # On isole le processus de l'environnement réel : seul le fichier compte.
         with mock.patch.dict(os.environ, {}, clear=True):
-            Settings(_env_file=None, **values)  # type: ignore[arg-type]
+            settings = Settings(_env_file=None, **values)  # type: ignore[arg-type]
     except ValidationError as exc:
         # Jamais str(exc) : il contient `input_value=` (extrait des valeurs brutes,
         # donc des secrets). On ne garde que le nom du champ et le message.
-        return [_describe(error) for error in exc.errors(include_input=False, include_url=False)]
+        return [
+            *problems,
+            *(_describe(e) for e in exc.errors(include_input=False, include_url=False)),
+        ]
     except json.JSONDecodeError as exc:
         # Ne cite que la position, jamais le contenu.
-        return [f"une variable JSON (TOKEN_ENC_KEYS, CORS_ORIGINS) est illisible : {exc.msg}"]
-    return []
+        return [
+            *problems,
+            f"une variable JSON (TOKEN_ENC_KEYS, CORS_ORIGINS) est illisible : {exc.msg}",
+        ]
+    # Settings ne valide pas le contenu des clés : l'API, elle, les charge à chaque requête
+    # (deps.py) et répondrait 500 partout. Les messages ne citent que des numéros de version
+    # et des longueurs, jamais le matériel de clé.
+    try:
+        load_token_cipher(settings)
+    except TokenCryptoConfigError as exc:
+        problems.append(f"TOKEN_ENC_KEYS / TOKEN_ENC_ACTIVE_VERSION : {exc}")
+    return problems
+
+
+def _check_expected_environment(mapping: dict[str, str], expect: str) -> list[str]:
+    declared = next((v for k, v in mapping.items() if k.upper() == "ENVIRONMENT"), None)
+    if declared == expect:
+        return []
+    # Les noms d'environnement ne sont pas des secrets ; une valeur inattendue est tout de
+    # même signalée par Settings (Literal), on ne la recopie donc pas ici.
+    found = "absente (défaut : local)" if declared is None else "différente"
+    return [f"ENVIRONMENT : {expect!r} attendu pour cette cible, variable {found}"]
+
+
+def check_string_values(data: dict[object, object]) -> list[str]:
+    """`gcloud --env-vars-file` n'accepte que des chaînes : `true`, `42` ou `null` non
+    quotés dans le YAML sont refusés (ou pire, convertis en « None »). On nomme la clé,
+    jamais la valeur."""
+    return [
+        f"{key} : la valeur doit être une chaîne entre guillemets (type {type(value).__name__})"
+        for key, value in data.items()
+        if not isinstance(value, str)
+    ]
 
 
 def _describe(error: ErrorDetails) -> str:
@@ -57,18 +99,30 @@ def _describe(error: ErrorDetails) -> str:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 2:
-        print("usage: python -m app.tools.check_env FICHIER.yaml", file=sys.stderr)
+    usage = "usage: python -m app.tools.check_env FICHIER.yaml [--expect local|staging|production]"
+    args = argv[1:]
+    expect: str | None = None
+    if len(args) == 3 and args[1] == "--expect":
+        expect = args[2]
+        args = args[:1]
+    if len(args) != 1 or (expect is not None and expect not in _ENVIRONMENTS):
+        print(usage, file=sys.stderr)
         return 2
+    path = args[0]
 
-    data = yaml.safe_load(Path(argv[1]).read_text(encoding="utf-8")) or {}
-    problems = validate_env({str(k): str(v) for k, v in data.items()})
+    data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict):
+        print("Fichier d'environnement invalide : un mapping CLE: \"valeur\" est attendu", file=sys.stderr)
+        return 1
+    problems = check_string_values(data)
+    if not problems:
+        problems = validate_env({str(k): v for k, v in data.items()}, expect=expect)
     if problems:
         print("Fichier d'environnement invalide :", file=sys.stderr)
         for problem in problems:
             print(f"  - {problem}", file=sys.stderr)
         return 1
-    print(f"{argv[1]} : OK ({len(data)} variables)")
+    print(f"{path} : OK ({len(data)} variables)")
     return 0
 
 
