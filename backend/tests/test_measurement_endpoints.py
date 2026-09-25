@@ -9,9 +9,11 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.api.deps import (
+    get_google_client,
     get_gtm_headless_verifier,
     get_measurement_reader_factory,
     get_page_fetcher,
+    get_stream_hosts_fetcher,
 )
 from app.api.v1.endpoints import measurement as measurement_endpoints
 from app.config import get_settings
@@ -24,11 +26,21 @@ from app.models.website_profile import WebsiteProfile
 from app.models.workspace import Workspace
 from app.models.workspace_member import WorkspaceMember
 from app.security.session import issue_session
+from app.security.token_crypto import load_token_cipher
+from app.services.connections import upsert_google_connection
+from app.services.google_oauth.base import (
+    DiscoveredResources,
+    Ga4Property,
+    GoogleTokenResponse,
+    GoogleUserInfo,
+    GscSite,
+)
 from app.services.gtm_headless import GtmHeadlessResult
 from app.services.measurement.google_reader import GoogleReadError
 from app.services.measurement.service import lock_site
 from app.services.page_fetch import PageSnapshot
 from tests.conftest import owner_workspace_id
+from tests.measurement_fakes import FakeOAuth, fake_stream_hosts
 
 _HTML = """<html><head><script>(function(w,d,s,l,i){})(window,document,'script','dataLayer','GTM-AAAA111');
 </script><script src="https://www.googletagmanager.com/gtm.js?id=GTM-AAAA111"></script></head>
@@ -573,3 +585,55 @@ async def test_item_patch_waits_for_a_refresh_holding_the_site_lock(engine) -> N
             await cleanup.execute(delete(Workspace).where(Workspace.id == workspace_id))
             await cleanup.execute(delete(User).where(User.id == user_id))
             await cleanup.commit()
+
+
+async def test_google_autolink_endpoint_links_and_returns_the_plan(
+    authed_client: tuple[AsyncClient, User], db_session: AsyncSession, measurement_overrides
+) -> None:
+    client, user = authed_client
+    site = await _site(db_session, user, "exemple.fr")
+    await upsert_google_connection(
+        db_session,
+        workspace_id=site.workspace_id,
+        userinfo=GoogleUserInfo(sub="g-endpoint", email="endpoint@gmail.com"),
+        token=GoogleTokenResponse(
+            access_token="a", expires_in=3600, scopes=("openid",), refresh_token="r"
+        ),
+        cipher=load_token_cipher(get_settings()),
+    )
+    resources = DiscoveredResources(
+        ga4_properties=(Ga4Property("properties/1", "Exemple", "accounts/1", "Compte"),),
+        gsc_sites=(GscSite("sc-domain:exemple.fr", "siteOwner"),),
+    )
+    app.dependency_overrides[get_google_client] = lambda: FakeOAuth(resources)
+    app.dependency_overrides[get_stream_hosts_fetcher] = lambda: fake_stream_hosts(
+        {"properties/1": {"exemple.fr"}}
+    )
+    try:
+        resp = await client.post(_url(site, "/google-autolink"))
+    finally:
+        app.dependency_overrides.pop(get_google_client, None)
+        app.dependency_overrides.pop(get_stream_hosts_fetcher, None)
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ga4"] == {
+        "status": "linked",
+        "resource_id": "properties/1",
+        "candidates": [],
+    }
+    assert body["gsc"]["status"] == "linked"
+    assert body["plan"]["ga4_connected"] is True and body["plan"]["gsc_linked"] is True
+    assert body["plan"]["google_connection"] == "active"
+
+
+async def test_google_autolink_without_connection_is_skipped(
+    authed_client: tuple[AsyncClient, User], db_session: AsyncSession, measurement_overrides
+) -> None:
+    client, user = authed_client
+    site = await _site(db_session, user, "sans-connexion.test")
+    resp = await client.post(_url(site, "/google-autolink"))
+    assert resp.status_code == 200
+    assert resp.json()["ga4"]["status"] == "skipped"
+    assert resp.json()["gsc"]["status"] == "skipped"
+    assert resp.json()["plan"]["google_connection"] == "none"

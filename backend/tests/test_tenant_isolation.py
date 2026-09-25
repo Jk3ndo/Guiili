@@ -14,9 +14,11 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
+    get_google_client,
     get_gtm_headless_verifier,
     get_measurement_reader_factory,
     get_page_fetcher,
+    get_stream_hosts_fetcher,
 )
 from app.config import get_settings
 from app.main import app
@@ -41,10 +43,11 @@ from app.models.workspace_member import WorkspaceMember
 from app.security.session import issue_session
 from app.security.token_crypto import load_token_cipher
 from app.services.connections import upsert_google_connection
-from app.services.google_oauth.base import GoogleTokenResponse, GoogleUserInfo
+from app.services.google_oauth.base import DiscoveredResources, GoogleTokenResponse, GoogleUserInfo
 from app.services.gtm_headless import GtmHeadlessResult
 from app.services.measurement.google_reader import GoogleReadError
 from tests.conftest import owner_workspace_id
+from tests.measurement_fakes import FakeOAuth, fake_stream_hosts
 
 TENANT_PARAMS = ("{website_id}", "{workspace_id}", "{thread_id}", "{issue_id}", "{connection_id}")
 VICTIM_DOMAIN = "victime-secrete.test"
@@ -102,6 +105,7 @@ CASES: dict[tuple[str, str], Body] = {
     ("PATCH", "/websites/{website_id}/measurement-plan/profile"): {"uses_google_ads": True},
     ("PATCH", "/websites/{website_id}/measurement-plan/items/{item_id}"): {"dismissed": True},
     ("POST", "/websites/{website_id}/measurement-plan/gtm-container"): {"pack": "starter"},
+    ("POST", "/websites/{website_id}/measurement-plan/google-autolink"): None,
     ("POST", "/websites/{website_id}/link-resource"): lambda w: {
         "google_connection_id": str(w.attacker_connection_id),
         "resource_type": "ga4_property",
@@ -183,11 +187,17 @@ async def _no_real_browser() -> AsyncGenerator[None, None]:
     app.dependency_overrides[get_gtm_headless_verifier] = lambda: _fake_headless_verify
     app.dependency_overrides[get_page_fetcher] = lambda: _fake_page_fetcher
     app.dependency_overrides[get_measurement_reader_factory] = lambda: _fake_reader_factory
+    app.dependency_overrides[get_google_client] = lambda: FakeOAuth(
+        DiscoveredResources(ga4_properties=(), gsc_sites=())
+    )
+    app.dependency_overrides[get_stream_hosts_fetcher] = lambda: fake_stream_hosts({})
     yield
     for dependency in (
         get_gtm_headless_verifier,
         get_page_fetcher,
         get_measurement_reader_factory,
+        get_google_client,
+        get_stream_hosts_fetcher,
     ):
         app.dependency_overrides.pop(dependency, None)
 

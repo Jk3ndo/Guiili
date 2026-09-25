@@ -13,11 +13,14 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.deps import (
     CurrentUserDep,
+    GoogleClientDep,
     GtmHeadlessVerifierDep,
     PageFetcherDep,
     ReaderFactoryDep,
     SessionDep,
     SettingsDep,
+    StreamHostsFetcherDep,
+    TokenCipherDep,
 )
 from app.api.rate_limit import limit_by_user
 from app.models.enums import StackKind
@@ -25,6 +28,7 @@ from app.models.measurement_item_status import MeasurementItemStatus
 from app.models.website_profile import WebsiteProfile
 from app.security.rate_limit import enforce
 from app.services.gtm_generator import build_selected_container, requires_site_code
+from app.services.measurement.autolink import LinkOutcome, autolink_website
 from app.services.measurement.catalog import ITEMS_BY_ID, starter_pack
 from app.services.measurement.google_reader import GoogleReadError
 from app.services.measurement.service import (
@@ -119,6 +123,26 @@ class PlanOut(BaseModel):
     # Date du dernier passage du navigateur : l'interface s'en sert pour la fraîcheur
     # de la preuve « en conditions réelles ».
     headless_checked_at: datetime | None = None
+
+
+class LinkOutcomeOut(BaseModel):
+    status: Literal["linked", "already_linked", "ambiguous", "none", "skipped"]
+    resource_id: str | None
+    candidates: list[str]
+
+
+class AutolinkOut(BaseModel):
+    ga4: LinkOutcomeOut
+    gsc: LinkOutcomeOut
+    plan: PlanOut
+
+
+def _outcome_out(outcome: LinkOutcome) -> LinkOutcomeOut:
+    return LinkOutcomeOut(
+        status=outcome.status,  # type: ignore[arg-type]
+        resource_id=outcome.resource_id,
+        candidates=list(outcome.candidates),
+    )
 
 
 # ---- schémas d'entrée --------------------------------------------------------
@@ -388,6 +412,32 @@ async def patch_measurement_item(
         )
     await session.commit()
     return PlanOut(**await build_plan_view(session, site))
+
+
+@router.post(
+    "/websites/{website_id}/measurement-plan/google-autolink",
+    response_model=AutolinkOut,
+    dependencies=[limit_by_user("measurement_autolink", limit=10, window=60)],
+)
+async def autolink_google(
+    website_id: UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+    oauth: GoogleClientDep,
+    cipher: TokenCipherDep,
+    stream_hosts: StreamHostsFetcherDep,
+) -> AutolinkOut:
+    # Tout membre du workspace, comme `link-resource` (l'auto-liaison ne fait que ce que
+    # ce dernier permet déjà, et seulement quand le choix est unique).
+    site = await owned_website(session, website_id=website_id, user_id=user.id)
+    result = await autolink_website(
+        session, site, oauth=oauth, cipher=cipher, stream_hosts=stream_hosts
+    )
+    await session.commit()
+    view = await build_plan_view(session, site)
+    return AutolinkOut(
+        ga4=_outcome_out(result.ga4), gsc=_outcome_out(result.gsc), plan=PlanOut(**view)
+    )
 
 
 @router.post(
