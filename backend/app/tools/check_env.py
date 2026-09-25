@@ -16,6 +16,7 @@ from unittest import mock
 
 import yaml
 from pydantic import ValidationError
+from pydantic_core import ErrorDetails
 
 from app.config import Settings
 
@@ -24,20 +25,35 @@ _CLOUD_RUN_MANAGED = {"PORT", "K_SERVICE", "K_REVISION", "K_CONFIGURATION"}
 
 
 def validate_env(mapping: dict[str, str]) -> list[str]:
-    """Liste de problèmes (vide si la configuration est valide)."""
-    values: dict[str, object] = {}
-    for key, raw in mapping.items():
-        if key in _CLOUD_RUN_MANAGED:
-            continue
-        name = key.lower()
-        values[name] = json.loads(raw) if name in _JSON_KEYS else raw
+    """Liste de problèmes (vide si la configuration est valide).
+
+    Les messages ne contiennent JAMAIS de valeur du fichier (secrets) : uniquement
+    des noms de variables et des messages de validation.
+    """
     try:
+        values: dict[str, object] = {}
+        for key, raw in mapping.items():
+            if key in _CLOUD_RUN_MANAGED:
+                continue
+            name = key.lower()
+            values[name] = json.loads(raw) if name in _JSON_KEYS else raw
         # On isole le processus de l'environnement réel : seul le fichier compte.
         with mock.patch.dict(os.environ, {}, clear=True):
             Settings(_env_file=None, **values)  # type: ignore[arg-type]
-    except (ValidationError, ValueError, json.JSONDecodeError) as exc:
-        return [line.strip() for line in str(exc).splitlines() if line.strip()]
+    except ValidationError as exc:
+        # Jamais str(exc) : il contient `input_value=` (extrait des valeurs brutes,
+        # donc des secrets). On ne garde que le nom du champ et le message.
+        return [_describe(error) for error in exc.errors(include_input=False, include_url=False)]
+    except json.JSONDecodeError as exc:
+        # Ne cite que la position, jamais le contenu.
+        return [f"une variable JSON (TOKEN_ENC_KEYS, CORS_ORIGINS) est illisible : {exc.msg}"]
     return []
+
+
+def _describe(error: ErrorDetails) -> str:
+    where = ".".join(str(part).upper() for part in error["loc"])
+    message = error["msg"]
+    return f"{where} : {message}" if where else message
 
 
 def main(argv: list[str]) -> int:

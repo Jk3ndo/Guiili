@@ -10,9 +10,15 @@
 # scripts/export-service-env.sh), depot Artifact Registry `cloud-run-source-deploy`.
 set -euo pipefail
 
-ENVIRONMENT_NAME="${1:?usage: deploy-backend.sh <staging|production> [--dry-run]}"
+USAGE="usage: deploy-backend.sh <staging|production> [--dry-run]"
+ENVIRONMENT_NAME="${1:?$USAGE}"
 DRY_RUN=""
-[ "${2:-}" = "--dry-run" ] && DRY_RUN=1
+if [ "$#" -gt 2 ]; then echo "$USAGE" >&2; exit 2; fi
+case "${2:-}" in
+  "") ;;
+  --dry-run) DRY_RUN=1 ;;
+  *) echo "option inconnue : ${2} (seul --dry-run est accepte)" >&2; echo "$USAGE" >&2; exit 2 ;;
+esac
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT="${GCP_PROJECT:-guiili}"

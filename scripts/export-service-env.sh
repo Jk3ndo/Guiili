@@ -6,6 +6,7 @@
 #
 #   ./scripts/export-service-env.sh production
 set -euo pipefail
+umask 077
 
 ENVIRONMENT_NAME="${1:?usage: export-service-env.sh <staging|production>}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -24,6 +25,8 @@ if [ -e "$OUT" ]; then
   exit 1
 fi
 mkdir -p "$ROOT/deploy"
+TMP="$(mktemp "$ROOT/deploy/.env-export.XXXXXX")"
+trap 'rm -f "$TMP"' EXIT
 
 gcloud run services describe "$SERVICE" --region "$REGION" --project "$PROJECT" \
   --format=json | python -c '
@@ -40,7 +43,8 @@ for item in env:
         print("# ATTENTION : " + name + " vient d un secret Cloud Run, a renseigner a la main", file=sys.stderr)
         continue
     print(name + ": " + json.dumps(item["value"]))
-' > "$OUT"
+' > "$TMP"
+mv "$TMP" "$OUT"
 
 chmod 600 "$OUT" 2>/dev/null || true
 echo "Ecrit : $OUT (contient des secrets, ne pas committer)."

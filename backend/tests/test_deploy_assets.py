@@ -42,7 +42,9 @@ def test_scripts_have_valid_bash_syntax(script: str) -> None:
     path = ROOT / "scripts" / script
     assert path.exists()
     # Chemin absolu : sous Windows, `bash` seul se résout vers le shim WSL de System32.
-    result = subprocess.run([str(BASH), "-n", str(path)], capture_output=True, text=True, check=False)
+    result = subprocess.run(
+        [str(BASH), "-n", str(path)], capture_output=True, text=True, check=False
+    )
     assert result.returncode == 0, result.stderr
 
 
@@ -86,3 +88,83 @@ def test_validate_env_ignores_the_process_environment(monkeypatch: pytest.Monkey
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://leak/leak")
     incomplete = {k: v for k, v in _VALID.items() if k != "DATABASE_URL"}
     assert validate_env(incomplete) != []
+
+
+@pytest.mark.parametrize(
+    ("mutation", "fragment"),
+    [
+        ({"AUDIT_PROBE_MOCK": "true"}, "AUDIT_PROBE_MOCK"),
+        ({"ADVISOR_MOCK": "true"}, "ADVISOR_MOCK"),
+        ({"FRONTEND_BASE_URL": "http://app.example.com"}, "FRONTEND_BASE_URL"),
+    ],
+)
+def test_validate_env_enforces_production_only_rules(mutation: dict, fragment: str) -> None:
+    problems = validate_env({**_VALID, **mutation})
+    assert any(fragment in p for p in problems)
+
+
+_SECRET = "s3cr3t-" + "k" * 41  # 48 caractères : valide, mais à ne jamais divulguer
+_DB_PASSWORD = "hunter2-db-password"
+_SECRET_MAPPING = {
+    **_VALID,
+    "APP_SECRET_KEY": _SECRET,
+    "DATABASE_URL": f"postgresql+asyncpg://u:{_DB_PASSWORD}@h/db",
+}
+
+
+@pytest.mark.parametrize(
+    "mapping",
+    [
+        # champ obligatoire manquant (DATABASE_URL absent, secrets présents)
+        {k: v for k, v in _SECRET_MAPPING.items() if k != "DATABASE_URL"},
+        # valeur dangereuse (mock activé) alors que les secrets sont présents
+        {**_SECRET_MAPPING, "GOOGLE_OAUTH_MOCK": "true"},
+        # secret trop court : sa valeur ne doit pas être citée
+        {**_SECRET_MAPPING, "APP_SECRET_KEY": "court-mais-secret"},
+    ],
+    ids=["champ-manquant", "valeur-dangereuse", "secret-court"],
+)
+def test_validate_env_never_leaks_secret_values(mapping: dict) -> None:
+    problems = validate_env(mapping)
+    assert problems
+    text = "\n".join(problems)
+    for value in (_SECRET, _DB_PASSWORD, "court-mais-secret", "secret", "input_value"):
+        assert value not in text
+    assert "errors.pydantic.dev" not in text
+
+
+def test_validate_env_reports_malformed_json_without_echoing_it() -> None:
+    problems = validate_env({**_SECRET_MAPPING, "TOKEN_ENC_KEYS": "{pas-du-json-" + _SECRET})
+    assert problems
+    assert _SECRET not in "\n".join(problems)
+
+
+@pytest.mark.skipif(BASH is None, reason="bash indisponible")
+@pytest.mark.parametrize(
+    "args", [["production", "--dryrun"], ["production", "-n"], ["staging", "--dry_run"]]
+)
+def test_deploy_script_rejects_unknown_option_before_any_action(args: list[str]) -> None:
+    result = subprocess.run(
+        [str(BASH), str(ROOT / "scripts" / "deploy-backend.sh"), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+        # PATH vide de gcloud : si le garde-fou échouait, on ne toucherait à rien.
+        env={"PATH": str(Path(str(BASH)).parent)},
+    )
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "usage" in result.stderr.lower()
+    assert "== 1/5" not in result.stdout
+
+
+@pytest.mark.skipif(BASH is None, reason="bash indisponible")
+def test_deploy_script_rejects_extra_arguments() -> None:
+    result = subprocess.run(
+        [str(BASH), str(ROOT / "scripts" / "deploy-backend.sh"), "staging", "--dry-run", "x"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={"PATH": str(Path(str(BASH)).parent)},
+    )
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "== 1/5" not in result.stdout
