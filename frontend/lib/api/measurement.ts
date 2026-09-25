@@ -114,7 +114,9 @@ export interface MeasurementContainerDto {
 }
 
 /** Exactement un des deux : le pack de démarrage OU une sélection explicite. */
-export type ContainerSelection = { pack: "starter" } | { item_ids: string[] };
+export type ContainerSelection =
+  | { pack: "starter"; item_ids?: never }
+  | { item_ids: string[]; pack?: never };
 
 export type LinkStatus =
   | "linked"
@@ -149,14 +151,20 @@ export const STALE_AFTER_MS = 5 * 60 * 1000;
 
 export function isStale(lastCheckedAt: string | null, now: number = Date.now()): boolean {
   if (lastCheckedAt === null) return true;
-  return now - new Date(lastCheckedAt).getTime() > STALE_AFTER_MS;
+  const checkedAt = new Date(lastCheckedAt).getTime();
+  // Date illisible : on ne sait pas si c'est frais, donc à revérifier.
+  if (Number.isNaN(checkedAt)) return true;
+  return now - checkedAt > STALE_AFTER_MS;
 }
 
 export function fetchMeasurementPlan(websiteId: string): Promise<MeasurementPlanDto> {
   return apiGet<MeasurementPlanDto>(base(websiteId));
 }
 
-/** Le mode « en conditions réelles » lance un vrai navigateur : délai long. */
+/** Délai client du mode « en conditions réelles » (vrai navigateur), au-delà des 90 s par défaut. */
+export const HEADLESS_TIMEOUT_MS = 180_000;
+
+/** Le mode « en conditions réelles » lance un vrai navigateur : délai client de 3 minutes. */
 export function refreshMeasurementPlan(
   websiteId: string,
   headless = false,
@@ -164,6 +172,7 @@ export function refreshMeasurementPlan(
   return apiPostSlow<MeasurementPlanDto>(
     `${base(websiteId)}/refresh?headless=${headless ? "true" : "false"}`,
     undefined,
+    headless ? HEADLESS_TIMEOUT_MS : undefined,
   );
 }
 
@@ -211,6 +220,13 @@ export function describeMeasurementError(error: unknown): string {
     if (error.status === 429) return "Trop de demandes, réessaie dans un instant.";
     if (error.status === 403) return "Action réservée au propriétaire du workspace.";
     if (error.status === 0) return "Le service est injoignable ou trop lent, réessaie.";
+    // FastAPI renvoie un `detail` en liste pour un 422 : `client.ts` ne garde alors que le
+    // statut brut en anglais.
+    if (error.status === 422) return "Valeur refusée : vérifie le format saisi.";
+    if (error.status >= 500) {
+      return "Le service a rencontré une erreur, réessaie dans un instant.";
+    }
+    // 400, 401, 404... : le `detail` est un texte français du backend.
     return error.message;
   }
   return "Une erreur inattendue est survenue, réessaie.";
