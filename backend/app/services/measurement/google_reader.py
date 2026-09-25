@@ -39,14 +39,27 @@ class GoogleReader(Protocol):
     async def sitemaps_count(self) -> int: ...
 
 
+def _items(payload: Any, key: str) -> list[Any]:
+    """Liste `key` d'une réponse 200 ; absente => vide, forme inattendue => `api_error`.
+
+    Une réponse dont la forme n'est pas celle attendue n'est jamais lue comme
+    « aucun élément » : ce serait un faux succès.
+    """
+    if not isinstance(payload, dict):
+        raise GoogleReadError("api_error")
+    value = payload.get(key, [])
+    if not isinstance(value, list):
+        raise GoogleReadError("api_error")
+    return value
+
+
 def parse_event_stats(payload: Any) -> dict[str, dict[str, float]]:
-    rows = payload.get("rows", []) if isinstance(payload, dict) else []
     stats: dict[str, dict[str, float]] = {}
-    for row in rows:
+    for row in _items(payload, "rows"):
         if not isinstance(row, dict):
-            continue
-        dims = row.get("dimensionValues") or []
-        metrics = row.get("metricValues") or []
+            raise GoogleReadError("api_error")
+        dims = _items(row, "dimensionValues")
+        metrics = _items(row, "metricValues")
         if not dims or not isinstance(dims[0], dict):
             continue
         name = dims[0].get("value")
@@ -58,6 +71,23 @@ def parse_event_stats(payload: Any) -> dict[str, dict[str, float]]:
             "value": _metric(metrics, 2),
         }
     return stats
+
+
+def _web_streams(payload: Any) -> list[dict[str, Any]]:
+    """Données (`webStreamData`) des flux web d'une réponse `dataStreams`."""
+    streams: list[dict[str, Any]] = []
+    for stream in _items(payload, "dataStreams"):
+        if not isinstance(stream, dict):
+            raise GoogleReadError("api_error")
+        if stream.get("type") != "WEB_DATA_STREAM":
+            continue
+        web = stream.get("webStreamData")
+        if web is None:
+            continue
+        if not isinstance(web, dict):
+            raise GoogleReadError("api_error")
+        streams.append(web)
+    return streams
 
 
 def _raise_for_status(response: httpx.Response) -> None:
@@ -146,24 +176,22 @@ class HttpGoogleReader:
     async def key_events(self) -> list[dict[str, Any]]:
         token, pid = self._ga4()
         payload = await self._request("GET", _ADMIN.format(pid=pid) + "/keyEvents", token)
-        events = payload.get("keyEvents", []) if isinstance(payload, dict) else []
-        return [event for event in events if isinstance(event, dict)]
+        return [event for event in _items(payload, "keyEvents") if isinstance(event, dict)]
 
     async def ads_links_count(self) -> int:
         token, pid = self._ga4()
         payload = await self._request("GET", _ADMIN.format(pid=pid) + "/googleAdsLinks", token)
-        links = payload.get("googleAdsLinks", []) if isinstance(payload, dict) else []
-        return len(links)
+        return len(_items(payload, "googleAdsLinks"))
 
-    async def measurement_id(self) -> str | None:
+    async def web_streams(self) -> list[dict[str, Any]]:
+        """`webStreamData` de chaque flux web de la propriété GA4 liée."""
         token, pid = self._ga4()
         payload = await self._request("GET", _ADMIN.format(pid=pid) + "/dataStreams", token)
-        streams = payload.get("dataStreams", []) if isinstance(payload, dict) else []
-        for stream in streams:
-            if not isinstance(stream, dict) or stream.get("type") != "WEB_DATA_STREAM":
-                continue
-            web = stream.get("webStreamData") or {}
-            measurement_id = web.get("measurementId") if isinstance(web, dict) else None
+        return _web_streams(payload)
+
+    async def measurement_id(self) -> str | None:
+        for web in await self.web_streams():
+            measurement_id = web.get("measurementId")
             if isinstance(measurement_id, str) and measurement_id:
                 return measurement_id
         return None
@@ -172,8 +200,7 @@ class HttpGoogleReader:
         token, site = self._gsc()
         url = _SITEMAPS.format(site=quote(site, safe=""))
         payload = await self._request("GET", url, token)
-        sitemaps = payload.get("sitemap", []) if isinstance(payload, dict) else []
-        return len(sitemaps)
+        return len(_items(payload, "sitemap"))
 
 
 async def web_stream_hosts(
@@ -188,15 +215,9 @@ async def web_stream_hosts(
         gsc_state="not_linked",
         client=client,
     )
-    pid = _property_number(property_id)
-    payload = await reader._request("GET", _ADMIN.format(pid=pid) + "/dataStreams", token)
-    streams = payload.get("dataStreams", []) if isinstance(payload, dict) else []
     hosts: set[str] = set()
-    for stream in streams:
-        if not isinstance(stream, dict) or stream.get("type") != "WEB_DATA_STREAM":
-            continue
-        web = stream.get("webStreamData") or {}
-        uri = web.get("defaultUri") if isinstance(web, dict) else None
+    for web in await reader.web_streams():
+        uri = web.get("defaultUri")
         if isinstance(uri, str) and uri:
             host = urlsplit(uri if "//" in uri else f"//{uri}").hostname
             if host:

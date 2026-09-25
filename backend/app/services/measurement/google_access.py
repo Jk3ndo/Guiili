@@ -35,7 +35,7 @@ async def access_token_for(
             token = response.access_token
         except InvalidGrantError:
             connection.status = ConnectionStatus.NEEDS_REAUTH
-        except (GoogleOAuthError, TokenCryptoError):
+        except (GoogleOAuthError, TokenCryptoError, httpx.HTTPError):
             token = None
     cache[connection.id] = token
     return token
