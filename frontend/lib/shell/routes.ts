@@ -1,4 +1,5 @@
 import {
+  ClipboardCheck,
   FileCode2,
   Gauge,
   LayoutDashboard,
@@ -23,6 +24,12 @@ export const NAV_ROUTES: AppRoute[] = [
     label: "Vue d'ensemble",
     crumb: "Vue d'ensemble",
     icon: LayoutDashboard,
+  },
+  {
+    href: "/plan",
+    label: "Plan de mesure",
+    crumb: "Plan de mesure",
+    icon: ClipboardCheck,
   },
   {
     href: "/audit",
