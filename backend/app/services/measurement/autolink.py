@@ -5,10 +5,10 @@ jamais une liaison existante (c'est le choix de l'utilisateur)."""
 
 from __future__ import annotations
 
-import re
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
+from urllib.parse import urlsplit
 from uuid import UUID
 
 import httpx
@@ -29,14 +29,47 @@ StreamHostsFetcher = Callable[[str, str], Awaitable[set[str]]]
 MAX_PROPERTIES = 20
 
 
+LinkStatus = Literal["linked", "already_linked", "ambiguous", "none", "skipped", "incomplete"]
+
+# Libellés français par (statut, raison) ; la raison précise « pourquoi » quand le statut
+# seul ne suffit pas. Le code décide, l'interface ne fait qu'afficher ce texte.
+MESSAGES: dict[tuple[str, str | None], str] = {
+    ("linked", None): "Liaison faite automatiquement.",
+    ("already_linked", None): "Déjà lié : votre choix est conservé.",
+    ("ambiguous", None): "Plusieurs correspondances : choisissez celle à lier.",
+    ("ambiguous", "incomplete"): (
+        "Vérification incomplète : rien n'a été lié. Réessayez, ou choisissez à la main."
+    ),
+    ("none", None): "Aucune correspondance pour ce domaine dans le compte connecté.",
+    ("none", "unverified"): (
+        "Le site n'apparaît que comme propriété non validée dans Search Console : "
+        "validez-le, ou liez-le à la main."
+    ),
+    ("none", "path_only"): (
+        "Seul un préfixe de chemin (sous-dossier) existe dans Search Console : "
+        "ce n'est pas le site entier, rien n'a été lié."
+    ),
+    ("skipped", None): "Aucune connexion Google utilisable : reconnectez votre compte.",
+    ("incomplete", None): (
+        "Vérification incomplète : réessayez, ou liez à la main."
+    ),
+}
+
+
+def outcome_message(outcome: LinkOutcome) -> str:
+    return MESSAGES.get((outcome.status, outcome.reason)) or MESSAGES.get(
+        (outcome.status, None), ""
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class LinkOutcome:
-    # linked | already_linked | ambiguous | none | skipped
-    status: str
+    status: LinkStatus
     resource_id: str | None = None
     display_name: str | None = None
     connection_id: Any | None = None
     candidates: tuple[str, ...] = ()
+    reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,11 +78,23 @@ class AutolinkResult:
     gsc: LinkOutcome
 
 
-def _raw_host(value: str) -> str:
+def _split(value: str):
     text = value.strip().lower().removeprefix("sc-domain:")
-    text = re.sub(r"^[a-z][a-z0-9+.-]*://", "", text)
-    text = re.split(r"[/?#]", text, maxsplit=1)[0]
-    return text.split(":", 1)[0]
+    try:
+        return urlsplit(text if "//" in text else f"//{text}")
+    except ValueError:
+        return None
+
+
+def _raw_host(value: str) -> str:
+    parts = _split(value)
+    return (parts.hostname or "") if parts else ""
+
+
+def _is_whole_site(resource_id: str) -> bool:
+    """Propriété couvrant tout le site : domaine, ou préfixe d'URL à la racine."""
+    parts = _split(resource_id)
+    return parts is not None and parts.path in ("", "/")
 
 
 def normalize_host(value: str) -> str:
@@ -67,14 +112,22 @@ def _gsc_kind(resource_id: str) -> int:
 
 
 def pick_gsc_site(domain: str, sites: Sequence[tuple[Any, str]]) -> LinkOutcome:
-    """`sites` : couples `(id de connexion, identifiant du site Search Console)`."""
+    """`sites` : couples `(id de connexion, identifiant du site Search Console)`, déjà
+    limités aux propriétés validées. Seules les propriétés couvrant tout le site comptent."""
     wanted = normalize_host(domain)
     matches: dict[str, Any] = {}
+    path_only = False
     for connection_id, resource_id in sites:
-        if normalize_host(resource_id) == wanted:
+        if normalize_host(resource_id) != wanted:
+            continue
+        if _is_whole_site(resource_id):
             matches.setdefault(resource_id, connection_id)
+        else:
+            # Un préfixe `/blog/` n'est pas « le site » : lier des données partielles
+            # serait un lien deviné.
+            path_only = True
     if not matches:
-        return LinkOutcome("none")
+        return LinkOutcome("none", reason="path_only" if path_only else None)
     best = min(_gsc_kind(resource_id) for resource_id in matches)
     top = [resource_id for resource_id in matches if _gsc_kind(resource_id) == best]
     if len(top) > 1:
@@ -117,6 +170,37 @@ def _add_link(
             resource_display_name=outcome.display_name,
         )
     )
+
+
+_VERIFIED_PERMISSIONS = frozenset({"siteOwner", "siteFullUser", "siteRestrictedUser"})
+
+
+def _gsc_outcome(
+    domain: str, verified: Sequence[tuple[Any, str]], unverified: Sequence[str]
+) -> LinkOutcome:
+    outcome = pick_gsc_site(domain, verified)
+    if outcome.status == "none" and outcome.reason is None:
+        wanted = normalize_host(domain)
+        if any(normalize_host(resource_id) == wanted for resource_id in unverified):
+            # Une propriété non validée ne prouve pas que le compte contrôle le site.
+            return LinkOutcome("none", reason="unverified")
+    return outcome
+
+
+def _settle(outcome: LinkOutcome, complete: bool) -> LinkOutcome:
+    """Jamais de lien sur une vue partielle : le choix « unique » n'est fiable que si tout
+    a pu être lu. Sinon les correspondances trouvées deviennent des candidats à choisir."""
+    if complete:
+        return outcome
+    if outcome.status == "linked" and outcome.resource_id is not None:
+        return LinkOutcome(
+            "ambiguous", candidates=(outcome.resource_id,), reason="incomplete"
+        )
+    if outcome.status == "ambiguous":
+        return LinkOutcome("ambiguous", candidates=outcome.candidates, reason="incomplete")
+    if outcome.status == "none":
+        return LinkOutcome("incomplete")
+    return outcome
 
 
 async def _existing_links(
@@ -173,30 +257,46 @@ async def autolink_website(
 
     cache: dict[UUID, str | None] = {}
     gsc_sites: list[tuple[Any, str]] = []
-    ga4_candidates: list[tuple[Any, str, str | None, set[str]]] = []
+    unverified: list[str] = []
+    # Propriétés vues, dédupliquées par identifiant AVANT le plafond : la même propriété
+    # vue par deux connexions ne compte qu'une fois. On garde le premier jeton qui la voit.
+    seen: dict[str, tuple[Any, str, str | None]] = {}
     usable = False
-    inspected = 0
+    complete = True  # faux dès qu'une lecture a échoué ou que le plafond coupe la liste
     for connection in connections:
         token = await access_token_for(connection, oauth, cipher, cache)
         if token is None:
+            complete = False
             continue
         try:
             discovered = await oauth.discover_resources(access_token=token)
         except (GoogleOAuthError, httpx.HTTPError):
+            complete = False
             continue
         usable = True
         if gsc is None:
-            gsc_sites += [(connection.id, site.resource_id) for site in discovered.gsc_sites]
+            for site in discovered.gsc_sites:
+                if site.permission_level in _VERIFIED_PERMISSIONS:
+                    gsc_sites.append((connection.id, site.resource_id))
+                else:
+                    unverified.append(site.resource_id)
         if ga4 is None:
             for prop in discovered.ga4_properties:
-                if inspected >= max_properties:
-                    break
-                inspected += 1
-                try:
-                    hosts = await stream_hosts(token, prop.resource_id)
-                except GoogleReadError:
-                    continue  # propriété illisible : ignorée, pas fatale
-                ga4_candidates.append((connection.id, prop.resource_id, prop.display_name, hosts))
+                seen.setdefault(prop.resource_id, (connection.id, token, prop.display_name))
+
+    ga4_candidates: list[tuple[Any, str, str | None, set[str]]] = []
+    ga4_complete = complete
+    if ga4 is None:
+        items = list(seen.items())
+        if len(items) > max_properties:
+            ga4_complete = False  # des propriétés n'ont pas été inspectées
+        for resource_id, (connection_id, token, name) in items[:max_properties]:
+            try:
+                hosts = await stream_hosts(token, resource_id)
+            except GoogleReadError:
+                ga4_complete = False  # propriété illisible : ignorée, mais on le sait
+                continue
+            ga4_candidates.append((connection_id, resource_id, name, hosts))
 
     # Verrou par site, pris après les appels Google (on ne le tient pas pendant le réseau),
     # puis relecture : une liaison posée entre-temps (autre onglet, choix manuel) prime.
@@ -208,13 +308,21 @@ async def autolink_website(
     if ga4_link:
         ga4 = _already(ga4_link)
     elif ga4 is None:
-        ga4 = pick_ga4_property(website.domain, ga4_candidates) if usable else LinkOutcome("skipped")
+        ga4 = (
+            _settle(pick_ga4_property(website.domain, ga4_candidates), ga4_complete)
+            if usable
+            else LinkOutcome("skipped")
+        )
         if ga4.status == "linked":
             _add_link(session, website.id, ResourceType.GA4_PROPERTY, ga4)
     if gsc_link:
         gsc = _already(gsc_link)
     elif gsc is None:
-        gsc = pick_gsc_site(website.domain, gsc_sites) if usable else LinkOutcome("skipped")
+        gsc = (
+            _settle(_gsc_outcome(website.domain, gsc_sites, unverified), complete)
+            if usable
+            else LinkOutcome("skipped")
+        )
         if gsc.status == "linked":
             _add_link(session, website.id, ResourceType.GSC_SITE, gsc)
     await session.flush()

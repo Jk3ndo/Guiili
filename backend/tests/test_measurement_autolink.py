@@ -8,6 +8,7 @@ from app.models.website import Website
 from app.models.website_google_link import WebsiteGoogleLink
 from app.security.token_crypto import load_token_cipher
 from app.services.connections import upsert_google_connection
+from app.services.google_oauth import GoogleOAuthError
 from app.services.google_oauth.base import (
     DiscoveredResources,
     Ga4Property,
@@ -18,6 +19,7 @@ from app.services.google_oauth.base import (
 from app.services.measurement.autolink import (
     autolink_website,
     normalize_host,
+    outcome_message,
     pick_ga4_property,
     pick_gsc_site,
 )
@@ -92,6 +94,38 @@ def test_ga4_unique_match_ambiguous_and_none() -> None:
     assert set(ambiguous.candidates) == {"properties/1", "properties/3"}
 
     assert pick_ga4_property("exemple.fr", [("c1", "properties/9", "Z", {"z.fr"})]).status == "none"
+
+
+@pytest.mark.parametrize(
+    "other",
+    ["blog.exemple.fr", "exemple.fr.evil.org", "notexemple.fr", "https://exemple.fr:x@evil.org/"],
+)
+def test_lookalike_hosts_never_match(other: str) -> None:
+    assert pick_gsc_site("exemple.fr", [("c1", other), ("c1", f"https://{other}/")]).status == "none"
+    assert pick_ga4_property("exemple.fr", [("c1", "properties/1", "X", {other})]).status == "none"
+
+
+def test_domain_property_of_the_parent_is_not_the_subdomain_site() -> None:
+    assert pick_gsc_site("blog.exemple.fr", [("c1", "sc-domain:exemple.fr")]).status == "none"
+    assert (
+        pick_ga4_property("blog.exemple.fr", [("c1", "properties/1", "X", {"exemple.fr"})]).status
+        == "none"
+    )
+
+
+def test_userinfo_trick_is_read_as_the_real_host() -> None:
+    assert normalize_host("https://exemple.fr:x@evil.org/") == "evil.org"
+
+
+def test_gsc_root_prefix_beats_sub_path_prefixes() -> None:
+    sites = [("c1", "https://exemple.fr/blog/"), ("c1", "https://exemple.fr/")]
+    out = pick_gsc_site("exemple.fr", sites)
+    assert out.status == "linked" and out.resource_id == "https://exemple.fr/"
+
+
+def test_gsc_sub_path_prefix_alone_is_not_the_site() -> None:
+    out = pick_gsc_site("exemple.fr", [("c1", "https://exemple.fr/blog/")])
+    assert out.status == "none" and out.reason == "path_only"
 
 
 # ---- service ------------------------------------------------------------------------
@@ -206,22 +240,122 @@ async def test_ambiguous_ga4_choice_is_left_to_the_user(
     assert ResourceType.GA4_PROPERTY not in await _links(db_session, site)
 
 
-async def test_unreadable_property_is_skipped_not_fatal(
+async def test_unreadable_property_does_not_block_reads_but_prevents_linking(
     db_session: AsyncSession, make_user
 ) -> None:
+    # Écart volontaire au brief : une propriété illisible n'est pas fatale (les autres sont
+    # lues, Search Console est liée), mais elle a pu être la vraie correspondance : on ne
+    # lie donc pas GA4 sur une vue partielle, on propose la correspondance trouvée.
     site, _ = await _world(db_session, make_user, "al-fail")
     hosts = fake_stream_hosts(_HOSTS, failing=frozenset({"properties/2"}))
     result = await _run(db_session, site, hosts=hosts)
-    assert result.ga4.status == "linked" and result.ga4.resource_id == "properties/1"
+    assert hosts.calls == ["properties/1", "properties/2"]
+    assert result.ga4.status == "ambiguous" and result.ga4.reason == "incomplete"
+    assert result.ga4.candidates == ("properties/1",)
+    assert ResourceType.GA4_PROPERTY not in await _links(db_session, site)
+    assert result.gsc.status == "linked"
 
 
-async def test_only_the_first_properties_are_inspected(
+async def test_unreadable_property_and_no_match_is_incomplete_not_none(
+    db_session: AsyncSession, make_user
+) -> None:
+    site, _ = await _world(db_session, make_user, "al-fail2")
+    hosts = fake_stream_hosts({"properties/1": {"z.fr"}}, failing=frozenset({"properties/2"}))
+    result = await _run(db_session, site, hosts=hosts)
+    assert result.ga4.status == "incomplete" and result.ga4.candidates == ()
+    assert "incomplète" in outcome_message(result.ga4)
+
+
+async def test_only_the_first_properties_are_inspected_and_the_cap_blocks_linking(
     db_session: AsyncSession, make_user
 ) -> None:
     site, _ = await _world(db_session, make_user, "al-cap")
     hosts = fake_stream_hosts(_HOSTS)
-    await _run(db_session, site, hosts=hosts, max_properties=1)
+    result = await _run(db_session, site, hosts=hosts, max_properties=1)
     assert hosts.calls == ["properties/1"]
+    # Une propriété n'a pas été inspectée : la correspondance trouvée n'est pas « unique ».
+    assert result.ga4.status == "ambiguous" and result.ga4.reason == "incomplete"
+    assert ResourceType.GA4_PROPERTY not in await _links(db_session, site)
+
+
+async def test_cap_reached_without_match_is_incomplete(
+    db_session: AsyncSession, make_user
+) -> None:
+    site, _ = await _world(db_session, make_user, "al-cap2", domain="inconnu.fr")
+    result = await _run(db_session, site, hosts=fake_stream_hosts(_HOSTS), max_properties=1)
+    assert result.ga4.status == "incomplete"
+
+
+async def _second_connection(db_session: AsyncSession, site: Website, sub: str):
+    return await upsert_google_connection(
+        db_session,
+        workspace_id=site.workspace_id,
+        userinfo=GoogleUserInfo(sub=f"g-{sub}", email=f"{sub}@gmail.com"),
+        token=GoogleTokenResponse(
+            access_token="a", expires_in=3600, scopes=("openid",), refresh_token=f"r-{sub}"
+        ),
+        cipher=load_token_cipher(get_settings()),
+    )
+
+
+async def test_same_property_seen_by_two_connections_counts_once(
+    db_session: AsyncSession, make_user
+) -> None:
+    site, _ = await _world(db_session, make_user, "al-dup")
+    await _second_connection(db_session, site, "al-dup-2")
+    hosts = fake_stream_hosts(_HOSTS)
+    # Deux propriétés distinctes, vues deux fois : plafond de 2 respecté, vue complète.
+    result = await _run(db_session, site, hosts=hosts, max_properties=2)
+    assert sorted(hosts.calls) == ["properties/1", "properties/2"]
+    assert result.ga4.status == "linked" and result.ga4.resource_id == "properties/1"
+
+
+class _FailingSecondDiscovery(FakeOAuth):
+    async def discover_resources(self, *, access_token: str):
+        if self.discover_calls >= 1:
+            self.discover_calls += 1
+            raise GoogleOAuthError("indisponible")
+        return await super().discover_resources(access_token=access_token)
+
+
+async def test_a_failing_connection_makes_the_view_incomplete(
+    db_session: AsyncSession, make_user
+) -> None:
+    site, _ = await _world(db_session, make_user, "al-conn")
+    await _second_connection(db_session, site, "al-conn-2")
+    result = await _run(db_session, site, oauth=_FailingSecondDiscovery(_RESOURCES))
+    assert result.ga4.status == "ambiguous" and result.ga4.reason == "incomplete"
+    assert result.gsc.status == "ambiguous" and result.gsc.reason == "incomplete"
+    assert await _links(db_session, site) == {}
+
+
+async def test_unverified_domain_property_yields_to_a_verified_prefix(
+    db_session: AsyncSession, make_user
+) -> None:
+    site, _ = await _world(db_session, make_user, "al-unv")
+    resources = DiscoveredResources(
+        ga4_properties=(),
+        gsc_sites=(
+            GscSite("sc-domain:exemple.fr", "siteUnverifiedUser"),
+            GscSite("https://exemple.fr/", "siteFullUser"),
+        ),
+    )
+    result = await _run(db_session, site, oauth=FakeOAuth(resources))
+    assert result.gsc.status == "linked" and result.gsc.resource_id == "https://exemple.fr/"
+
+
+async def test_only_an_unverified_property_links_nothing_and_says_why(
+    db_session: AsyncSession, make_user
+) -> None:
+    site, _ = await _world(db_session, make_user, "al-unv2")
+    resources = DiscoveredResources(
+        ga4_properties=(),
+        gsc_sites=(GscSite("sc-domain:exemple.fr", "siteUnverifiedUser"),),
+    )
+    result = await _run(db_session, site, oauth=FakeOAuth(resources))
+    assert result.gsc.status == "none" and result.gsc.reason == "unverified"
+    assert "non validée" in outcome_message(result.gsc)
+    assert ResourceType.GSC_SITE not in await _links(db_session, site)
 
 
 async def test_no_usable_connection_means_skipped(db_session: AsyncSession, make_user) -> None:

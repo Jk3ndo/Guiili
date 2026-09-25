@@ -617,12 +617,13 @@ async def test_google_autolink_endpoint_links_and_returns_the_plan(
 
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["ga4"] == {
-        "status": "linked",
-        "resource_id": "properties/1",
-        "candidates": [],
-    }
+    assert body["ga4"]["status"] == "linked"
+    assert body["ga4"]["resource_id"] == "properties/1"
+    assert body["ga4"]["candidates"] == []
+    assert body["ga4"]["message"]
     assert body["gsc"]["status"] == "linked"
+    # Le plan renvoyé a été rafraîchi après la liaison (états enregistrés).
+    assert body["plan"]["last_checked_at"] is not None
     assert body["plan"]["ga4_connected"] is True and body["plan"]["gsc_linked"] is True
     assert body["plan"]["google_connection"] == "active"
 
@@ -632,7 +633,14 @@ async def test_google_autolink_without_connection_is_skipped(
 ) -> None:
     client, user = authed_client
     site = await _site(db_session, user, "sans-connexion.test")
-    resp = await client.post(_url(site, "/google-autolink"))
+    empty = DiscoveredResources(ga4_properties=(), gsc_sites=())
+    app.dependency_overrides[get_google_client] = lambda: FakeOAuth(empty)
+    app.dependency_overrides[get_stream_hosts_fetcher] = lambda: fake_stream_hosts({})
+    try:
+        resp = await client.post(_url(site, "/google-autolink"))
+    finally:
+        app.dependency_overrides.pop(get_google_client, None)
+        app.dependency_overrides.pop(get_stream_hosts_fetcher, None)
     assert resp.status_code == 200
     assert resp.json()["ga4"]["status"] == "skipped"
     assert resp.json()["gsc"]["status"] == "skipped"

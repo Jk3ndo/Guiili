@@ -28,7 +28,12 @@ from app.models.measurement_item_status import MeasurementItemStatus
 from app.models.website_profile import WebsiteProfile
 from app.security.rate_limit import enforce
 from app.services.gtm_generator import build_selected_container, requires_site_code
-from app.services.measurement.autolink import LinkOutcome, autolink_website
+from app.services.measurement.autolink import (
+    LinkOutcome,
+    LinkStatus,
+    autolink_website,
+    outcome_message,
+)
 from app.services.measurement.catalog import ITEMS_BY_ID, starter_pack
 from app.services.measurement.google_reader import GoogleReadError
 from app.services.measurement.service import (
@@ -126,9 +131,11 @@ class PlanOut(BaseModel):
 
 
 class LinkOutcomeOut(BaseModel):
-    status: Literal["linked", "already_linked", "ambiguous", "none", "skipped"]
+    status: LinkStatus
     resource_id: str | None
     candidates: list[str]
+    # Texte français décidé par le code (jamais par un modèle) : pourquoi ce résultat.
+    message: str
 
 
 class AutolinkOut(BaseModel):
@@ -139,9 +146,10 @@ class AutolinkOut(BaseModel):
 
 def _outcome_out(outcome: LinkOutcome) -> LinkOutcomeOut:
     return LinkOutcomeOut(
-        status=outcome.status,  # type: ignore[arg-type]
+        status=outcome.status,
         resource_id=outcome.resource_id,
         candidates=list(outcome.candidates),
+        message=outcome_message(outcome),
     )
 
 
@@ -423,17 +431,53 @@ async def autolink_google(
     website_id: UUID,
     user: CurrentUserDep,
     session: SessionDep,
+    settings: SettingsDep,
     oauth: GoogleClientDep,
     cipher: TokenCipherDep,
     stream_hosts: StreamHostsFetcherDep,
+    fetcher: PageFetcherDep,
+    reader_factory: ReaderFactoryDep,
+    verifier: GtmHeadlessVerifierDep,
 ) -> AutolinkOut:
     # Tout membre du workspace, comme `link-resource` (l'auto-liaison ne fait que ce que
-    # ce dernier permet déjà, et seulement quand le choix est unique).
+    # ce dernier permet déjà, et seulement quand le choix est unique et complet).
     site = await owned_website(session, website_id=website_id, user_id=user.id)
     result = await autolink_website(
         session, site, oauth=oauth, cipher=cipher, stream_hosts=stream_hosts
     )
     await session.commit()
+    if "linked" in (result.ga4.status, result.gsc.status):
+        # Les états des items dépendent des liaisons : sans nouvelle vérification légère,
+        # le plan renvoyé ignorerait la liaison qui vient d'être faite. Transaction
+        # séparée (la liaison est déjà enregistrée), et comptée dans la limite du
+        # rafraîchissement pour ne pas la contourner : au-delà, on renvoie la vue telle
+        # quelle (le prochain rafraîchissement la remettra d'aplomb).
+        try:
+            enforce(
+                f"measurement_refresh:user:{user.id}",
+                limit=10,
+                window=60,
+                enabled=settings.rate_limit_enabled,
+            )
+            allowed = True
+        except HTTPException:
+            allowed = False  # limite atteinte : liaison conservée, rafraîchissement remis
+        if allowed:
+            try:
+                reader = await reader_factory(session, site)
+                await refresh_plan(
+                    session,
+                    site,
+                    fetcher=fetcher,
+                    reader=reader,
+                    verifier=verifier,
+                    run_headless=False,
+                )
+                await session.commit()
+            except SQLAlchemyError:
+                logger.exception("rafraîchissement après auto-liaison échoué")
+                await session.rollback()
+                await session.refresh(site)
     view = await build_plan_view(session, site)
     return AutolinkOut(
         ga4=_outcome_out(result.ga4), gsc=_outcome_out(result.gsc), plan=PlanOut(**view)
