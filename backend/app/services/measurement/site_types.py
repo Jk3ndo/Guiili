@@ -25,13 +25,18 @@ _WORDS_SAAS = (
     "free trial",
     "créer un compte",
     "creer un compte",
-    "sign up",
+    "sign up free",
     "s'inscrire",
 )
 
 
+_SHOPIFY_MARKERS = ("cdn.shopify.com", "myshopify.com", "shopify.theme", "window.shopify")
+
+
 def _has_href(low: str, *needles: str) -> bool:
-    return any(f'href="{n}' in low or f"href='{n}" in low for n in needles)
+    """Lien dont la valeur commence par le motif, suivi d'une frontière (`/`, `?`, `#`,
+    guillemet fermant) : `/cart` ne correspond pas à `/carte`."""
+    return any(re.search(rf"""href=["']{re.escape(n)}(?=[/?#"'])""", low) for n in needles)
 
 
 def detect_site_types(html: str, stack: StackKind | None = None) -> list[dict[str, Any]]:
@@ -48,7 +53,7 @@ def detect_site_types(html: str, stack: StackKind | None = None) -> list[dict[st
     # Boutique
     if stack == StackKind.WOOCOMMERCE:
         add("ecommerce", 0.6, "stack WooCommerce")
-    if "cdn.shopify.com" in low or "shopify" in low:
+    if any(marker in low for marker in _SHOPIFY_MARKERS):
         add("ecommerce", 0.6, "Shopify détecté")
     if "product" in jsonld:
         add("ecommerce", 0.35, "données structurées Product")

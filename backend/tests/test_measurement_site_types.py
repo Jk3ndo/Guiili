@@ -1,5 +1,9 @@
 from app.models.enums import StackKind
-from app.services.measurement.site_types import detect_site_types, resolve_effective_types
+from app.services.measurement.site_types import (
+    _has_href,
+    detect_site_types,
+    resolve_effective_types,
+)
 
 _SHOP = """
 <html><head><script type="application/ld+json">{"@type": "Product", "name": "T-shirt"}</script>
@@ -70,3 +74,39 @@ def test_resolve_effective_types() -> None:
     assert resolve_effective_types([{"type": "other", "confidence": 0.5, "signals": []}], None) == [
         "other"
     ]
+
+
+def test_shopify_mention_without_technical_marker_is_not_ecommerce() -> None:
+    blog = (
+        "<html><body><article><h1>Migrer vers Shopify</h1>"
+        '<p>Notre agence parle de Shopify.</p></article><a href="/blog">Blog</a></body></html>'
+    )
+    types = _types(blog)
+    assert types[0] != "ecommerce"
+    assert "ecommerce" not in types
+
+
+def test_shopify_technical_markers_are_detected() -> None:
+    for marker in ("shop.myshopify.com/cart.js", "window.Shopify = {}", "Shopify.theme = {}"):
+        assert _types(f"<html><script>{marker}</script></html>")[0] == "ecommerce"
+
+
+def test_newsletter_sign_up_is_not_saas() -> None:
+    html = "<html><body><p>Sign up for our newsletter</p></body></html>"
+    assert "saas" not in _types(html)
+
+
+def test_href_needs_a_boundary_after_the_pattern() -> None:
+    assert not _has_href('<a href="/carte">', "/cart")
+    assert not _has_href('<a href="/cartes-cadeaux">', "/cart")
+    for ok in (
+        'href="/cart"',
+        "href='/cart'",
+        'href="/cart/"',
+        'href="/cart?x=1"',
+        'href="/cart#a"',
+    ):
+        assert _has_href(f"<a {ok}>", "/cart"), ok
+    # Un menu de restaurant (/carte) ne compte pas comme un lien panier.
+    resto = '<html><body><a href="/carte">Notre carte</a><a href="/carte-des-vins">Vins</a></body></html>'
+    assert _types(resto) == ["other"]
