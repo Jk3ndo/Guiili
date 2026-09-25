@@ -12,6 +12,7 @@ from app.api.v1.router import api_router
 from app.config import Settings, get_settings
 from app.db.session import engine, get_session
 from app.logging_config import RequestContextMiddleware, configure_logging
+from app.observability import init_sentry
 
 
 @asynccontextmanager
@@ -23,6 +24,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     configure_logging(settings)
+    init_sentry(settings)
     docs = settings.api_docs_enabled
     application = FastAPI(
         title="Control Center Marketing Agentique",
