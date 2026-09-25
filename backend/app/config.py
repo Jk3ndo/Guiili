@@ -1,18 +1,22 @@
 from functools import lru_cache
+from typing import Literal, Self
 
-from pydantic import SecretStr
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    environment: str = "local"
+    environment: Literal["local", "staging", "production"] = "local"
 
     database_url: str
-    database_url_test: str
-    database_url_migrations_test: str
-    redis_url: str
+    # Bases jetables des tests. Vides et ignorées hors `local` : elles n'ont aucun
+    # sens en déploiement, et une base de test qui pointerait sur la vraie base
+    # serait détruite par `drop_all`.
+    database_url_test: str = ""
+    database_url_migrations_test: str = ""
+    redis_url: str = ""
 
     google_client_id: str = ""
     # SecretStr : masqué dans repr()/logs/traces (affiche '**********').
@@ -52,6 +56,17 @@ class Settings(BaseSettings):
     # Durée de vie d'une transaction OAuth (state + code_verifier) côté serveur.
     oauth_state_ttl_seconds: int = 600
 
+    # --- Exploitation ---
+    # None -> JSON hors local (Cloud Logging), texte lisible en local.
+    log_json: bool | None = None
+    # DSN Sentry ; vide -> suivi d'erreurs désactivé.
+    sentry_dsn: SecretStr = SecretStr("")
+    sentry_traces_sample_rate: float = 0.0
+    # None -> /docs, /redoc et /openapi.json exposés en local uniquement.
+    enable_api_docs: bool | None = None
+    # Limitation de débit des routes sensibles (voir app/api/rate_limit.py).
+    rate_limit_enabled: bool = True
+
     # {version:int -> clé base64 de 32 octets}. pydantic-settings parse le JSON
     # de la variable d'environnement automatiquement pour un type dict ; chaque
     # valeur est enveloppée en SecretStr (jamais en clair dans un repr/log).
@@ -59,6 +74,45 @@ class Settings(BaseSettings):
     token_enc_active_version: int
 
     app_secret_key: SecretStr
+
+    @property
+    def json_logs(self) -> bool:
+        return self.log_json if self.log_json is not None else self.environment != "local"
+
+    @property
+    def api_docs_enabled(self) -> bool:
+        if self.enable_api_docs is not None:
+            return self.enable_api_docs
+        return self.environment == "local"
+
+    @model_validator(mode="after")
+    def _enforce_environment_rules(self) -> Self:
+        if self.environment == "local":
+            return self
+        self.database_url_test = ""
+        self.database_url_migrations_test = ""
+
+        problems: list[str] = []
+        if self.google_oauth_mock:
+            problems.append("GOOGLE_OAUTH_MOCK doit être false (les routes /dev seraient exposées)")
+        secret = self.app_secret_key.get_secret_value()
+        if len(secret) < 32 or secret.upper().startswith("REMPLACER"):
+            problems.append("APP_SECRET_KEY : au moins 32 caractères, valeur réelle")
+        if not self.frontend_base_url.startswith("https://"):
+            problems.append("FRONTEND_BASE_URL doit commencer par https://")
+        if any(not origin.startswith("https://") for origin in self.cors_origins):
+            problems.append("CORS_ORIGINS ne doit contenir que des origines https://")
+        if self.environment == "production":
+            if self.audit_probe_mock:
+                problems.append("AUDIT_PROBE_MOCK doit être false (données factices sinon)")
+            if self.advisor_mock:
+                problems.append("ADVISOR_MOCK doit être false (réponses factices sinon)")
+        if problems:
+            raise ValueError(
+                f"Configuration invalide pour ENVIRONMENT={self.environment} : "
+                + " ; ".join(problems)
+            )
+        return self
 
 
 @lru_cache

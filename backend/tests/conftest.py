@@ -25,11 +25,16 @@ from app.models.user import User
 from app.models.workspace import Workspace
 from app.models.workspace_member import WorkspaceMember
 from app.security.session import issue_session
+from tests.db_safety import assert_safe_test_database
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def engine() -> AsyncGenerator:
-    eng = build_engine(get_settings().database_url_test)
+    settings = get_settings()
+    assert_safe_test_database(
+        "DATABASE_URL_TEST", settings.database_url_test, settings.database_url
+    )
+    eng = build_engine(settings.database_url_test)
     async with eng.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)

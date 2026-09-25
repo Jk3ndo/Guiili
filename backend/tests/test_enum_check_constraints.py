@@ -33,9 +33,13 @@ from app.models.enums import (
     SnapshotSource,
     StackKind,
 )
+from tests.db_safety import assert_safe_test_database
 from tests.test_migrations import _alembic
 
 _MIG_URL = get_settings().database_url_migrations_test
+assert_safe_test_database(
+    "DATABASE_URL_MIGRATIONS_TEST", _MIG_URL, get_settings().database_url
+)
 
 # (table, ck_ constraint name, enum class)
 ENUM_CHECKS = [
