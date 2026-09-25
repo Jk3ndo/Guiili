@@ -296,15 +296,124 @@ def test_unexpected_google_response_is_unverifiable_never_missing_nor_received()
 
 
 def test_every_catalog_item_evaluates_on_empty_facts() -> None:
-    # Filet : aucun `check` du catalogue ne doit manquer au moteur.
+    # Filet : aucun `check` du catalogue ne doit manquer au moteur, et sans aucune
+    # preuve rien n'est « reçu ».
     for item in ITEMS:
         assert evaluate(item, Facts()).state in {
             "missing",
             "unverifiable",
             "not_applicable",
             "on_page",
-            "received",
         }, item.id
+
+
+def test_without_google_proof_nothing_is_received_except_search_console_items() -> None:
+    all_events = " ".join(
+        f'dataLayer.push({{event: "{item.arg}"}});' for item in ITEMS if item.check == "event"
+    )
+    rich = Facts(
+        page_html=f"{all_events} gtag('consent', 'default', {{}}); gtag('config', 'AW-123456789')",
+        gtm=_gtm(ga4_tags=("G-AAAA1111",), consent_platform="cookiebot"),
+        headless=_headless(
+            ga4_ids=("G-AAAA1111",),
+            ads_requests=3,
+            consent_default_seen=True,
+            datalayer_events=("purchase", "generate_lead"),
+        ),
+        ga4_reason="ga4_not_connected",
+        key_events_reason="ga4_not_connected",
+        ads_links_reason="ga4_not_connected",
+        gsc_state="linked",
+        sitemaps_count=2,
+        robots_ok=True,
+        ssl_status="valid",
+        effective_types=("ecommerce", "lead_gen", "saas", "content"),
+        manual_done=frozenset({"ads_auto_tagging"}),
+    )
+    received = {item.id for item in ITEMS if evaluate(item, rich).state == "received"}
+    assert received == {"gsc_property_linked", "gsc_sitemaps"}
+
+
+def test_consent_seen_by_the_browser_is_never_reported_missing() -> None:
+    # gtag.js seul (pas de conteneur GTM analysé) + CMP correct : « consent default » vu
+    # par le navigateur mais `consent_platform` non analysé => pas de conclusion « manquant ».
+    no_gtm = Facts(
+        page_html="<html></html>",
+        gtm=GtmCheck(snippet_form="absent"),
+        headless=_headless(consent_default_seen=True),
+    )
+    outcome = evaluate(ITEMS_BY_ID["consent_mode"], no_gtm)
+    assert outcome.state == "unverifiable" and outcome.reason == "cmp_not_detected"
+    # CMP absent de la liste des signatures connues + default vu.
+    unknown_cmp = Facts(
+        page_html="<html></html>", gtm=_gtm(), headless=_headless(consent_default_seen=True)
+    )
+    outcome = evaluate(ITEMS_BY_ID["consent_mode"], unknown_cmp)
+    assert outcome.state == "unverifiable" and outcome.reason == "cmp_not_detected"
+    # Navigateur exécuté, GTM absent, rien vu : « manquant » sans prétendre qu'aucun CMP n'existe.
+    nothing = Facts(
+        page_html="<html></html>", gtm=GtmCheck(snippet_form="absent"), headless=_headless()
+    )
+    outcome = evaluate(ITEMS_BY_ID["consent_mode"], nothing)
+    assert outcome.state == "missing" and outcome.reason == "consent_default_not_seen"
+
+
+def test_ga4_connected_without_page_views_exposes_a_zero_counter() -> None:
+    outcome = evaluate(
+        ITEMS_BY_ID["ga4_tag"], Facts(gtm=_gtm(ga4_tags=("G-AAAA1111",)), ga4_stats={})
+    )
+    assert outcome.state == "on_page"
+    assert outcome.evidence["page_views_30d"] == 0
+
+
+def test_failed_headless_run_is_no_observation() -> None:
+    failed = GtmHeadlessResult(
+        gtm_js_loaded=False,
+        containers_initialised=(),
+        datalayer_present=False,
+        gtm_events=(),
+        requests_before_consent=False,
+        csp_console_errors=(),
+        findings=(),
+        checked_at=datetime(2026, 9, 24, 12, 0, tzinfo=UTC),
+        error="browser_launch_failed",
+    )
+    assert HeadlessFacts.from_result(failed) is None
+
+
+def test_no_double_without_gtm_says_gtm_is_absent() -> None:
+    outcome = evaluate(ITEMS_BY_ID["no_double_tracking"], Facts(gtm=GtmCheck(snippet_form="absent")))
+    assert outcome.state == "not_applicable" and outcome.reason == "gtm_absent"
+
+
+def test_malformed_key_events_never_crash_nor_claim_a_value() -> None:
+    lead = ("lead_gen",)
+    bad_default = Facts(
+        key_events=[{"eventName": "generate_lead", "defaultValue": "50"}], effective_types=lead
+    )
+    outcome = evaluate(ITEMS_BY_ID["conversion_value"], bad_default)
+    assert outcome.state == "unverifiable" and outcome.reason == "api_error"
+    bad_number = Facts(
+        key_events=[{"eventName": "generate_lead", "defaultValue": {"numericValue": "abc"}}],
+        effective_types=lead,
+    )
+    assert _state("conversion_value", bad_number) == "unverifiable"
+    not_a_dict = Facts(key_events=["generate_lead"], effective_types=lead)  # type: ignore[list-item]
+    assert _state("conversion_value", not_a_dict) == "unverifiable"
+    assert _state("key_events_marked", not_a_dict) == "unverifiable"
+    # Un événement bien formé et valorisé l'emporte sur une entrée cassée.
+    mixed = Facts(
+        key_events=[
+            {"eventName": "generate_lead", "defaultValue": {"numericValue": 50}},
+            {"eventName": "sign_up", "defaultValue": "x"},
+        ],
+        effective_types=lead,
+    )
+    assert _state("conversion_value", mixed) == "received"
+    null_value = Facts(
+        key_events=[{"eventName": "generate_lead", "defaultValue": None}], effective_types=lead
+    )
+    assert _state("conversion_value", null_value) == "missing"
 
 
 def test_headless_facts_roundtrip_and_conversion() -> None:

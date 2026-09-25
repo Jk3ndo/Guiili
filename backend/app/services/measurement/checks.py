@@ -48,7 +48,11 @@ class HeadlessFacts:
     checked_at: str  # ISO 8601
 
     @classmethod
-    def from_result(cls, result: GtmHeadlessResult) -> HeadlessFacts:
+    def from_result(cls, result: GtmHeadlessResult) -> HeadlessFacts | None:
+        """`None` si le navigateur a échoué : `verify_gtm` renvoie alors un résultat aux
+        valeurs par défaut, qui se lirait à tort « GTM non chargé »."""
+        if result.error is not None:
+            return None
         return cls(
             gtm_js_loaded=result.gtm_js_loaded,
             containers=tuple(result.containers_initialised),
@@ -167,7 +171,11 @@ def _ga4_tag(item: MeasurementItem, f: Facts) -> Outcome:
         page_views = f.ga4_stats.get("page_view", {}).get("count", 0.0)
         if page_views > 0:
             return Outcome("received", {**evidence, "page_views_30d": int(page_views)}, None)
-        return Outcome("on_page" if on_page else "missing", evidence, None)
+        # GA4 connecté mais sans page_view : délai de traitement (~48 h) ou mauvaise
+        # propriété liée ; le compteur à 0 permet à l'interface de nuancer.
+        return Outcome(
+            "on_page" if on_page else "missing", {**evidence, "page_views_30d": 0}, None
+        )
     if on_page:
         return Outcome("on_page", evidence, None)
     if f.headless is not None:
@@ -187,7 +195,7 @@ def _no_double(item: MeasurementItem, f: Facts) -> Outcome:
             None,
         )
     if not hardcoded and not has_gtm:
-        return Outcome("not_applicable", {}, "no_tracking_found")
+        return Outcome("not_applicable", {}, "gtm_absent")
     return Outcome("on_page", {}, None)
 
 
@@ -204,9 +212,12 @@ def _consent(item: MeasurementItem, f: Facts) -> Outcome:
     if f.headless is None:
         # Sans navigateur, l'absence de « consent default » dans le HTML ne prouve rien.
         return Outcome("unverifiable", evidence, "headless_not_run")
+    if default_seen:
+        # Consent Mode vu mais aucun CMP reconnu : sans conteneur GTM, `consent_platform`
+        # n'est pas analysé, et la liste des CMP connus est finie. Jamais « manquant ».
+        return Outcome("unverifiable", evidence, "cmp_not_detected")
     # « Non vu » n'est pas « absent » : un CMP à modèle GTM échappe à cette détection.
-    reason = "consent_default_not_seen" if cmp_name else "no_cmp_detected"
-    return Outcome("missing", evidence, reason)
+    return Outcome("missing", evidence, "consent_default_not_seen")
 
 
 def _datalayer(item: MeasurementItem, f: Facts) -> Outcome:
@@ -267,12 +278,32 @@ def _expected_key_events(types: tuple[str, ...]) -> frozenset[str]:
     return frozenset(names)
 
 
+def _valued(entry: dict[str, Any]) -> bool | None:
+    """Vrai/faux si l'événement a une valeur par défaut > 0 ; `None` si la forme est
+    inattendue (l'API Google est censée renvoyer un objet `{numericValue: nombre}`)."""
+    default = entry.get("defaultValue")
+    if default is None:
+        return False
+    if not isinstance(default, dict):
+        return None
+    number = default.get("numericValue", 0)
+    if number is None:
+        return False
+    try:
+        return float(number) > 0
+    except (TypeError, ValueError):
+        return None
+
+
 def _key_events(item: MeasurementItem, f: Facts) -> Outcome:
     if f.key_events is None:
         return _unverifiable(f.key_events_reason or "ga4_not_connected")
-    declared = [e.get("eventName") for e in f.key_events if e.get("eventName")]
+    entries = [e for e in f.key_events if isinstance(e, dict)]
+    declared = [e.get("eventName") for e in entries if e.get("eventName")]
     expected = _expected_key_events(f.effective_types)
     matching = [name for name in declared if name in expected] if expected else declared
+    if not matching and len(entries) != len(f.key_events):
+        return _unverifiable("api_error")
     evidence = {"key_events": declared}
     return Outcome("received" if matching else "missing", evidence, None)
 
@@ -281,13 +312,23 @@ def _key_events_value(item: MeasurementItem, f: Facts) -> Outcome:
     if f.key_events is None:
         return _unverifiable(f.key_events_reason or "ga4_not_connected")
     expected = _expected_key_events(f.effective_types)
-    valued = [
-        e.get("eventName")
-        for e in f.key_events
-        if (not expected or e.get("eventName") in expected)
-        and float((e.get("defaultValue") or {}).get("numericValue", 0) or 0) > 0
-    ]
-    return Outcome("received" if valued else "missing", {"valued_events": valued}, None)
+    valued: list[str] = []
+    malformed = len([e for e in f.key_events if not isinstance(e, dict)])
+    for entry in (e for e in f.key_events if isinstance(e, dict)):
+        name = entry.get("eventName")
+        if expected and name not in expected:
+            continue
+        result = _valued(entry)
+        if result is None:
+            malformed += 1
+        elif result:
+            valued.append(name)
+    if valued:
+        return Outcome("received", {"valued_events": valued}, None)
+    if malformed:
+        # Une réponse de forme inattendue n'est ni « reçue » ni « manquante ».
+        return _unverifiable("api_error")
+    return Outcome("missing", {"valued_events": valued}, None)
 
 
 # ---- publicité ----------------------------------------------------------------
