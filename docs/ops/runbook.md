@@ -422,3 +422,10 @@ Renvoi vers la spec `docs/superpowers/specs/2026-09-25-roadmap-v3-architecture-d
 - export et suppression RGPD d'un workspace ;
 - sécurité au niveau des lignes de Postgres (RLS), évaluée après l'isolation applicative ;
 - limiteur de débit partagé entre instances (aujourd'hui par instance, §8).
+
+## 14. Validation du conteneur GTM du plan de mesure [PROPRIÉTAIRE]
+
+Le conteneur GTM généré par le plan de mesure (« Générer mon pack de démarrage ») n'a
+jamais été importé dans un vrai GTM : ne le propose pas aux utilisateurs avant la
+procédure décrite dans `docs/ops/gtm-container-import-check.md` (fichier d'exemple :
+`docs/ops/gtm-sample-container.json`).
