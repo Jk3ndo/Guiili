@@ -105,7 +105,9 @@ async def test_docs_are_served_locally() -> None:
 _LEAKY_SECRET = "ZZ-secret-value-must-never-appear-" + "q" * 20
 
 
-def test_validation_error_never_echoes_input_values() -> None:
+def test_validation_error_never_echoes_input_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Hermétique : la CI fournit DATABASE_URL par l'environnement, qui comblerait le champ retiré.
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     # Règle de production violée : la valeur (secret) ne doit pas figurer dans str(exc),
     # qui finit dans les traces uvicorn et les logs du Job de migration.
     with pytest.raises(ValidationError) as rule_violation:
