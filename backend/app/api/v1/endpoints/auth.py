@@ -20,7 +20,7 @@ from app.api.rate_limit import limit_by_ip
 from app.models.password_reset_token import PasswordResetToken
 from app.models.user import User
 from app.security.password import hash_password, verify_password
-from app.security.rate_limit import enforce, enforce_not_blocked, limiter
+from app.security.rate_limit import enforce, enforce_not_blocked, identity_limiter
 from app.security.session import issue_session
 from app.services.google_oauth import InvalidGrantError
 from app.services.oauth_state import consume_oauth_state, create_oauth_transaction
@@ -230,7 +230,8 @@ async def login(
         await session.execute(select(User).where(User.email == body.email))
     ).scalar_one_or_none()
     if user is None or user.password_hash is None:
-        limiter.record(email_key)
+        if settings.rate_limit_enabled:
+            identity_limiter.record(email_key)
         detail = (
             "ce compte utilise Google, pas de mot de passe"
             if user is not None
@@ -238,7 +239,8 @@ async def login(
         )
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
     if not verify_password(body.password, user.password_hash):
-        limiter.record(email_key)
+        if settings.rate_limit_enabled:
+            identity_limiter.record(email_key)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="email ou mot de passe incorrect")
     _set_session_cookie(response, user.id, settings)
 

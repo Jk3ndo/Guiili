@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import Depends, Request
 
 from app.api.deps import CurrentUserDep, SettingsDep
-from app.security.rate_limit import client_ip, enforce
+from app.security.rate_limit import client_ip, enforce, ip_limiter
 
 
 def limit_by_ip(name: str, *, limit: int, window: float):
@@ -13,6 +13,7 @@ def limit_by_ip(name: str, *, limit: int, window: float):
             limit=limit,
             window=window,
             enabled=settings.rate_limit_enabled,
+            store=ip_limiter,
         )
 
     return Depends(_dependency)

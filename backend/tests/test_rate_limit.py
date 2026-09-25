@@ -1,6 +1,7 @@
 import pytest
 from fastapi import HTTPException
 
+from app.security import rate_limit
 from app.security.rate_limit import SlidingWindowLimiter, client_ip, enforce
 
 
@@ -91,3 +92,24 @@ def test_client_ip_prefers_the_first_forwarded_address() -> None:
     assert client_ip(_Req({"x-forwarded-for": "203.0.113.5, 10.0.0.1"}, "10.0.0.1")) == "203.0.113.5"
     assert client_ip(_Req({}, "192.0.2.7")) == "192.0.2.7"
     assert client_ip(_Req({}, None)) == "unknown"
+
+
+def test_ip_flood_does_not_reset_email_lockouts(monkeypatch) -> None:
+    monkeypatch.setattr(rate_limit.ip_limiter, "_max_keys", 50)
+    # Verrou par e-mail (10 échecs enregistrés, comme la route de login).
+    for _ in range(10):
+        rate_limit.identity_limiter.record("login_failures:email:victime@example.com")
+    assert rate_limit.identity_limiter.retry_after(
+        "login_failures:email:victime@example.com", limit=10, window=900
+    ) > 0
+    # Inondation d'IP forgées : la saturation du compteur d'IP vide SON stockage seulement.
+    for i in range(500):
+        rate_limit.enforce(
+            f"login:ip:10.0.{i // 250}.{i % 250}", limit=30, window=900, store=rate_limit.ip_limiter
+        )
+    assert len(rate_limit.ip_limiter._hits) <= 51
+    with pytest.raises(HTTPException) as excinfo:
+        rate_limit.enforce_not_blocked(
+            "login_failures:email:victime@example.com", limit=10, window=900
+        )
+    assert excinfo.value.status_code == 429

@@ -2,9 +2,18 @@
 
 Choix assumé : pas de dépendance externe. Avec plusieurs instances Cloud Run la limite
 effective est multipliée par leur nombre ; elle suffit contre la force brute et les
-boucles clientes. `X-Forwarded-For` est pris tel quel (meilleur effort : derrière le
-proxy Vercel, le premier maillon est l'IP annoncée du client et peut être forgé) ; la
-clé « e-mail » sur les routes d'authentification est le frein fiable.
+boucles clientes.
+
+`X-Forwarded-For` est pris tel quel (meilleur effort) : quiconque appelle directement l'URL
+publique `*.run.app` (sans passer par le proxy Vercel) choisit lui-même sa valeur, donc
+l'IP est FORGEABLE et sa limite contournable. Inversement, si Vercel ne relaie pas l'IP du
+vrai client, tous les utilisateurs partagent les IP de sortie de Vercel et les limites par
+IP deviennent une panne d'inscription (voir docs/ops/runbook.md §8). La clé « e-mail » /
+« utilisateur » est le frein fiable.
+
+Deux instances séparées : les compteurs par IP (`ip_limiter`) et ceux par e-mail ou
+utilisateur (`identity_limiter`). Une inondation d'IP forgées qui sature `ip_limiter`
+(purge complète) ne peut ainsi pas effacer les verrous de connexion par e-mail.
 """
 
 from __future__ import annotations
@@ -75,7 +84,13 @@ class SlidingWindowLimiter:
         self._hits.clear()
 
 
-limiter = SlidingWindowLimiter()
+ip_limiter = SlidingWindowLimiter()
+identity_limiter = SlidingWindowLimiter()
+
+
+def reset_all() -> None:
+    ip_limiter.reset()
+    identity_limiter.reset()
 
 
 def _too_many(wait: float) -> HTTPException:
@@ -86,11 +101,18 @@ def _too_many(wait: float) -> HTTPException:
     )
 
 
-def enforce(key: str, *, limit: int, window: float, enabled: bool = True) -> None:
-    """Note et contrôle : lève 429 si la limite est atteinte."""
+def enforce(
+    key: str,
+    *,
+    limit: int,
+    window: float,
+    enabled: bool = True,
+    store: SlidingWindowLimiter = identity_limiter,
+) -> None:
+    """Note et contrôle : lève 429 si la limite est atteinte (`store` : ip_limiter pour les IP)."""
     if not enabled:
         return
-    wait = limiter.check(key, limit=limit, window=window)
+    wait = store.check(key, limit=limit, window=window)
     if wait > 0:
         raise _too_many(wait)
 
@@ -99,7 +121,7 @@ def enforce_not_blocked(key: str, *, limit: int, window: float, enabled: bool = 
     """Contrôle sans noter (l'appelant note lui-même les seuls échecs)."""
     if not enabled:
         return
-    wait = limiter.retry_after(key, limit=limit, window=window)
+    wait = identity_limiter.retry_after(key, limit=limit, window=window)
     if wait > 0:
         raise _too_many(wait)
 

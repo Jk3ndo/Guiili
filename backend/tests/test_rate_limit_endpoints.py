@@ -2,6 +2,7 @@ from httpx import AsyncClient
 
 from app.config import get_settings
 from app.models.user import User
+from app.security.rate_limit import identity_limiter
 
 
 async def _register(client: AsyncClient, email: str) -> int:
@@ -86,3 +87,17 @@ async def test_limits_can_be_disabled_by_setting(
     monkeypatch.setattr(get_settings(), "rate_limit_enabled", False)
     statuses = [await _register(db_client, f"d{i}@example.com") for i in range(12)]
     assert 429 not in statuses
+
+
+async def test_login_failures_are_not_recorded_when_limits_are_disabled(
+    db_client: AsyncClient, monkeypatch
+) -> None:
+    await _register(db_client, "off@example.com")
+    db_client.cookies.clear()
+    monkeypatch.setattr(get_settings(), "rate_limit_enabled", False)
+    for _ in range(12):
+        resp = await db_client.post(
+            "/api/v1/auth/login", json={"email": "off@example.com", "password": "mauvais"}
+        )
+        assert resp.status_code == 400
+    assert not identity_limiter._hits

@@ -25,7 +25,7 @@ from app.main import app
 from app.models.user import User
 from app.models.workspace import Workspace
 from app.models.workspace_member import WorkspaceMember
-from app.security.rate_limit import limiter
+from app.security.rate_limit import reset_all as reset_rate_limiters
 from app.security.session import issue_session
 from tests.db_safety import assert_safe_test_database
 
@@ -33,9 +33,9 @@ from tests.db_safety import assert_safe_test_database
 @pytest.fixture(autouse=True)
 def _reset_rate_limiter() -> Generator[None, None, None]:
     """Le limiteur est global (mémoire du processus) : on le vide entre les tests."""
-    limiter.reset()
+    reset_rate_limiters()
     yield
-    limiter.reset()
+    reset_rate_limiters()
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
