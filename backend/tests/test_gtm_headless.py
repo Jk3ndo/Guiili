@@ -10,6 +10,9 @@ from datetime import UTC, datetime
 from app.services.gtm_headless import (
     GtmHeadlessResult,
     _derive_findings,
+    _ga4_id_from_url,
+    _is_ads_request,
+    _is_ga4_collect,
     _is_gtm_csp_violation,
     headless_result_to_dict,
 )
@@ -137,3 +140,59 @@ def test_headless_result_to_dict_serializes_findings() -> None:
     out = headless_result_to_dict(result)
     assert out["findings"][0]["code"] == "headless_gtm_not_loaded"
     assert out["findings"][0]["severity"] == "high"
+
+
+def test_ga4_collect_detection_and_measurement_id() -> None:
+    url = "https://www.google-analytics.com/g/collect?v=2&tid=G-ABC123XYZ&en=page_view"
+    assert _is_ga4_collect(url)
+    assert _ga4_id_from_url(url) == "G-ABC123XYZ"
+    regional = "https://region1.analytics.google.com/g/collect?v=2&tid=G-ZZZ999"
+    assert _is_ga4_collect(regional)
+    assert _ga4_id_from_url(regional) == "G-ZZZ999"
+
+
+def test_non_collect_requests_are_ignored() -> None:
+    assert not _is_ga4_collect("https://www.googletagmanager.com/gtm.js?id=GTM-AAAA111")
+    assert not _is_ga4_collect("https://www.google-analytics.com/analytics.js")
+    assert _ga4_id_from_url("https://example.com/x") is None
+
+
+def test_ads_request_detection() -> None:
+    assert _is_ads_request("https://www.googleadservices.com/pagead/conversion/123/?label=x")
+    assert _is_ads_request("https://googleads.g.doubleclick.net/pagead/viewthroughconversion/1/")
+    assert not _is_ads_request("https://www.googletagmanager.com/gtag/js?id=G-1")
+
+
+def test_headless_result_dict_exposes_new_fields_with_defaults() -> None:
+    result = GtmHeadlessResult(
+        gtm_js_loaded=True,
+        containers_initialised=("GTM-ABCD",),
+        datalayer_present=True,
+        gtm_events=(),
+        requests_before_consent=True,
+        csp_console_errors=(),
+        findings=(),
+        checked_at=datetime(2026, 9, 24, 12, 0, tzinfo=UTC),
+    )
+    out = headless_result_to_dict(result)
+    assert out["ga4_measurement_ids"] == []
+    assert out["ads_requests"] == 0
+    assert out["consent_default_seen"] is False
+
+    full = GtmHeadlessResult(
+        gtm_js_loaded=True,
+        containers_initialised=("GTM-ABCD",),
+        datalayer_present=True,
+        gtm_events=("page_view",),
+        requests_before_consent=True,
+        csp_console_errors=(),
+        findings=(),
+        checked_at=datetime(2026, 9, 24, 12, 0, tzinfo=UTC),
+        ga4_measurement_ids=("G-ABC123XYZ",),
+        ads_requests=2,
+        consent_default_seen=True,
+    )
+    out = headless_result_to_dict(full)
+    assert out["ga4_measurement_ids"] == ["G-ABC123XYZ"]
+    assert out["ads_requests"] == 2
+    assert out["consent_default_seen"] is True
