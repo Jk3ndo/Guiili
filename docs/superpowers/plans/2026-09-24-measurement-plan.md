@@ -13,16 +13,24 @@ est prouvé.
 **Architecture :** un catalogue déclaratif d'items (en code) + un moteur de
 vérification pur (`Facts` → `Outcome`) alimenté par des collecteurs injectables
 (page HTML, navigateur headless, lecteur Google GA4/Search Console). L'état
-courant est persisté dans deux nouvelles tables (`website_profiles`,
-`measurement_item_statuses`). Une API REST expose le plan ; le frontend ajoute
-une page « Plan de mesure ».
+courant est persisté dans trois nouvelles tables (`website_profiles`,
+`measurement_item_statuses`, et l'historique `measurement_item_events`). Une API REST
+expose le plan, une auto-liaison relie GA4 et Search Console au site sans saisie, et
+le frontend ajoute une page « Plan de mesure » conçue pour la prise en main (trois
+prochaines actions d'abord, le reste replié).
 
 **Stack :** Python 3.12 / FastAPI async / SQLAlchemy 2 (asyncpg) / Alembic /
 httpx / Playwright (existant) ; Next.js 16 / React 19 / Tailwind v4.
 
-**Spec :** `docs/superpowers/specs/2026-09-24-measurement-plan-design.md`
-(feuille de route : `2026-09-24-roadmap-v2.md`). La spec est l'autorité ; ce plan
-en est l'argumentation.
+**Spec :** `docs/superpowers/specs/2026-09-24-measurement-plan-design.md`, ajustée
+par `docs/superpowers/specs/2026-09-25-roadmap-v3-architecture-design.md` (§7 prise en
+main en paliers, §9 ajustements au lot A). La spec est l'autorité ; ce plan en est
+l'argumentation. En cas de conflit entre les deux specs, la v3 (2026-09-25) prévaut.
+
+**Prérequis : le lot 0 est mergé** (`docs/superpowers/plans/2026-09-25-production-foundation.md`).
+Il apporte la limitation de débit (`app/api/rate_limit.py`), la suite d'isolation entre
+clients (`tests/test_tenant_isolation.py`, dont le test d'inventaire échoue tant qu'une
+route portant `{website_id}` n'y est pas déclarée) et la CI.
 
 ## Contraintes globales (valables pour toutes les tâches)
 
@@ -30,9 +38,16 @@ en est l'argumentation.
   seule via les scopes déjà demandés (`analytics.readonly`, `webmasters.readonly`).
 - **Le code décide des statuts, jamais un LLM.**
 - **Jamais « fait » sans preuve.** GA4 non connecté ⇒ jamais l'état `received`.
-- **Additif** : 2 tables, 1 migration ; aucun changement de comportement des
+- **Additif** : 3 tables, 1 migration ; aucun changement de comportement des
   endpoints existants ; les tests existants restent verts sans modification
-  (hors ajout de noms de tables à `EXPECTED_TABLES`).
+  (hors ajout de noms de tables à `EXPECTED_TABLES` et de cas à `CASES` dans
+  `tests/test_tenant_isolation.py`).
+- **Prise en main d'abord** : rien d'obligatoire avant la première valeur. Le type de
+  site détecté s'applique tout de suite, la couche publicité est masquée tant que
+  l'utilisateur ne dit pas faire de la publicité, le plan n'affiche que « les 3
+  prochaines actions » avant le reste.
+- **Chaque nouvelle route** du lot porte une limite de débit (`limit_by_user`) et un cas
+  d'isolation entre clients.
 - **Aucun appel réseau en test.** Le vrai navigateur headless (`verify_gtm`) n'est
   jamais exécuté en test ; il est injecté et remplacé par une fonction factice.
 - **Qualité** : `cd backend && .venv/Scripts/python.exe -m pytest -W error -q` vert,
@@ -75,23 +90,50 @@ en est l'argumentation.
 8. `POST …/gtm-container` renvoie `{container, warnings, filename}` (le frontend
    fabrique le fichier), pas un téléchargement direct.
 
+### Ajustements de la feuille de route v3 (2026-09-25)
+
+Ils prévalent sur les arbitrages ci-dessus en cas de contradiction (notamment le 6).
+
+9. **Historique des statuts :** table `measurement_item_events` ; le service écrit une
+   ligne à chaque changement d'état d'un item (Tâches 1 et 9).
+10. **Couche Ads masquée par défaut :** elle ne s'applique que si `uses_google_ads`
+    vaut `true` (le 6 disait « `false` ⇒ non concernée » ; `null` et `false` le sont
+    désormais tous deux) (Tâches 2 et 9).
+11. **Pack de démarrage :** `starter_pack(types)` dans le catalogue ; `POST …/gtm-container`
+    accepte `pack: "starter"` à la place de `item_ids` (Tâches 2 et 10).
+12. **Prochaines actions :** la vue du plan expose `next_actions` (trois identifiants
+    d'items les plus utiles), et `google_connection` / `gsc_linked` pour orienter la
+    prise en main (Tâche 9).
+13. **Auto-liaison Google :** nouveau service et endpoint qui lient sans saisie la
+    propriété GA4 et le site Search Console correspondant au domaine, seulement quand
+    le choix est unique (Tâche 11, nouvelle).
+14. **Interface en paliers :** bandeau de type non bloquant (plus de carte de
+    confirmation obligatoire), « Pour aller plus loin » replié, réglages Ads
+    conditionnels, pack de démarrage en bouton principal, vérification légère relancée à
+    l'ouverture si la dernière a plus de 5 minutes (Tâches 12 à 14).
+15. Numérotation : la Tâche 11 (auto-liaison) s'insère avant le frontend ; les tâches
+    frontend deviennent 12, 13 et 14, la vérification finale la 15.
+
 ## Structure des fichiers
 
 Backend (nouveaux) :
-- `app/models/website_profile.py`, `app/models/measurement_item_status.py`
+- `app/models/website_profile.py`, `app/models/measurement_item_status.py`,
+  `app/models/measurement_item_event.py`
 - `alembic/versions/8f2a6c41d7b3_measurement_plan.py`
 - `app/services/measurement/` : `__init__.py`, `types.py`, `catalog.py`,
   `site_types.py`, `checks.py`, `fetch.py`, `google_reader.py`,
-  `google_access.py`, `event_snippets.py`, `service.py`
+  `google_access.py`, `autolink.py`, `event_snippets.py`, `service.py`
 - `app/api/v1/endpoints/measurement.py`
 
 Backend (modifiés) : `app/models/__init__.py`, `app/services/gtm_headless.py`,
 `app/services/gtm_generator.py`, `app/api/deps.py`, `app/api/v1/router.py`,
-`tests/test_migrations.py` (ajout de 2 noms à `EXPECTED_TABLES`).
+`tests/test_migrations.py` (ajout de 3 noms à `EXPECTED_TABLES`),
+`tests/test_tenant_isolation.py` (cas d'isolation des nouvelles routes).
 
 Frontend (nouveaux) : `lib/api/measurement.ts`, `lib/api/use-is-owner.ts`,
 `app/(shell)/plan/page.tsx`, `components/plan/` (`plan-view.tsx`,
-`plan-progress.tsx`, `profile-confirm.tsx`, `plan-item-row.tsx`,
+`plan-progress.tsx`, `next-actions.tsx`, `profile-banner.tsx`, `google-step.tsx`,
+`plan-item-row.tsx`,
 `item-drawer.tsx`, `ads-settings.tsx`, `container-builder.tsx`,
 `labels.ts`), `components/overview/plan-progress-card.tsx`.
 Frontend (modifiés) : `lib/shell/routes.ts`, `components/overview/overview-view.tsx`,
@@ -102,8 +144,8 @@ Frontend (modifiés) : `lib/shell/routes.ts`, `components/overview/overview-view
 1 Modèles+migration → 2 Types+catalogue → 3 Détection du type de site →
 4 Extension headless → 5 Lecteur Google → 6 Vérifications (pures) →
 7 Snippets d'événements → 8 Conteneur GTM sur mesure → 9 Service + dépendances →
-10 API → 11 Client frontend → 12 Page Plan de mesure → 13 Carte d'avancement +
-préremplissage du conseiller → 14 Vérification finale.
+10 API → 11 Auto-liaison Google → 12 Client frontend → 13 Page Plan de mesure →
+14 Carte d'avancement + préremplissage du conseiller → 15 Vérification finale.
 
 ---
 
@@ -112,6 +154,7 @@ préremplissage du conseiller → 14 Vérification finale.
 **Fichiers :**
 - Créer : `backend/app/models/website_profile.py`
 - Créer : `backend/app/models/measurement_item_status.py`
+- Créer : `backend/app/models/measurement_item_event.py`
 - Modifier : `backend/app/models/__init__.py`
 - Créer : `backend/alembic/versions/8f2a6c41d7b3_measurement_plan.py`
 - Modifier : `backend/tests/test_migrations.py` (`EXPECTED_TABLES`)
@@ -119,19 +162,21 @@ préremplissage du conseiller → 14 Vérification finale.
 
 **Interfaces :**
 - Produit : `WebsiteProfile` (PK `website_id`), `MeasurementItemStatus` (PK
-  `(website_id, item_id)`), importables depuis `app.models`.
+  `(website_id, item_id)`), `MeasurementItemEvent` (historique des changements d'état,
+  PK `id`, index `(website_id, item_id, at)`), importables depuis `app.models`.
 
 - [ ] **Étape 1 : écrire le test qui échoue**
 
 ```python
 # backend/tests/test_measurement_models.py
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.measurement_item_event import MeasurementItemEvent
 from app.models.measurement_item_status import MeasurementItemStatus
 from app.models.website import Website
 from app.models.website_profile import WebsiteProfile
@@ -224,6 +269,52 @@ async def test_rows_are_deleted_with_the_website(db_session: AsyncSession, make_
 
     assert (await db_session.execute(select(WebsiteProfile))).first() is None
     assert (await db_session.execute(select(MeasurementItemStatus))).first() is None
+
+
+async def test_events_keep_the_state_history_in_order_and_cascade(
+    db_session: AsyncSession, make_user
+) -> None:
+    site = await _site(db_session, make_user, "mm-events.test")
+    start = datetime.now(UTC)
+    db_session.add_all(
+        [
+            MeasurementItemEvent(
+                website_id=site.id,
+                item_id="gtm_installed",
+                from_state="missing",
+                to_state="on_page",
+                at=start + timedelta(minutes=5),
+                evidence={"containers": ["GTM-AAAA111"]},
+            ),
+            MeasurementItemEvent(
+                website_id=site.id,
+                item_id="gtm_installed",
+                from_state=None,
+                to_state="missing",
+                at=start,
+                evidence={},
+            ),
+        ]
+    )
+    await db_session.flush()
+
+    rows = (
+        await db_session.execute(
+            select(MeasurementItemEvent)
+            .where(MeasurementItemEvent.website_id == site.id)
+            .order_by(MeasurementItemEvent.at)
+        )
+    ).scalars().all()
+    assert [(row.from_state, row.to_state) for row in rows] == [
+        (None, "missing"),
+        ("missing", "on_page"),
+    ]
+    assert rows[1].evidence == {"containers": ["GTM-AAAA111"]}
+
+    await db_session.delete(site)
+    await db_session.flush()
+    db_session.expunge_all()
+    assert (await db_session.execute(select(MeasurementItemEvent))).first() is None
 ```
 
 Lancer : `cd backend && .venv/Scripts/python.exe -m pytest tests/test_measurement_models.py -v`
@@ -308,16 +399,54 @@ class MeasurementItemStatus(Base):
     dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 ```
 
+```python
+# backend/app/models/measurement_item_event.py
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy import DateTime, ForeignKey, Index, String
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.db.base import Base
+from app.models.mixins import UUIDPrimaryKeyMixin
+
+
+class MeasurementItemEvent(UUIDPrimaryKeyMixin, Base):
+    """Historique : une ligne à chaque changement d'état d'un item du plan de mesure
+    (permet de tracer l'avancement dans le temps). L'état courant reste dans
+    `measurement_item_statuses`."""
+
+    __tablename__ = "measurement_item_events"
+    __table_args__ = (
+        Index("ix_measurement_item_events_site_item_at", "website_id", "item_id", "at"),
+    )
+
+    website_id: Mapped[UUID] = mapped_column(
+        ForeignKey("websites.id", ondelete="CASCADE"), nullable=False
+    )
+    item_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    # None pour la toute première observation d'un item.
+    from_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    to_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+```
+
 Dans `backend/app/models/__init__.py`, ajouter les imports (ordre alphabétique
 des modules) et les noms dans `__all__` :
 
 ```python
+from app.models.measurement_item_event import MeasurementItemEvent
 from app.models.measurement_item_status import MeasurementItemStatus
 ...
 from app.models.website_profile import WebsiteProfile
 ```
-et dans `__all__` : `"MeasurementItemStatus"` (après `"IssueItem"`) et
-`"WebsiteProfile"` (après `"WebsiteGoogleLink"`).
+et dans `__all__` : `"MeasurementItemEvent"` et `"MeasurementItemStatus"` (après
+`"IssueItem"`) et `"WebsiteProfile"` (après `"WebsiteGoogleLink"`).
 
 - [ ] **Étape 3 : écrire la migration**
 
@@ -388,15 +517,41 @@ def upgrade() -> None:
             "website_id", "item_id", name=op.f("pk_measurement_item_statuses")
         ),
     )
+    op.create_table(
+        "measurement_item_events",
+        sa.Column("id", sa.Uuid(), nullable=False),
+        sa.Column("website_id", sa.Uuid(), nullable=False),
+        sa.Column("item_id", sa.String(length=64), nullable=False),
+        sa.Column("from_state", sa.String(length=32), nullable=True),
+        sa.Column("to_state", sa.String(length=32), nullable=False),
+        sa.Column("at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("evidence", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["website_id"],
+            ["websites.id"],
+            name=op.f("fk_measurement_item_events_website_id_websites"),
+            ondelete="CASCADE",
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_measurement_item_events")),
+    )
+    op.create_index(
+        "ix_measurement_item_events_site_item_at",
+        "measurement_item_events",
+        ["website_id", "item_id", "at"],
+    )
 
 
 def downgrade() -> None:
+    op.drop_index(
+        "ix_measurement_item_events_site_item_at", table_name="measurement_item_events"
+    )
+    op.drop_table("measurement_item_events")
     op.drop_table("measurement_item_statuses")
     op.drop_table("website_profiles")
 ```
 
-Dans `backend/tests/test_migrations.py`, ajouter `"website_profiles"` et
-`"measurement_item_statuses"` à `EXPECTED_TABLES`.
+Dans `backend/tests/test_migrations.py`, ajouter `"website_profiles"`,
+`"measurement_item_statuses"` et `"measurement_item_events"` à `EXPECTED_TABLES`.
 
 - [ ] **Étape 4 : lancer les tests et le contrôle de schéma**
 
@@ -413,7 +568,7 @@ migration et les modèles divergent). Puis suite complète :
 
 ```bash
 git add backend/app/models backend/alembic/versions/8f2a6c41d7b3_measurement_plan.py backend/tests/test_measurement_models.py backend/tests/test_migrations.py
-git commit -m "feat(measurement): tables website_profiles et measurement_item_statuses"
+git commit -m "feat(measurement): tables website_profiles, measurement_item_statuses et measurement_item_events"
 ```
 
 ---
@@ -429,7 +584,10 @@ git commit -m "feat(measurement): tables website_profiles et measurement_item_st
 **Interfaces :**
 - Produit : `MeasurementItem` (dataclass gelée), `Outcome`, `SITE_TYPES`,
   `ITEMS: tuple[MeasurementItem, ...]`, `ITEMS_BY_ID`, `LAYER_ORDER`,
-  `is_applicable(item, types, uses_google_ads) -> bool`.
+  `is_applicable(item, types, uses_google_ads) -> bool` (la couche `ads` n'est
+  applicable que si `uses_google_ads is True`), `STARTER_PACKS: dict[str, tuple[str,
+  ...]]` et `starter_pack(types) -> list[str]` (sélection recommandée pour le conteneur
+  GTM, `ga4_tag` toujours en tête).
 - Les `check` valides sont exactement : `gtm_installed`, `gtm_in_head`, `ga4_tag`,
   `no_double`, `consent`, `datalayer`, `event`, `purchase_params`, `key_events`,
   `key_events_value`, `ads_link`, `ads_conversion_tag`, `manual`, `gsc_linked`,
@@ -443,7 +601,9 @@ from app.services.measurement.catalog import (
     ITEMS,
     ITEMS_BY_ID,
     LAYER_ORDER,
+    STARTER_PACKS,
     is_applicable,
+    starter_pack,
 )
 from app.services.measurement.types import CHECK_KINDS, SITE_TYPES
 
@@ -509,9 +669,33 @@ def test_is_applicable_by_type_and_ads_flag() -> None:
     assert not is_applicable(purchase, ("lead_gen",), None)
     assert is_applicable(lead, ("lead_gen", "content"), None)
     assert is_applicable(gtm, ("other",), None)  # applies_to=None : tous les sites
-    assert is_applicable(ads, ("ecommerce",), None)
+    # La couche publicité reste masquée tant que l'utilisateur n'a pas dit en faire.
+    assert not is_applicable(ads, ("ecommerce",), None)
     assert is_applicable(ads, ("ecommerce",), True)
     assert not is_applicable(ads, ("ecommerce",), False)
+
+
+def test_starter_pack_is_a_minimal_selection_led_by_the_ga4_tag() -> None:
+    ecommerce = starter_pack(("ecommerce",))
+    assert ecommerce[0] == "ga4_tag"
+    assert "event_purchase" in ecommerce and "event_generate_lead" not in ecommerce
+
+    mixed = starter_pack(("lead_gen", "ecommerce"))
+    assert mixed[0] == "ga4_tag"
+    assert len(mixed) == len(set(mixed))  # aucun doublon
+    assert "event_generate_lead" in mixed and "event_purchase" in mixed
+
+    assert starter_pack(("other",)) == ["ga4_tag"]
+    assert starter_pack(()) == ["ga4_tag"]
+
+
+def test_every_starter_item_fits_a_container_and_its_site_type() -> None:
+    assert set(STARTER_PACKS) == {"ecommerce", "lead_gen", "saas", "content", "other"}
+    for site_type, item_ids in STARTER_PACKS.items():
+        for item_id in item_ids:
+            item = ITEMS_BY_ID[item_id]
+            assert "gtm_container" in item.actions, item_id
+            assert item.applies_to is None or site_type in item.applies_to, item_id
 ```
 
 Lancer : `.venv/Scripts/python.exe -m pytest tests/test_measurement_catalog.py -v` → ÉCHEC (module absent).
@@ -749,9 +933,10 @@ _FOUNDATIONS: tuple[MeasurementItem, ...] = (
         guide=(
             "Dans GA4, crée une propriété puis un flux de données « Web » et note l'ID de "
             "mesure (il commence par G-).",
-            "Dans « Mon conteneur GTM » (plus bas sur cette page), génère le conteneur avec "
-            "cette balise, importe-le dans GTM (Administration > Importer un conteneur) et "
-            "publie.",
+            "Clique sur « Générer mon pack de démarrage » (en haut de cette page) : le "
+            "fichier contient la balise GA4 et les événements essentiels de ton type de "
+            "site. Importe-le dans GTM (Administration > Importer un conteneur > Fusionner) "
+            "et publie.",
             "Dans « Connexions Google », connecte ton compte pour que la plateforme voie "
             "les données arriver.",
             "Clique sur « Vérifier maintenant ».",
@@ -1129,7 +1314,8 @@ _ADS: tuple[MeasurementItem, ...] = (
             "Dans Google Ads : Objectifs > Conversions > Nouvelle action de conversion, choisis "
             "« Site web ».",
             "Note l'ID de conversion (AW-…) et le libellé de conversion.",
-            "Saisis-les dans « Réglages Ads » sur cette page, génère « Mon conteneur GTM » et "
+            "Saisis-les dans « Réglages Ads » (sous « Pour aller plus loin »), génère un "
+            "« Conteneur GTM personnalisé » et "
             "importe-le dans GTM.",
             "Clique sur « Vérifier maintenant » avec « en conditions réelles ».",
         ),
@@ -1151,7 +1337,7 @@ _ADS: tuple[MeasurementItem, ...] = (
         max_level="on_page",
         guide=(
             "Dans GTM, crée une balise « Conversion Linker » déclenchée sur toutes les pages "
-            "(elle est incluse dans « Mon conteneur GTM » si tu coches cette ligne).",
+            "(elle est incluse dans un « Conteneur GTM personnalisé » si tu coches cette ligne).",
             "Publie le conteneur.",
             "Marque cette ligne comme faite.",
         ),
@@ -1300,11 +1486,46 @@ ITEMS: tuple[MeasurementItem, ...] = (
 ITEMS_BY_ID: dict[str, MeasurementItem] = {item.id: item for item in ITEMS}
 
 
+# Sélection recommandée pour le conteneur GTM « pack de démarrage », par type de site.
+# `ga4_tag` est toujours ajouté en tête par `starter_pack`. Seuls des items qui peuvent
+# entrer dans un conteneur GTM (action `gtm_container`) figurent ici.
+STARTER_PACKS: dict[str, tuple[str, ...]] = {
+    "ecommerce": (
+        "event_view_item",
+        "event_add_to_cart",
+        "event_begin_checkout",
+        "event_purchase",
+    ),
+    "lead_gen": (
+        "event_generate_lead",
+        "event_click_to_call",
+        "event_click_email",
+        "event_click_whatsapp",
+    ),
+    "saas": ("event_sign_up", "event_login", "event_begin_trial", "event_subscribe"),
+    "content": ("event_newsletter_signup",),
+    "other": (),
+}
+
+
+def starter_pack(types: tuple[str, ...] | list[str]) -> list[str]:
+    """Items du pack de démarrage pour ces types de site, sans doublon."""
+    item_ids = ["ga4_tag"]
+    for site_type in types:
+        for item_id in STARTER_PACKS.get(site_type, ()):
+            if item_id not in item_ids:
+                item_ids.append(item_id)
+    return item_ids
+
+
 def is_applicable(
     item: MeasurementItem, types: tuple[str, ...] | list[str], uses_google_ads: bool | None
 ) -> bool:
-    """Vrai si l'item concerne le site : types effectifs et réglage « publicité »."""
-    if item.layer == "ads" and uses_google_ads is False:
+    """Vrai si l'item concerne le site : types effectifs et réglage « publicité ».
+
+    La couche publicité n'est proposée que si l'utilisateur a indiqué faire de la
+    publicité Google Ads (`uses_google_ads is True`) : un novice n'a pas à la voir."""
+    if item.layer == "ads" and uses_google_ads is not True:
         return False
     if item.applies_to is None:
         return True
@@ -1775,6 +1996,7 @@ from app.services.measurement.google_reader import (
     GoogleReadError,
     HttpGoogleReader,
     parse_event_stats,
+    web_stream_hosts,
 )
 from tests.conftest import owner_workspace_id
 
@@ -1948,6 +2170,35 @@ async def test_missing_connections_raise_dedicated_reasons() -> None:
     assert stale.value.reason == "token_unavailable"
 
 
+async def test_web_stream_hosts_lists_only_web_streams() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/properties/123/dataStreams")
+        return httpx.Response(
+            200,
+            json={
+                "dataStreams": [
+                    {"type": "IOS_APP_DATA_STREAM"},
+                    {
+                        "type": "WEB_DATA_STREAM",
+                        "webStreamData": {"defaultUri": "https://www.Exemple.fr"},
+                    },
+                    {"type": "WEB_DATA_STREAM", "webStreamData": {"defaultUri": "exemple.org"}},
+                ]
+            },
+        )
+
+    hosts = await web_stream_hosts("tok", "properties/123", client=_client(handler))
+    assert hosts == {"www.exemple.fr", "exemple.org"}
+
+
+async def test_web_stream_hosts_maps_http_errors() -> None:
+    with pytest.raises(GoogleReadError) as excinfo:
+        await web_stream_hosts(
+            "tok", "properties/1", client=_client(lambda request: httpx.Response(403, json={}))
+        )
+    assert excinfo.value.reason == "permission_or_api_disabled"
+
+
 async def test_build_reader_resolves_links_and_tokens(
     db_session: AsyncSession, make_user
 ) -> None:
@@ -2029,7 +2280,7 @@ ne l'interprète jamais comme « manquant ».
 from __future__ import annotations
 
 from typing import Any, Protocol
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 
@@ -2195,6 +2446,34 @@ class HttpGoogleReader:
         payload = await self._request("GET", url, token)
         sitemaps = payload.get("sitemap", []) if isinstance(payload, dict) else []
         return len(sitemaps)
+
+
+async def web_stream_hosts(
+    token: str, property_id: str, *, client: httpx.AsyncClient | None = None
+) -> set[str]:
+    """Noms d'hôte des flux web d'une propriété GA4 (sert à l'auto-liaison au domaine)."""
+    reader = HttpGoogleReader(
+        ga4_token=token,
+        ga4_property=property_id,
+        gsc_token=None,
+        gsc_site=None,
+        gsc_state="not_linked",
+        client=client,
+    )
+    pid = _property_number(property_id)
+    payload = await reader._request("GET", _ADMIN.format(pid=pid) + "/dataStreams", token)
+    streams = payload.get("dataStreams", []) if isinstance(payload, dict) else []
+    hosts: set[str] = set()
+    for stream in streams:
+        if not isinstance(stream, dict) or stream.get("type") != "WEB_DATA_STREAM":
+            continue
+        web = stream.get("webStreamData") or {}
+        uri = web.get("defaultUri") if isinstance(web, dict) else None
+        if isinstance(uri, str) and uri:
+            host = urlsplit(uri if "//" in uri else f"//{uri}").hostname
+            if host:
+                hosts.add(host.lower())
+    return hosts
 ```
 
 - [ ] **Étape 3 : implémenter `google_access.py`**
@@ -2222,7 +2501,7 @@ from app.services.google_oauth import GoogleOAuthClient, GoogleOAuthError, Inval
 from app.services.measurement.google_reader import HttpGoogleReader
 
 
-async def _access_token(
+async def access_token_for(
     connection: GoogleConnection,
     oauth: GoogleOAuthClient,
     cipher: TokenCipher,
@@ -2279,7 +2558,7 @@ async def build_reader(
     gsc_site: str | None = None
     gsc_state = "not_linked"
     for link, connection in rows:
-        token = await _access_token(connection, oauth, cipher, cache)
+        token = await access_token_for(connection, oauth, cipher, cache)
         if link.resource_type == ResourceType.GA4_PROPERTY:
             ga4_property, ga4_token = link.resource_id, token
         else:
@@ -3358,6 +3637,26 @@ def test_events_without_ga4_tag_still_get_a_configuration_tag() -> None:
     assert "GA4 Configuration" in _names(container, "tag")
 
 
+def test_every_container_item_of_the_catalog_has_a_recipe_or_a_special_case() -> None:
+    from app.services.gtm_generator import _RECIPES
+    from app.services.measurement.catalog import ITEMS
+
+    special = {"ga4_tag", "ads_conversion_tag", "ads_conversion_linker"}
+    for item in ITEMS:
+        if "gtm_container" in item.actions and item.id not in special:
+            assert item.id in _RECIPES, f"{item.id} n'a pas de recette GTM"
+
+
+def test_requires_site_code_only_for_custom_events() -> None:
+    from app.services.gtm_generator import requires_site_code
+
+    assert requires_site_code("event_purchase") is True
+    assert requires_site_code("event_generate_lead") is True
+    assert requires_site_code("event_click_to_call") is False  # déclencheur de clic GTM
+    assert requires_site_code("ga4_tag") is False
+    assert requires_site_code("inconnu") is False
+
+
 def test_import_metadata_and_mode() -> None:
     merge, _ = _build(["ga4_tag"])
     assert merge["importMetadata"]["mode"] == "merge"
@@ -3468,6 +3767,14 @@ def _link_click_trigger(base: dict, trigger_id: str, recipe: _Recipe) -> dict:
         ],
         "fingerprint": _FINGERPRINT,
     }
+
+
+def requires_site_code(item_id: str) -> bool:
+    """Vrai si l'événement n'existera que si le site pousse lui-même l'événement dans le
+    dataLayer (le conteneur ne fait que l'écouter). Les clics sur liens téléphone, e-mail
+    et WhatsApp sont détectés par GTM seul."""
+    recipe = _RECIPES.get(item_id)
+    return recipe is not None and recipe.kind == "custom_event"
 
 
 def build_selected_container(
@@ -3745,7 +4052,10 @@ git commit -m "feat(measurement): conteneur GTM sur mesure (evenements, conversi
     headless_skipped, headless_error)` ; `refresh_plan(session, website, *, fetcher,
     reader, verifier, run_headless, now=None) -> RefreshResult` (ne commit pas) ;
     `build_plan_view(session, website) -> dict` (forme décrite ci-dessous) ;
-    `get_or_create_profile(session, website_id) -> WebsiteProfile`.
+    `get_or_create_profile(session, website_id) -> WebsiteProfile` ;
+    `record_state_change(session, *, website_id, item_id, previous, current, evidence,
+    at) -> None` (écrit une ligne `MeasurementItemEvent` quand l'état change ; réutilisée
+    par l'API à la Tâche 10).
   - `deps.py` : `get_page_fetcher()` → `fetch_page_safe` ;
     `get_measurement_reader_factory(oauth, cipher)` → callable
     `(session, website) -> GoogleReader` ; alias `PageFetcherDep`,
@@ -3753,7 +4063,9 @@ git commit -m "feat(measurement): conteneur GTM sur mesure (evenements, conversi
 - Forme de `build_plan_view` :
   `{"website_id": UUID, "profile": {"detected_types": [...], "confirmed_types":
   [...]|None, "effective_types": [...], "needs_confirmation": bool, "params":
-  {...}}, "ga4_connected": bool, "last_checked_at": datetime|None,
+  {...}}, "ga4_connected": bool, "gsc_linked": bool, "google_connection":
+  "none"|"active"|"needs_reauth", "next_actions": [item_id, ...] (au plus 3, vide
+  tant que rien n'a été vérifié), "last_checked_at": datetime|None,
   "overall_done": int, "overall_total": int, "overall_percent": int,
   "layers": [{"layer", "total", "done"}], "items": [{"id", "layer", "title",
   "why", "weight", "quick_win", "max_level", "state", "done", "partial",
@@ -3773,6 +4085,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.enums import StackKind
+from app.models.measurement_item_event import MeasurementItemEvent
 from app.models.measurement_item_status import MeasurementItemStatus
 from app.models.website import Website
 from app.models.website_profile import WebsiteProfile
@@ -3926,12 +4239,20 @@ async def test_refresh_persists_states_and_detects_the_site_type(
     assert view["last_checked_at"] is not None
     assert view["overall_total"] > 0
     assert view["ga4_connected"] is False
+    assert view["gsc_linked"] is False
+    assert view["google_connection"] == "none"
+    # La couche publicité reste masquée tant que l'utilisateur n'a rien indiqué.
+    assert _item(view, "ads_ga4_link")["state"] == "not_applicable"
 
 
 async def test_ga4_data_upgrades_events_to_received_and_computes_progress(
     db_session: AsyncSession, make_user
 ) -> None:
     site = await _site(db_session, make_user, "svc-received.test")
+    db_session.add(
+        WebsiteProfile(website_id=site.id, detected_types=[], params={"uses_google_ads": True})
+    )
+    await db_session.flush()
     reader = _Reader(
         stats={
             "page_view": {"count": 400.0},
@@ -3980,21 +4301,32 @@ async def test_confirmed_types_prevail_and_change_applicability(
     assert _item(view, "event_generate_lead")["state"] != "not_applicable"
 
 
-async def test_uses_google_ads_false_disables_the_ads_layer(
+async def test_ads_layer_is_hidden_until_the_user_says_they_run_ads(
     db_session: AsyncSession, make_user
 ) -> None:
     site = await _site(db_session, make_user, "svc-ads.test")
     await refresh_plan(
         db_session, site, fetcher=_Fetcher(), reader=_Reader(), verifier=_Verifier(), run_headless=False
     )
+    view = await build_plan_view(db_session, site)
+    assert _item(view, "ads_ga4_link")["state"] == "not_applicable"
+    assert _item(view, "ads_auto_tagging")["state"] == "not_applicable"
+
     profile = await db_session.get(WebsiteProfile, site.id)
+    profile.params = {"uses_google_ads": True}
+    await refresh_plan(
+        db_session, site, fetcher=_Fetcher(), reader=_Reader(), verifier=_Verifier(), run_headless=False
+    )
+    view = await build_plan_view(db_session, site)
+    assert _item(view, "ads_ga4_link")["state"] != "not_applicable"
+    assert _item(view, "ads_auto_tagging")["state"] == "unverifiable"
+
     profile.params = {"uses_google_ads": False}
     await refresh_plan(
         db_session, site, fetcher=_Fetcher(), reader=_Reader(), verifier=_Verifier(), run_headless=False
     )
     view = await build_plan_view(db_session, site)
     assert _item(view, "ads_ga4_link")["state"] == "not_applicable"
-    assert _item(view, "ads_auto_tagging")["state"] == "not_applicable"
 
 
 async def test_unreachable_site_makes_page_items_unverifiable(
@@ -4105,6 +4437,8 @@ async def test_dismissed_and_manual_done_survive_a_refresh(
     }
     rows["robots_txt"].dismissed_at = datetime.now(UTC)
     rows["ads_auto_tagging"].evidence = {"manual_done": True}
+    profile = await db_session.get(WebsiteProfile, site.id)
+    profile.params = {"uses_google_ads": True}  # la couche Ads doit être visible
     await refresh_plan(
         db_session, site, fetcher=_Fetcher(), reader=_Reader(), verifier=_Verifier(), run_headless=False
     )
@@ -4123,6 +4457,7 @@ async def test_view_before_any_refresh_is_all_unknown(
     assert view["profile"]["effective_types"] == ["other"]
     assert all(item["state"] == "unknown" for item in view["items"])
     assert view["overall_done"] == 0
+    assert view["next_actions"] == []  # rien à recommander tant que rien n'est vérifié
 
 
 async def test_view_orders_by_layer_then_weight_and_ships_snippets(
@@ -4141,6 +4476,81 @@ async def test_view_orders_by_layer_then_weight_and_ships_snippets(
     purchase = _item(view, "event_purchase")
     assert purchase["snippet"] is not None and "purchase" in purchase["snippet"]["code"]
     assert _item(view, "gtm_installed")["snippet"] is None
+
+
+async def test_next_actions_lead_with_the_missing_items_that_matter_most(
+    db_session: AsyncSession, make_user
+) -> None:
+    site = await _site(db_session, make_user, "svc-next.test")
+    await refresh_plan(
+        db_session,
+        site,
+        fetcher=_Fetcher(html="<html><head></head><body>Bonjour</body></html>"),
+        reader=_Reader(),
+        verifier=_Verifier(),
+        run_headless=False,
+    )
+    view = await build_plan_view(db_session, site)
+    actions = view["next_actions"]
+    assert len(actions) == 3
+    assert actions[0] == "gtm_installed"  # manquant, poids 100, gain rapide
+    by_id = {item["id"]: item for item in view["items"]}
+    for item_id in actions:
+        assert by_id[item_id]["done"] is False
+        assert by_id[item_id]["state"] not in ("not_applicable", "dismissed")
+
+
+async def test_next_actions_skip_what_is_already_done(
+    db_session: AsyncSession, make_user
+) -> None:
+    site = await _site(db_session, make_user, "svc-next-done.test")
+    await refresh_plan(
+        db_session, site, fetcher=_Fetcher(), reader=_Reader(), verifier=_Verifier(), run_headless=False
+    )
+    view = await build_plan_view(db_session, site)
+    assert "gtm_installed" not in view["next_actions"]  # GTM est déjà en place
+
+
+async def test_state_changes_are_recorded_once_and_in_order(
+    db_session: AsyncSession, make_user
+) -> None:
+    site = await _site(db_session, make_user, "svc-events.test")
+    t0 = datetime(2026, 9, 24, 9, 0, tzinfo=UTC)
+    bare = _Fetcher(html="<html><head></head><body>Bonjour</body></html>")
+
+    async def events(item_id: str) -> list[tuple[str | None, str]]:
+        rows = (
+            await db_session.execute(
+                select(MeasurementItemEvent)
+                .where(
+                    MeasurementItemEvent.website_id == site.id,
+                    MeasurementItemEvent.item_id == item_id,
+                )
+                .order_by(MeasurementItemEvent.at)
+            )
+        ).scalars().all()
+        return [(row.from_state, row.to_state) for row in rows]
+
+    await refresh_plan(
+        db_session, site, fetcher=bare, reader=_Reader(), verifier=_Verifier(),
+        run_headless=False, now=t0,
+    )
+    assert await events("gtm_installed") == [(None, "missing")]
+    total = len((await db_session.execute(select(MeasurementItemEvent))).scalars().all())
+
+    # Même résultat : aucune nouvelle ligne.
+    await refresh_plan(
+        db_session, site, fetcher=bare, reader=_Reader(), verifier=_Verifier(),
+        run_headless=False, now=t0 + timedelta(minutes=10),
+    )
+    assert len((await db_session.execute(select(MeasurementItemEvent))).scalars().all()) == total
+
+    # GTM apparaît : une transition « missing -> on_page ».
+    await refresh_plan(
+        db_session, site, fetcher=_Fetcher(), reader=_Reader(), verifier=_Verifier(),
+        run_headless=False, now=t0 + timedelta(hours=1),
+    )
+    assert await events("gtm_installed") == [(None, "missing"), ("missing", "on_page")]
 ```
 
 Lancer → ÉCHEC (modules absents).
@@ -4185,7 +4595,9 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.enums import ResourceType
+from app.models.enums import ConnectionStatus, ResourceType
+from app.models.google_connection import GoogleConnection
+from app.models.measurement_item_event import MeasurementItemEvent
 from app.models.measurement_item_status import MeasurementItemStatus
 from app.models.website import Website
 from app.models.website_google_link import WebsiteGoogleLink
@@ -4225,6 +4637,34 @@ async def get_or_create_profile(session: AsyncSession, website_id: Any) -> Websi
         session.add(profile)
         await session.flush()
     return profile
+
+
+def record_state_change(
+    session: AsyncSession,
+    *,
+    website_id: Any,
+    item_id: str,
+    previous: str | None,
+    current: str,
+    evidence: dict[str, Any],
+    at: datetime,
+) -> None:
+    """Historise un changement d'état. Ne fait rien si l'état est inchangé, ni pour la
+    première observation d'un item « non concerné » (bruit sans information)."""
+    if previous == current:
+        return
+    if previous is None and current == "not_applicable":
+        return
+    session.add(
+        MeasurementItemEvent(
+            website_id=website_id,
+            item_id=item_id,
+            from_state=previous,
+            to_state=current,
+            at=at,
+            evidence=dict(evidence),
+        )
+    )
 
 
 async def _safe(call: Callable[[], Awaitable[Any]]) -> tuple[Any, str | None]:
@@ -4344,6 +4784,15 @@ async def refresh_plan(
             outcome = Outcome("dismissed", dict(row.evidence), None)
         else:
             outcome = evaluate(item, facts)
+        record_state_change(
+            session,
+            website_id=website.id,
+            item_id=item.id,
+            previous=row.state if row is not None else None,
+            current=outcome.state,
+            evidence=outcome.evidence,
+            at=now,
+        )
         if row is None:
             session.add(
                 MeasurementItemStatus(
@@ -4387,6 +4836,25 @@ def _snippet_dict(item: MeasurementItem, website: Website) -> dict[str, str] | N
     }
 
 
+def _next_action_ids(items: list[dict[str, Any]], *, limit: int = 3) -> list[str]:
+    """Les items les plus utiles à faire maintenant.
+
+    D'abord ce qui est prouvé manquant (ou pas encore vérifié), puis le reste à
+    confirmer ; à égalité, le poids (majoré pour un gain rapide) puis la couche."""
+    candidates = [
+        item
+        for item in items
+        if not item["done"] and item["state"] not in ("not_applicable", "dismissed")
+    ]
+
+    def rank(item: dict[str, Any]) -> tuple[int, int, int]:
+        tier = 0 if item["state"] in ("missing", "unknown") else 1
+        bonus = 25 if item["quick_win"] else 0
+        return (tier, -(item["weight"] + bonus), LAYER_ORDER.index(item["layer"]))
+
+    return [item["id"] for item in sorted(candidates, key=rank)[:limit]]
+
+
 async def build_plan_view(session: AsyncSession, website: Website) -> dict[str, Any]:
     profile = await session.get(WebsiteProfile, website.id)
     detected = list(profile.detected_types) if profile else []
@@ -4402,14 +4870,32 @@ async def build_plan_view(session: AsyncSession, website: Website) -> dict[str, 
             )
         ).scalars()
     }
-    ga4_linked = (
-        await session.execute(
-            select(WebsiteGoogleLink.id).where(
-                WebsiteGoogleLink.website_id == website.id,
-                WebsiteGoogleLink.resource_type == ResourceType.GA4_PROPERTY,
+    linked_types = set(
+        (
+            await session.execute(
+                select(WebsiteGoogleLink.resource_type).where(
+                    WebsiteGoogleLink.website_id == website.id
+                )
             )
-        )
-    ).first() is not None
+        ).scalars()
+    )
+    ga4_linked = ResourceType.GA4_PROPERTY in linked_types
+    gsc_linked = ResourceType.GSC_SITE in linked_types
+    connection_statuses = set(
+        (
+            await session.execute(
+                select(GoogleConnection.status).where(
+                    GoogleConnection.workspace_id == website.workspace_id
+                )
+            )
+        ).scalars()
+    )
+    if ConnectionStatus.ACTIVE in connection_statuses:
+        google_connection = "active"
+    elif ConnectionStatus.NEEDS_REAUTH in connection_statuses:
+        google_connection = "needs_reauth"
+    else:
+        google_connection = "none"
 
     ordered = sorted(ITEMS, key=lambda i: (LAYER_ORDER.index(i.layer), -i.weight))
     items: list[dict[str, Any]] = []
@@ -4465,6 +4951,9 @@ async def build_plan_view(session: AsyncSession, website: Website) -> dict[str, 
             },
         },
         "ga4_connected": ga4_linked,
+        "gsc_linked": gsc_linked,
+        "google_connection": google_connection,
+        "next_actions": _next_action_ids(items) if last_checked is not None else [],
         "last_checked_at": last_checked,
         "overall_done": overall_done,
         "overall_total": overall_total,
@@ -4570,12 +5059,15 @@ import pytest_asyncio
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy import select
+
 from app.api.deps import (
     get_gtm_headless_verifier,
     get_measurement_reader_factory,
     get_page_fetcher,
 )
 from app.main import app
+from app.models.measurement_item_event import MeasurementItemEvent
 from app.models.user import User
 from app.models.website import Website
 from app.models.workspace_member import WorkspaceMember
@@ -4687,6 +5179,10 @@ async def test_get_before_refresh_then_refresh(
     assert by_id["event_generate_lead"]["reason"] == "ga4_not_connected"
     assert plan["headless_skipped"] is False
     assert {"layer", "total", "done"} <= set(plan["layers"][0])
+    assert plan["ga4_connected"] is False and plan["gsc_linked"] is False
+    assert plan["google_connection"] == "none"
+    assert 1 <= len(plan["next_actions"]) <= 3
+    assert "gtm_installed" not in plan["next_actions"]  # déjà en place sur la page de test
 
 
 async def test_refresh_with_headless_then_cooldown(
@@ -4781,12 +5277,22 @@ async def test_dismiss_and_manual_done(
 ) -> None:
     client, user = authed_client
     site = await _site(db_session, user, "mpe-items.test")
+    await client.patch(_url(site, "/profile"), json={"uses_google_ads": True})
     await client.post(_url(site, "/refresh"))
 
     dismissed = await client.patch(_url(site, "/items/robots_txt"), json={"dismissed": True})
     assert dismissed.status_code == 200
     by_id = {i["id"]: i for i in dismissed.json()["items"]}
     assert by_id["robots_txt"]["state"] == "dismissed"
+    history = (
+        await db_session.execute(
+            select(MeasurementItemEvent.from_state, MeasurementItemEvent.to_state).where(
+                MeasurementItemEvent.website_id == site.id,
+                MeasurementItemEvent.item_id == "robots_txt",
+            )
+        )
+    ).all()
+    assert ("on_page", "dismissed") in [tuple(row) for row in history]
 
     restored = await client.patch(_url(site, "/items/robots_txt"), json={"dismissed": False})
     assert {i["id"]: i for i in restored.json()["items"]}["robots_txt"]["state"] == "unknown"
@@ -4830,6 +5336,40 @@ async def test_gtm_container_endpoint(
 
     bad = await client.post(_url(site, "/gtm-container"), json={"item_ids": ["nope"]})
     assert bad.status_code == 400
+    assert body["needs_site_code"] == ["event_generate_lead"]  # le clic tel: se détecte seul
+
+
+async def test_gtm_container_starter_pack_follows_the_detected_type(
+    authed_client: tuple[AsyncClient, User], db_session: AsyncSession, measurement_overrides
+) -> None:
+    client, user = authed_client
+    site = await _site(db_session, user, "mpe-starter.test")
+    await client.post(_url(site, "/refresh"))  # détecte « lead_gen » sur la page de test
+
+    resp = await client.post(_url(site, "/gtm-container"), json={"pack": "starter"})
+    assert resp.status_code == 200, resp.text
+    tags = [t["name"] for t in resp.json()["container"]["containerVersion"]["tag"]]
+    assert "GA4 Configuration" in tags
+    assert "GA4 - generate_lead" in tags and "GA4 - click_to_call" in tags
+    assert "GA4 - purchase" not in tags
+    assert set(resp.json()["needs_site_code"]) == {"event_generate_lead"}
+
+    # Exactement un des deux : la liste explicite OU le pack.
+    both = await client.post(
+        _url(site, "/gtm-container"), json={"pack": "starter", "item_ids": ["ga4_tag"]}
+    )
+    neither = await client.post(_url(site, "/gtm-container"), json={})
+    assert both.status_code == 422 and neither.status_code == 422
+
+
+async def test_refresh_is_rate_limited_per_user(
+    authed_client: tuple[AsyncClient, User], db_session: AsyncSession, measurement_overrides
+) -> None:
+    client, user = authed_client
+    site = await _site(db_session, user, "mpe-limit.test")
+    codes = [(await client.post(_url(site, "/refresh"))).status_code for _ in range(11)]
+    assert codes[:10] == [200] * 10
+    assert codes[10] == 429
 ```
 
 Lancer → ÉCHEC (404 : routes absentes).
@@ -4846,7 +5386,7 @@ from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 from app.api.deps import (
     CurrentUserDep,
@@ -4854,17 +5394,22 @@ from app.api.deps import (
     PageFetcherDep,
     ReaderFactoryDep,
     SessionDep,
+    SettingsDep,
 )
+from app.api.rate_limit import limit_by_user
 from app.models.enums import StackKind
 from app.models.measurement_item_status import MeasurementItemStatus
-from app.services.gtm_generator import build_selected_container
-from app.services.measurement.catalog import ITEMS_BY_ID
+from app.security.rate_limit import enforce
+from app.services.gtm_generator import build_selected_container, requires_site_code
+from app.services.measurement.catalog import ITEMS_BY_ID, starter_pack
 from app.services.measurement.google_reader import GoogleReadError
 from app.services.measurement.service import (
     build_plan_view,
     get_or_create_profile,
+    record_state_change,
     refresh_plan,
 )
+from app.services.measurement.site_types import resolve_effective_types
 from app.services.workspaces import owned_website, require_owner
 
 router = APIRouter(tags=["measurement"])
@@ -4933,6 +5478,9 @@ class PlanOut(BaseModel):
     website_id: UUID
     profile: ProfileOut
     ga4_connected: bool
+    gsc_linked: bool
+    google_connection: Literal["none", "active", "needs_reauth"]
+    next_actions: list[str]
     last_checked_at: datetime | None
     overall_done: int
     overall_total: int
@@ -4979,14 +5527,26 @@ class ItemPatch(BaseModel):
 
 
 class ContainerBody(BaseModel):
-    item_ids: list[str]
+    # Exactement un des deux : une sélection explicite OU le pack de démarrage,
+    # choisi d'après le type de site.
+    item_ids: list[str] | None = None
+    pack: Literal["starter"] | None = None
     import_mode: Literal["merge", "overwrite"] = "merge"
+
+    @model_validator(mode="after")
+    def _exactly_one_selection(self) -> "ContainerBody":
+        if (self.item_ids is None) == (self.pack is None):
+            raise ValueError("fournir soit item_ids, soit pack, pas les deux")
+        return self
 
 
 class ContainerOut(BaseModel):
     container: dict[str, Any]
     warnings: list[str]
     filename: str
+    # Items dont l'événement n'existera que si le site le pousse dans le dataLayer
+    # (le conteneur ne fait que l'écouter) : l'interface renvoie vers l'onglet Snippet.
+    needs_site_code: list[str]
 
 
 # ---- endpoints ---------------------------------------------------------------
@@ -4998,17 +5558,31 @@ async def get_measurement_plan(
     return PlanOut(**await build_plan_view(session, site))
 
 
-@router.post("/websites/{website_id}/measurement-plan/refresh", response_model=PlanOut)
+@router.post(
+    "/websites/{website_id}/measurement-plan/refresh",
+    response_model=PlanOut,
+    dependencies=[limit_by_user("measurement_refresh", limit=10, window=60)],
+)
 async def refresh_measurement_plan(
     website_id: UUID,
     user: CurrentUserDep,
     session: SessionDep,
+    settings: SettingsDep,
     fetcher: PageFetcherDep,
     reader_factory: ReaderFactoryDep,
     verifier: GtmHeadlessVerifierDep,
     headless: Annotated[bool, Query()] = False,
 ) -> PlanOut:
     site = await owned_website(session, website_id=website_id, user_id=user.id)
+    if headless:
+        # Un vrai navigateur : plus strict que la limite générale (et que le délai de
+        # 5 minutes du service, qui protège aussi contre les rafales entre instances).
+        enforce(
+            f"measurement_headless:user:{user.id}",
+            limit=3,
+            window=600,
+            enabled=settings.rate_limit_enabled,
+        )
     reader = await reader_factory(session, site)
     result = await refresh_plan(
         session,
@@ -5075,6 +5649,7 @@ async def patch_measurement_item(
 
     now = datetime.now(UTC)
     row = await session.get(MeasurementItemStatus, (site.id, item_id))
+    previous = row.state if row is not None else None
     if row is None:
         row = MeasurementItemStatus(
             website_id=site.id, item_id=item_id, state="unknown", evidence={}, checked_at=now
@@ -5091,6 +5666,15 @@ async def patch_measurement_item(
         row.state = "on_page" if body.manual_done else "unverifiable"
         row.reason = None if body.manual_done else "manual_check"
         row.checked_at = now
+    record_state_change(
+        session,
+        website_id=site.id,
+        item_id=item_id,
+        previous=previous,
+        current=row.state,
+        evidence=row.evidence,
+        at=now,
+    )
     await session.commit()
     return PlanOut(**await build_plan_view(session, site))
 
@@ -5104,14 +5688,22 @@ async def build_measurement_container(
     reader_factory: ReaderFactoryDep,
 ) -> ContainerOut:
     site = await owned_website(session, website_id=website_id, user_id=user.id)
-    unknown = [item_id for item_id in body.item_ids if item_id not in ITEMS_BY_ID]
+    profile = await get_or_create_profile(session, site.id)
+    if body.pack == "starter":
+        effective = resolve_effective_types(
+            list(profile.detected_types),
+            list(profile.confirmed_types) if profile.confirmed_types else None,
+        )
+        item_ids = starter_pack(effective)
+    else:
+        item_ids = list(body.item_ids or [])
+    unknown = [item_id for item_id in item_ids if item_id not in ITEMS_BY_ID]
     if unknown:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"items inconnus : {', '.join(unknown)}",
         )
 
-    profile = await get_or_create_profile(session, site.id)
     measurement_id: str | None = profile.params.get("ga4_measurement_id")
     if not measurement_id:
         reader = await reader_factory(session, site)
@@ -5123,7 +5715,7 @@ async def build_measurement_container(
     container, warnings = build_selected_container(
         domain=site.domain,
         stack=site.detected_stack or StackKind.UNKNOWN,
-        item_ids=body.item_ids,
+        item_ids=item_ids,
         ga4_measurement_id=measurement_id,
         ads_conversion_id=profile.params.get("ads_conversion_id"),
         ads_conversion_label=profile.params.get("ads_conversion_label"),
@@ -5131,9 +5723,34 @@ async def build_measurement_container(
     )
     await session.commit()  # get_or_create_profile a pu créer la ligne
     return ContainerOut(
-        container=container, warnings=warnings, filename=f"gtm-plan-{site.domain}.json"
+        container=container,
+        warnings=warnings,
+        filename=f"gtm-plan-{site.domain}.json",
+        needs_site_code=[item_id for item_id in item_ids if requires_site_code(item_id)],
     )
 ```
+
+Ajouter dans `backend/tests/test_tenant_isolation.py` (lot 0) les cinq routes de ce lot, sinon
+son test d'inventaire échoue :
+
+```python
+    ("GET", "/websites/{website_id}/measurement-plan"): None,
+    ("POST", "/websites/{website_id}/measurement-plan/refresh"): None,
+    ("PATCH", "/websites/{website_id}/measurement-plan/profile"): {"uses_google_ads": True},
+    ("PATCH", "/websites/{website_id}/measurement-plan/items/{item_id}"): {"dismissed": True},
+    ("POST", "/websites/{website_id}/measurement-plan/gtm-container"): {"pack": "starter"},
+```
+et `"item_id": "robots_txt",` dans `World.path_ids()`. Dans le bloc « Rien n'a bougé chez la
+victime » du même fichier, ajouter :
+
+```python
+    from app.models.website_profile import WebsiteProfile
+    from app.models.measurement_item_status import MeasurementItemStatus
+
+    assert await db_session.scalar(select(func.count()).select_from(WebsiteProfile)) == 0
+    assert await db_session.scalar(select(func.count()).select_from(MeasurementItemStatus)) == 0
+```
+(imports à placer en tête du fichier).
 Enregistrer le routeur dans `backend/app/api/v1/router.py` : ajouter `measurement` à
 l'import des modules d'endpoints (ordre alphabétique) et
 `api_router.include_router(measurement.router)` après `connections.router`.
@@ -5153,7 +5770,678 @@ git commit -m "feat(measurement): API du plan de mesure (lecture, verification, 
 
 ---
 
-### Tâche 11 : Client frontend (types, appels, hook propriétaire)
+### Tâche 11 : Auto-liaison Google (GA4 et Search Console)
+
+**Fichiers :**
+- Créer : `backend/app/services/measurement/autolink.py`
+- Créer : `backend/tests/measurement_fakes.py`
+- Modifier : `backend/app/api/deps.py`, `backend/app/api/v1/endpoints/measurement.py`,
+  `backend/tests/test_tenant_isolation.py`
+- Test : `backend/tests/test_measurement_autolink.py`,
+  `backend/tests/test_measurement_endpoints.py` (ajouts)
+
+**Interfaces :**
+- Consomme : `access_token_for` (`google_access.py`, Tâche 5), `web_stream_hosts`
+  (`google_reader.py`, Tâche 5), `GoogleOAuthClient.discover_resources` (existant),
+  `WebsiteGoogleLink`, `build_plan_view` (Tâche 9), `PlanOut` (Tâche 10).
+- Produit :
+  - `autolink.py` : `LinkOutcome(status, resource_id, display_name, connection_id,
+    candidates)` avec `status` dans `linked | already_linked | ambiguous | none |
+    skipped` ; `AutolinkResult(ga4, gsc)` ; `normalize_host(value) -> str` ;
+    `pick_gsc_site(domain, sites) -> LinkOutcome` ; `pick_ga4_property(domain,
+    candidates) -> LinkOutcome` ; `autolink_website(session, website, *, oauth,
+    cipher, stream_hosts=web_stream_hosts, max_properties=20) -> AutolinkResult` (ne
+    commit pas) ; `StreamHostsFetcher`.
+  - `deps.py` : `get_stream_hosts_fetcher()` et `StreamHostsFetcherDep`.
+  - Route `POST /websites/{website_id}/measurement-plan/google-autolink` (tout membre,
+    comme `link-resource`) → `{ga4, gsc, plan}`.
+- Règles : on ne lie **que si le choix est unique** ; on **n'écrase jamais** une liaison
+  existante (choix de l'utilisateur) ; seules les connexions `ACTIVE` du workspace du
+  site sont utilisées ; au plus 20 propriétés GA4 sont interrogées par appel ;
+  une propriété illisible est ignorée, pas fatale. Aucun nouveau scope Google.
+
+- [ ] **Étape 1 : doubles de test partagés**
+
+```python
+# backend/tests/measurement_fakes.py
+"""Doubles pour l'auto-liaison : aucun appel réseau."""
+
+from __future__ import annotations
+
+from app.services.google_oauth.base import DiscoveredResources, GoogleTokenResponse
+from app.services.measurement.google_reader import GoogleReadError
+
+
+class FakeOAuth:
+    """Duck-typing de `GoogleOAuthClient` : seules les deux méthodes utilisées."""
+
+    def __init__(self, resources: DiscoveredResources) -> None:
+        self._resources = resources
+        self.discover_calls = 0
+
+    async def refresh_access_token(self, *, refresh_token: str) -> GoogleTokenResponse:
+        return GoogleTokenResponse(access_token="tok", expires_in=3599, scopes=("openid",))
+
+    async def discover_resources(self, *, access_token: str) -> DiscoveredResources:
+        self.discover_calls += 1
+        return self._resources
+
+
+def fake_stream_hosts(mapping: dict[str, set[str]], *, failing: frozenset[str] = frozenset()):
+    """Fabrique un `StreamHostsFetcher` ; `calls` liste les propriétés interrogées."""
+    calls: list[str] = []
+
+    async def fetch(token: str, property_id: str) -> set[str]:
+        calls.append(property_id)
+        if property_id in failing:
+            raise GoogleReadError("permission_or_api_disabled")
+        return set(mapping.get(property_id, set()))
+
+    fetch.calls = calls  # type: ignore[attr-defined]
+    return fetch
+```
+
+- [ ] **Étape 2 : écrire les tests qui échouent**
+
+```python
+# backend/tests/test_measurement_autolink.py
+import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import get_settings
+from app.models.enums import ConnectionStatus, ResourceType
+from app.models.website import Website
+from app.models.website_google_link import WebsiteGoogleLink
+from app.security.token_crypto import load_token_cipher
+from app.services.connections import upsert_google_connection
+from app.services.google_oauth.base import (
+    DiscoveredResources,
+    Ga4Property,
+    GoogleTokenResponse,
+    GoogleUserInfo,
+    GscSite,
+)
+from app.services.measurement.autolink import (
+    autolink_website,
+    normalize_host,
+    pick_ga4_property,
+    pick_gsc_site,
+)
+from tests.conftest import owner_workspace_id
+from tests.measurement_fakes import FakeOAuth, fake_stream_hosts
+
+
+@pytest.mark.parametrize(
+    ("raw", "host"),
+    [
+        ("sc-domain:Exemple.fr", "exemple.fr"),
+        ("https://www.exemple.fr/", "exemple.fr"),
+        ("http://exemple.fr:8080/x?y=1", "exemple.fr"),
+        ("WWW.Exemple.fr", "exemple.fr"),
+        ("exemple.fr", "exemple.fr"),
+    ],
+)
+def test_normalize_host(raw: str, host: str) -> None:
+    assert normalize_host(raw) == host
+
+
+def test_gsc_prefers_the_domain_property_over_url_prefixes() -> None:
+    out = pick_gsc_site("exemple.fr", [("c1", "https://exemple.fr/"), ("c1", "sc-domain:exemple.fr")])
+    assert out.status == "linked" and out.resource_id == "sc-domain:exemple.fr"
+    assert out.connection_id == "c1"
+
+
+def test_gsc_prefers_https_over_http() -> None:
+    out = pick_gsc_site("exemple.fr", [("c1", "http://exemple.fr/"), ("c1", "https://exemple.fr/")])
+    assert out.resource_id == "https://exemple.fr/"
+
+
+def test_gsc_www_variants_are_settled_by_the_stored_domain() -> None:
+    sites = [("c1", "https://exemple.fr/"), ("c1", "https://www.exemple.fr/")]
+    assert pick_gsc_site("www.exemple.fr", sites).resource_id == "https://www.exemple.fr/"
+    assert pick_gsc_site("exemple.fr", sites).resource_id == "https://exemple.fr/"
+
+
+def test_gsc_is_ambiguous_when_nothing_settles_the_choice() -> None:
+    sites = [("c1", "https://exemple.fr/"), ("c1", "https://exemple.fr:8443/")]
+    out = pick_gsc_site("www.exemple.fr", sites)
+    assert out.status == "ambiguous"
+    assert set(out.candidates) == {"https://exemple.fr/", "https://exemple.fr:8443/"}
+    assert out.resource_id is None
+
+
+def test_gsc_duplicates_across_connections_are_not_ambiguous() -> None:
+    out = pick_gsc_site("exemple.fr", [("c1", "sc-domain:exemple.fr"), ("c2", "sc-domain:exemple.fr")])
+    assert out.status == "linked" and out.connection_id == "c1"
+
+
+def test_gsc_none_when_no_site_matches() -> None:
+    assert pick_gsc_site("exemple.fr", [("c1", "sc-domain:autre.fr")]).status == "none"
+    assert pick_gsc_site("exemple.fr", []).status == "none"
+
+
+def test_ga4_unique_match_ambiguous_and_none() -> None:
+    one = [
+        ("c1", "properties/1", "Exemple", {"exemple.fr"}),
+        ("c1", "properties/2", "Autre", {"www.autre.fr"}),
+    ]
+    out = pick_ga4_property("exemple.fr", one)
+    assert out.status == "linked" and out.resource_id == "properties/1"
+    assert out.display_name == "Exemple"
+
+    two = [
+        ("c1", "properties/1", "A", {"exemple.fr"}),
+        ("c1", "properties/3", "B", {"www.exemple.fr"}),
+    ]
+    ambiguous = pick_ga4_property("exemple.fr", two)
+    assert ambiguous.status == "ambiguous"
+    assert set(ambiguous.candidates) == {"properties/1", "properties/3"}
+
+    assert pick_ga4_property("exemple.fr", [("c1", "properties/9", "Z", {"z.fr"})]).status == "none"
+
+
+# ---- service ------------------------------------------------------------------------
+_RESOURCES = DiscoveredResources(
+    ga4_properties=(
+        Ga4Property("properties/1", "Exemple", "accounts/1", "Compte"),
+        Ga4Property("properties/2", "Autre", "accounts/1", "Compte"),
+    ),
+    gsc_sites=(
+        GscSite("sc-domain:exemple.fr", "siteOwner"),
+        GscSite("https://exemple.fr/", "siteOwner"),
+    ),
+)
+_HOSTS = {"properties/1": {"exemple.fr"}, "properties/2": {"autre.fr"}}
+
+
+async def _world(db_session: AsyncSession, make_user, sub: str, domain: str = "exemple.fr"):
+    user = await make_user(sub=sub)
+    workspace_id = await owner_workspace_id(db_session, user)
+    site = Website(workspace_id=workspace_id, domain=domain, display_name=domain)
+    db_session.add(site)
+    connection = await upsert_google_connection(
+        db_session,
+        workspace_id=workspace_id,
+        userinfo=GoogleUserInfo(sub=f"g-{sub}", email=f"{sub}@gmail.com"),
+        token=GoogleTokenResponse(
+            access_token="a",
+            expires_in=3600,
+            scopes=("openid",),
+            refresh_token=f"refresh-{sub}",
+        ),
+        cipher=load_token_cipher(get_settings()),
+    )
+    await db_session.flush()
+    return site, connection
+
+
+async def _links(db_session: AsyncSession, site: Website) -> dict[ResourceType, str]:
+    rows = (
+        await db_session.execute(
+            select(WebsiteGoogleLink).where(WebsiteGoogleLink.website_id == site.id)
+        )
+    ).scalars().all()
+    return {row.resource_type: row.resource_id for row in rows}
+
+
+async def _run(db_session, site, oauth=None, hosts=None, **kwargs):
+    return await autolink_website(
+        db_session,
+        site,
+        oauth=oauth or FakeOAuth(_RESOURCES),
+        cipher=load_token_cipher(get_settings()),
+        stream_hosts=hosts or fake_stream_hosts(_HOSTS),
+        **kwargs,
+    )
+
+
+async def test_links_the_unique_ga4_property_and_the_domain_search_console_site(
+    db_session: AsyncSession, make_user
+) -> None:
+    site, connection = await _world(db_session, make_user, "al-ok")
+    result = await _run(db_session, site)
+    assert result.ga4.status == "linked" and result.ga4.resource_id == "properties/1"
+    assert result.gsc.status == "linked" and result.gsc.resource_id == "sc-domain:exemple.fr"
+    assert await _links(db_session, site) == {
+        ResourceType.GA4_PROPERTY: "properties/1",
+        ResourceType.GSC_SITE: "sc-domain:exemple.fr",
+    }
+    rows = (await db_session.execute(select(WebsiteGoogleLink))).scalars().all()
+    assert {row.google_connection_id for row in rows} == {connection.id}
+    assert {row.resource_display_name for row in rows} >= {"Exemple"}
+
+
+async def test_second_run_is_idempotent(db_session: AsyncSession, make_user) -> None:
+    site, _ = await _world(db_session, make_user, "al-idem")
+    await _run(db_session, site)
+    fetch = fake_stream_hosts(_HOSTS)
+    oauth = FakeOAuth(_RESOURCES)
+    again = await _run(db_session, site, oauth=oauth, hosts=fetch)
+    assert again.ga4.status == "already_linked" and again.gsc.status == "already_linked"
+    assert again.ga4.resource_id == "properties/1"
+    assert oauth.discover_calls == 0 and fetch.calls == []  # rien à chercher
+    assert len(await _links(db_session, site)) == 2
+
+
+async def test_never_overrides_an_existing_link(db_session: AsyncSession, make_user) -> None:
+    site, connection = await _world(db_session, make_user, "al-keep")
+    db_session.add(
+        WebsiteGoogleLink(
+            website_id=site.id,
+            google_connection_id=connection.id,
+            resource_type=ResourceType.GA4_PROPERTY,
+            resource_id="properties/999",
+        )
+    )
+    await db_session.flush()
+    result = await _run(db_session, site)
+    assert result.ga4.status == "already_linked" and result.ga4.resource_id == "properties/999"
+    assert result.gsc.status == "linked"
+    assert (await _links(db_session, site))[ResourceType.GA4_PROPERTY] == "properties/999"
+
+
+async def test_ambiguous_ga4_choice_is_left_to_the_user(
+    db_session: AsyncSession, make_user
+) -> None:
+    site, _ = await _world(db_session, make_user, "al-amb")
+    both = {"properties/1": {"exemple.fr"}, "properties/2": {"www.exemple.fr"}}
+    result = await _run(db_session, site, hosts=fake_stream_hosts(both))
+    assert result.ga4.status == "ambiguous"
+    assert set(result.ga4.candidates) == {"properties/1", "properties/2"}
+    assert result.gsc.status == "linked"  # l'autre ressource n'est pas bloquée
+    assert ResourceType.GA4_PROPERTY not in await _links(db_session, site)
+
+
+async def test_unreadable_property_is_skipped_not_fatal(
+    db_session: AsyncSession, make_user
+) -> None:
+    site, _ = await _world(db_session, make_user, "al-fail")
+    hosts = fake_stream_hosts(_HOSTS, failing=frozenset({"properties/2"}))
+    result = await _run(db_session, site, hosts=hosts)
+    assert result.ga4.status == "linked" and result.ga4.resource_id == "properties/1"
+
+
+async def test_only_the_first_properties_are_inspected(
+    db_session: AsyncSession, make_user
+) -> None:
+    site, _ = await _world(db_session, make_user, "al-cap")
+    hosts = fake_stream_hosts(_HOSTS)
+    await _run(db_session, site, hosts=hosts, max_properties=1)
+    assert hosts.calls == ["properties/1"]
+
+
+async def test_no_usable_connection_means_skipped(db_session: AsyncSession, make_user) -> None:
+    site, connection = await _world(db_session, make_user, "al-none")
+    connection.status = ConnectionStatus.NEEDS_REAUTH
+    await db_session.flush()
+    result = await _run(db_session, site)
+    assert result.ga4.status == "skipped" and result.gsc.status == "skipped"
+    assert await _links(db_session, site) == {}
+
+
+async def test_nothing_matches_the_domain(db_session: AsyncSession, make_user) -> None:
+    site, _ = await _world(db_session, make_user, "al-nomatch", domain="inconnu.fr")
+    result = await _run(db_session, site)
+    assert result.ga4.status == "none" and result.gsc.status == "none"
+```
+
+Ajouter à `backend/tests/test_measurement_endpoints.py` :
+
+```python
+from app.api.deps import get_google_client, get_stream_hosts_fetcher
+from app.config import get_settings
+from app.security.token_crypto import load_token_cipher
+from app.services.connections import upsert_google_connection
+from app.services.google_oauth.base import (
+    DiscoveredResources,
+    Ga4Property,
+    GoogleTokenResponse,
+    GoogleUserInfo,
+    GscSite,
+)
+from tests.measurement_fakes import FakeOAuth, fake_stream_hosts
+
+
+async def test_google_autolink_endpoint_links_and_returns_the_plan(
+    authed_client: tuple[AsyncClient, User], db_session: AsyncSession, measurement_overrides
+) -> None:
+    client, user = authed_client
+    site = await _site(db_session, user, "exemple.fr")
+    await upsert_google_connection(
+        db_session,
+        workspace_id=site.workspace_id,
+        userinfo=GoogleUserInfo(sub="g-endpoint", email="endpoint@gmail.com"),
+        token=GoogleTokenResponse(
+            access_token="a", expires_in=3600, scopes=("openid",), refresh_token="r"
+        ),
+        cipher=load_token_cipher(get_settings()),
+    )
+    resources = DiscoveredResources(
+        ga4_properties=(Ga4Property("properties/1", "Exemple", "accounts/1", "Compte"),),
+        gsc_sites=(GscSite("sc-domain:exemple.fr", "siteOwner"),),
+    )
+    app.dependency_overrides[get_google_client] = lambda: FakeOAuth(resources)
+    app.dependency_overrides[get_stream_hosts_fetcher] = lambda: fake_stream_hosts(
+        {"properties/1": {"exemple.fr"}}
+    )
+    try:
+        resp = await client.post(_url(site, "/google-autolink"))
+    finally:
+        app.dependency_overrides.pop(get_google_client, None)
+        app.dependency_overrides.pop(get_stream_hosts_fetcher, None)
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ga4"] == {
+        "status": "linked",
+        "resource_id": "properties/1",
+        "candidates": [],
+    }
+    assert body["gsc"]["status"] == "linked"
+    assert body["plan"]["ga4_connected"] is True and body["plan"]["gsc_linked"] is True
+    assert body["plan"]["google_connection"] == "active"
+
+
+async def test_google_autolink_without_connection_is_skipped(
+    authed_client: tuple[AsyncClient, User], db_session: AsyncSession, measurement_overrides
+) -> None:
+    client, user = authed_client
+    site = await _site(db_session, user, "sans-connexion.test")
+    resp = await client.post(_url(site, "/google-autolink"))
+    assert resp.status_code == 200
+    assert resp.json()["ga4"]["status"] == "skipped"
+    assert resp.json()["gsc"]["status"] == "skipped"
+    assert resp.json()["plan"]["google_connection"] == "none"
+```
+
+Lancer → ÉCHEC (module absent).
+
+- [ ] **Étape 3 : créer `autolink.py`**
+
+```python
+# backend/app/services/measurement/autolink.py
+"""Auto-liaison : relie sans saisie la propriété GA4 et le site Search Console qui
+correspondent au domaine d'un site. Ne lie que si le choix est unique et n'écrase
+jamais une liaison existante (c'est le choix de l'utilisateur)."""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
+from typing import Any
+from uuid import UUID
+
+import httpx
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.enums import ConnectionStatus, ResourceType
+from app.models.google_connection import GoogleConnection
+from app.models.website import Website
+from app.models.website_google_link import WebsiteGoogleLink
+from app.security.token_crypto import TokenCipher
+from app.services.google_oauth import GoogleOAuthClient, GoogleOAuthError
+from app.services.measurement.google_access import access_token_for
+from app.services.measurement.google_reader import GoogleReadError, web_stream_hosts
+
+StreamHostsFetcher = Callable[[str, str], Awaitable[set[str]]]
+MAX_PROPERTIES = 20
+
+
+@dataclass(frozen=True, slots=True)
+class LinkOutcome:
+    # linked | already_linked | ambiguous | none | skipped
+    status: str
+    resource_id: str | None = None
+    display_name: str | None = None
+    connection_id: Any | None = None
+    candidates: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class AutolinkResult:
+    ga4: LinkOutcome
+    gsc: LinkOutcome
+
+
+def _raw_host(value: str) -> str:
+    text = value.strip().lower().removeprefix("sc-domain:")
+    text = re.sub(r"^[a-z][a-z0-9+.-]*://", "", text)
+    text = re.split(r"[/?#]", text, maxsplit=1)[0]
+    return text.split(":", 1)[0]
+
+
+def normalize_host(value: str) -> str:
+    return _raw_host(value).removeprefix("www.")
+
+
+def _gsc_kind(resource_id: str) -> int:
+    if resource_id.startswith("sc-domain:"):
+        return 0
+    if resource_id.startswith("https://"):
+        return 1
+    if resource_id.startswith("http://"):
+        return 2
+    return 3
+
+
+def pick_gsc_site(domain: str, sites: Sequence[tuple[Any, str]]) -> LinkOutcome:
+    """`sites` : couples `(id de connexion, identifiant du site Search Console)`."""
+    wanted = normalize_host(domain)
+    matches: dict[str, Any] = {}
+    for connection_id, resource_id in sites:
+        if normalize_host(resource_id) == wanted:
+            matches.setdefault(resource_id, connection_id)
+    if not matches:
+        return LinkOutcome("none")
+    best = min(_gsc_kind(resource_id) for resource_id in matches)
+    top = [resource_id for resource_id in matches if _gsc_kind(resource_id) == best]
+    if len(top) > 1:
+        exact = [r for r in top if _raw_host(r) == _raw_host(domain)]
+        if len(exact) == 1:
+            top = exact
+    if len(top) == 1:
+        return LinkOutcome("linked", resource_id=top[0], connection_id=matches[top[0]])
+    return LinkOutcome("ambiguous", candidates=tuple(sorted(top)))
+
+
+def pick_ga4_property(
+    domain: str, candidates: Sequence[tuple[Any, str, str | None, set[str]]]
+) -> LinkOutcome:
+    """`candidates` : `(id de connexion, propriété, nom, hôtes des flux web)`."""
+    wanted = normalize_host(domain)
+    hits: dict[str, tuple[Any, str | None]] = {}
+    for connection_id, resource_id, name, hosts in candidates:
+        if wanted in {normalize_host(host) for host in hosts}:
+            hits.setdefault(resource_id, (connection_id, name))
+    if not hits:
+        return LinkOutcome("none")
+    if len(hits) == 1:
+        resource_id, (connection_id, name) = next(iter(hits.items()))
+        return LinkOutcome(
+            "linked", resource_id=resource_id, display_name=name, connection_id=connection_id
+        )
+    return LinkOutcome("ambiguous", candidates=tuple(sorted(hits)))
+
+
+def _add_link(
+    session: AsyncSession, website_id: UUID, resource_type: ResourceType, outcome: LinkOutcome
+) -> None:
+    session.add(
+        WebsiteGoogleLink(
+            website_id=website_id,
+            google_connection_id=outcome.connection_id,
+            resource_type=resource_type,
+            resource_id=outcome.resource_id,
+            resource_display_name=outcome.display_name,
+        )
+    )
+
+
+async def autolink_website(
+    session: AsyncSession,
+    website: Website,
+    *,
+    oauth: GoogleOAuthClient,
+    cipher: TokenCipher,
+    stream_hosts: StreamHostsFetcher = web_stream_hosts,
+    max_properties: int = MAX_PROPERTIES,
+) -> AutolinkResult:
+    """Lie GA4 et Search Console au site quand la correspondance est unique. Ne commit pas."""
+    links = {
+        row.resource_type: row
+        for row in (
+            await session.execute(
+                select(WebsiteGoogleLink).where(WebsiteGoogleLink.website_id == website.id)
+            )
+        ).scalars()
+    }
+    ga4_link = links.get(ResourceType.GA4_PROPERTY)
+    gsc_link = links.get(ResourceType.GSC_SITE)
+    ga4 = LinkOutcome("already_linked", resource_id=ga4_link.resource_id) if ga4_link else None
+    gsc = LinkOutcome("already_linked", resource_id=gsc_link.resource_id) if gsc_link else None
+    if ga4 and gsc:
+        return AutolinkResult(ga4, gsc)
+
+    connections = (
+        (
+            await session.execute(
+                select(GoogleConnection)
+                .where(
+                    GoogleConnection.workspace_id == website.workspace_id,
+                    GoogleConnection.status == ConnectionStatus.ACTIVE,
+                )
+                .order_by(GoogleConnection.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    cache: dict[UUID, str | None] = {}
+    gsc_sites: list[tuple[Any, str]] = []
+    ga4_candidates: list[tuple[Any, str, str | None, set[str]]] = []
+    usable = False
+    inspected = 0
+    for connection in connections:
+        token = await access_token_for(connection, oauth, cipher, cache)
+        if token is None:
+            continue
+        try:
+            discovered = await oauth.discover_resources(access_token=token)
+        except (GoogleOAuthError, httpx.HTTPError):
+            continue
+        usable = True
+        if gsc is None:
+            gsc_sites += [(connection.id, site.resource_id) for site in discovered.gsc_sites]
+        if ga4 is None:
+            for prop in discovered.ga4_properties:
+                if inspected >= max_properties:
+                    break
+                inspected += 1
+                try:
+                    hosts = await stream_hosts(token, prop.resource_id)
+                except GoogleReadError:
+                    continue
+                ga4_candidates.append((connection.id, prop.resource_id, prop.display_name, hosts))
+
+    if ga4 is None:
+        ga4 = pick_ga4_property(website.domain, ga4_candidates) if usable else LinkOutcome("skipped")
+        if ga4.status == "linked":
+            _add_link(session, website.id, ResourceType.GA4_PROPERTY, ga4)
+    if gsc is None:
+        gsc = pick_gsc_site(website.domain, gsc_sites) if usable else LinkOutcome("skipped")
+        if gsc.status == "linked":
+            _add_link(session, website.id, ResourceType.GSC_SITE, gsc)
+    await session.flush()
+    return AutolinkResult(ga4, gsc)
+```
+
+- [ ] **Étape 4 : dépendance et route**
+
+Dans `backend/app/api/deps.py`, ajouter :
+
+```python
+from app.services.measurement.autolink import StreamHostsFetcher
+from app.services.measurement.google_reader import web_stream_hosts
+...
+def get_stream_hosts_fetcher() -> StreamHostsFetcher:
+    return web_stream_hosts
+...
+StreamHostsFetcherDep = Annotated[StreamHostsFetcher, Depends(get_stream_hosts_fetcher)]
+```
+Dans `measurement.py`, ajouter aux imports `GoogleClientDep`, `StreamHostsFetcherDep`,
+`TokenCipherDep` (depuis `app.api.deps`) et `autolink_website` (depuis
+`app.services.measurement.autolink`), puis :
+
+```python
+class LinkOutcomeOut(BaseModel):
+    status: Literal["linked", "already_linked", "ambiguous", "none", "skipped"]
+    resource_id: str | None
+    candidates: list[str]
+
+
+class AutolinkOut(BaseModel):
+    ga4: LinkOutcomeOut
+    gsc: LinkOutcomeOut
+    plan: PlanOut
+
+
+def _outcome_out(outcome) -> LinkOutcomeOut:
+    return LinkOutcomeOut(
+        status=outcome.status,
+        resource_id=outcome.resource_id,
+        candidates=list(outcome.candidates),
+    )
+
+
+@router.post(
+    "/websites/{website_id}/measurement-plan/google-autolink",
+    response_model=AutolinkOut,
+    dependencies=[limit_by_user("measurement_autolink", limit=10, window=60)],
+)
+async def autolink_google(
+    website_id: UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+    oauth: GoogleClientDep,
+    cipher: TokenCipherDep,
+    stream_hosts: StreamHostsFetcherDep,
+) -> AutolinkOut:
+    site = await owned_website(session, website_id=website_id, user_id=user.id)
+    result = await autolink_website(
+        session, site, oauth=oauth, cipher=cipher, stream_hosts=stream_hosts
+    )
+    await session.commit()
+    view = await build_plan_view(session, site)
+    return AutolinkOut(
+        ga4=_outcome_out(result.ga4), gsc=_outcome_out(result.gsc), plan=PlanOut(**view)
+    )
+```
+Dans `backend/tests/test_tenant_isolation.py`, ajouter le cas
+`("POST", "/websites/{website_id}/measurement-plan/google-autolink"): None,`.
+
+- [ ] **Étape 5 : lancer**
+
+```bash
+cd backend
+.venv/Scripts/python.exe -m pytest tests/test_measurement_autolink.py tests/test_measurement_endpoints.py tests/test_measurement_google_reader.py tests/test_tenant_isolation.py -v
+.venv/Scripts/python.exe -m pytest -W error -q
+uv run ruff check app tests
+```
+
+- [ ] **Étape 6 : commit**
+
+```bash
+git add backend/app/services/measurement backend/app/api backend/tests
+git commit -m "feat(measurement): auto-liaison de GA4 et Search Console au domaine, sans saisie"
+```
+
+---
+
+### Tâche 12 : Client frontend (types, appels, hook propriétaire)
 
 **Fichiers :**
 - Créer : `frontend/lib/api/measurement.ts`
@@ -5161,17 +6449,17 @@ git commit -m "feat(measurement): API du plan de mesure (lecture, verification, 
 - Créer : `frontend/components/plan/labels.ts`
 
 **Interfaces :**
-- Consomme : `apiGet`, `apiPost`, `apiPostSlow`, `apiPatch` (`lib/api/client.ts`),
-  `GET /workspaces/mine`.
-- Produit : types `MeasurementPlanDto`, `MeasurementItemDto`, etc. ;
+- Consomme : `apiGet`, `apiPatch`, `apiPostSlow` (`lib/api/client.ts`), `GET /workspaces/mine`,
+  les routes de la Tâche 10 et de la Tâche 11.
+- Produit : types `MeasurementPlanDto`, `MeasurementItemDto`, `AutolinkDto`… ;
   `fetchMeasurementPlan`, `refreshMeasurementPlan`, `patchMeasurementProfile`,
-  `patchMeasurementItem`, `buildMeasurementContainer` ; hook
-  `useIsOwner(realWorkspaceId)` ; libellés français dans `labels.ts`.
+  `patchMeasurementItem`, `buildMeasurementContainer` (sélection explicite **ou** pack),
+  `autolinkGoogle`, `isStale` ; hook `useIsOwner(realWorkspaceId)` ; libellés français.
 
 - [ ] **Étape 1 : créer `frontend/lib/api/measurement.ts`**
 
 ```ts
-import { apiGet, apiPatch, apiPost, apiPostSlow } from "./client";
+import { apiGet, apiPatch, apiPostSlow } from "./client";
 
 export type MeasurementState =
   | "unknown"
@@ -5190,6 +6478,8 @@ export type MeasurementLayer =
   | "seo";
 
 export type SiteType = "ecommerce" | "lead_gen" | "saas" | "content" | "other";
+
+export type GoogleConnectionState = "none" | "active" | "needs_reauth";
 
 export interface MeasurementSnippetDto {
   language: string;
@@ -5246,6 +6536,10 @@ export interface MeasurementPlanDto {
   website_id: string;
   profile: MeasurementProfileDto;
   ga4_connected: boolean;
+  gsc_linked: boolean;
+  google_connection: GoogleConnectionState;
+  /** Identifiants des (au plus) 3 items les plus utiles à faire maintenant. */
+  next_actions: string[];
   last_checked_at: string | null;
   overall_done: number;
   overall_total: number;
@@ -5268,9 +6562,38 @@ export interface MeasurementContainerDto {
   container: Record<string, unknown>;
   warnings: string[];
   filename: string;
+  /** Items dont l'événement n'existe que si le site le pousse lui-même. */
+  needs_site_code: string[];
 }
 
+export type ContainerSelection = { pack: "starter" } | { item_ids: string[] };
+
+export type LinkStatus = "linked" | "already_linked" | "ambiguous" | "none" | "skipped";
+
+export interface LinkOutcomeDto {
+  status: LinkStatus;
+  resource_id: string | null;
+  candidates: string[];
+}
+
+export interface AutolinkDto {
+  ga4: LinkOutcomeDto;
+  gsc: LinkOutcomeDto;
+  plan: MeasurementPlanDto;
+}
+
+/** Ce que l'interface garde de la dernière auto-liaison. */
+export type AutolinkSummary = Pick<AutolinkDto, "ga4" | "gsc">;
+
 const base = (websiteId: string) => `/websites/${websiteId}/measurement-plan`;
+
+/** Au-delà de 5 minutes, les vérifications légères sont relancées à l'ouverture. */
+export const STALE_AFTER_MS = 5 * 60 * 1000;
+
+export function isStale(lastCheckedAt: string | null, now: number = Date.now()): boolean {
+  if (lastCheckedAt === null) return true;
+  return now - new Date(lastCheckedAt).getTime() > STALE_AFTER_MS;
+}
 
 export function fetchMeasurementPlan(websiteId: string): Promise<MeasurementPlanDto> {
   return apiGet<MeasurementPlanDto>(base(websiteId));
@@ -5304,11 +6627,14 @@ export function patchMeasurementItem(
 
 export function buildMeasurementContainer(
   websiteId: string,
-  itemIds: string[],
+  selection: ContainerSelection,
 ): Promise<MeasurementContainerDto> {
-  return apiPost<MeasurementContainerDto>(`${base(websiteId)}/gtm-container`, {
-    item_ids: itemIds,
-  });
+  return apiPostSlow<MeasurementContainerDto>(`${base(websiteId)}/gtm-container`, selection);
+}
+
+/** Relie GA4 et Search Console au domaine (jusqu'à 20 appels Google : délai long). */
+export function autolinkGoogle(websiteId: string): Promise<AutolinkDto> {
+  return apiPostSlow<AutolinkDto>(`${base(websiteId)}/google-autolink`, undefined);
 }
 ```
 
@@ -5376,7 +6702,7 @@ export const SITE_TYPE_LABEL: Record<SiteType, string> = {
 };
 
 export const REASON_LABEL: Record<string, string> = {
-  ga4_not_connected: "Connecte un compte GA4 (page « Connexions Google ») pour aller plus loin.",
+  ga4_not_connected: "Connecte Google (un clic) pour aller plus loin.",
   headless_not_run: "Lance la vérification « en conditions réelles » pour trancher.",
   manual_check: "À vérifier à la main, puis à marquer comme fait.",
   token_unavailable: "Le compte Google doit être reconnecté.",
@@ -5397,7 +6723,7 @@ export const REASON_LABEL: Record<string, string> = {
   position_unknown: "Position du snippet indéterminée.",
   no_tracking_found: "Aucun suivi trouvé sur la page.",
   not_checked: "Pas encore vérifié.",
-  gsc_not_connected: "Connecte Search Console (page « Connexions Google »).",
+  gsc_not_connected: "Connecte Google (un clic) pour relier Search Console.",
 };
 
 export function stateLabel(item: MeasurementItemDto): string {
@@ -5437,27 +6763,34 @@ export function stateDotClass(item: MeasurementItemDto): string {
 
 ```bash
 git add frontend/lib/api/measurement.ts frontend/lib/api/use-is-owner.ts frontend/components/plan/labels.ts
-git commit -m "feat(frontend): client API du plan de mesure et libelles"
+git commit -m "feat(frontend): client API du plan de mesure, auto-liaison Google et libelles"
 ```
 
 ---
 
-### Tâche 12 : Page « Plan de mesure »
+### Tâche 13 : Page « Plan de mesure » (prise en main en paliers)
 
 **Fichiers :**
 - Créer : `frontend/app/(shell)/plan/page.tsx`
-- Créer : `frontend/components/plan/plan-view.tsx`, `plan-progress.tsx`,
-  `profile-confirm.tsx`, `plan-item-row.tsx`, `item-drawer.tsx`,
+- Créer : `frontend/components/plan/plan-view.tsx`, `plan-progress.tsx`, `next-actions.tsx`,
+  `profile-banner.tsx`, `google-step.tsx`, `plan-item-row.tsx`, `item-drawer.tsx`,
   `ads-settings.tsx`, `container-builder.tsx`
 - Modifier : `frontend/lib/shell/routes.ts`
 
 **Interfaces :**
-- Consomme : `lib/api/measurement.ts`, `useIsOwner`, `useShell` (`workspace`),
-  `PageShell`, `Sheet*`, `CopyButton`, `saveBlob` (`lib/api/client.ts`),
-  `toast` (`sonner`).
+- Consomme : `lib/api/measurement.ts` (Tâche 12), `useIsOwner`, `useShell` (`workspace`),
+  `PageShell`, `Sheet*`, `CopyButton`, `saveBlob` (`lib/api/client.ts`), `toast` (`sonner`).
 - Produit : route `/plan`, entrée « Plan de mesure » dans la navigation.
 - Un site de démo (sans `workspace.websiteId`) affiche un message d'invitation à
   ajouter un site réel.
+
+**Parcours voulu (spec v3 §7) :** à l'ouverture, le plan se vérifie tout seul s'il a
+plus de 5 minutes, puis, si un compte Google actif est connecté mais que GA4 ou
+Search Console ne sont pas liés, l'auto-liaison s'exécute **une fois** et le plan est
+revérifié. L'écran montre, dans l'ordre : le type de site deviné (bandeau non bloquant),
+l'avancement, l'étape Google, **les 3 prochaines actions**, le **pack de démarrage** (un
+bouton), puis « Pour aller plus loin » **replié** (liste complète, conteneur
+personnalisé, réglages Ads).
 
 - [ ] **Étape 1 : route et page**
 
@@ -5531,7 +6864,7 @@ export function PlanProgress({ plan }: { plan: MeasurementPlanDto }) {
 }
 ```
 
-- [ ] **Étape 3 : `profile-confirm.tsx`**
+- [ ] **Étape 3 : `profile-banner.tsx` (bandeau non bloquant)**
 
 ```tsx
 "use client";
@@ -5551,7 +6884,9 @@ import { SITE_TYPE_LABEL } from "./labels";
 
 const ALL_TYPES: SiteType[] = ["ecommerce", "lead_gen", "saas", "content", "other"];
 
-export function ProfileConfirm({
+/** Le type de site deviné est déjà appliqué : ce bandeau permet de le confirmer ou de le
+ * corriger, sans jamais bloquer la suite. Il disparaît une fois confirmé. */
+export function ProfileBanner({
   websiteId,
   plan,
   isOwner,
@@ -5562,26 +6897,31 @@ export function ProfileConfirm({
   isOwner: boolean;
   onChanged: (plan: MeasurementPlanDto) => void;
 }) {
+  const [editing, setEditing] = useState(false);
+  const [hidden, setHidden] = useState(false);
   const [selected, setSelected] = useState<SiteType[]>(plan.profile.effective_types);
   const [saving, setSaving] = useState(false);
 
-  const detected = plan.profile.detected_types;
+  if (!plan.profile.needs_confirmation || hidden) return null;
+
+  const current = plan.profile.effective_types.map((type) => SITE_TYPE_LABEL[type]).join(", ");
 
   function toggle(type: SiteType) {
-    setSelected((current) =>
-      current.includes(type) ? current.filter((t) => t !== type) : [...current, type],
+    setSelected((list) =>
+      list.includes(type) ? list.filter((item) => item !== type) : [...list, type],
     );
   }
 
-  async function confirm() {
-    if (selected.length === 0) {
+  async function confirm(types: SiteType[]) {
+    if (types.length === 0) {
       toast.error("Choisis au moins un type de site.");
       return;
     }
     setSaving(true);
     try {
-      onChanged(await patchMeasurementProfile(websiteId, { confirmed_types: selected }));
+      onChanged(await patchMeasurementProfile(websiteId, { confirmed_types: types }));
       toast("Type de site confirmé", { description: "Le plan a été ajusté." });
+      setEditing(false);
     } catch (error) {
       toast.error(error instanceof ApiError ? error.message : "Confirmation impossible");
     } finally {
@@ -5590,54 +6930,241 @@ export function ProfileConfirm({
   }
 
   return (
-    <section className="space-y-3 rounded-xl border border-white/[0.08] bg-surface/60 p-5 backdrop-blur-sm">
-      <div className="space-y-1">
-        <p className="text-sm font-medium text-ink">Quel type de site est-ce ?</p>
-        <p className="max-w-2xl text-xs leading-relaxed text-ink-muted">
-          {detected.length > 0 && detected[0].type !== "other"
-            ? "On a deviné le type de ton site. Confirme-le pour que le plan cible les bons événements : "
-            : "On n'a pas pu deviner le type de ton site. Choisis-le pour que le plan cible les bons événements : "}
-          un site peut être de plusieurs types.
+    <section className="space-y-3 rounded-xl border border-white/[0.08] bg-surface/40 px-5 py-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-xs text-ink-muted">
+          On pense que ton site est : <span className="font-medium text-ink">{current}</span>. Le
+          plan est déjà adapté.
         </p>
+        {isOwner && !editing && (
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => void confirm(plan.profile.effective_types)}
+              className="inline-flex h-8 items-center rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 text-xs font-medium text-ink-muted transition-colors hover:bg-white/[0.06] hover:text-ink disabled:opacity-60"
+            >
+              C'est bien ça
+            </button>
+            <button
+              type="button"
+              onClick={() => setEditing(true)}
+              className="text-xs text-ink-faint underline hover:text-ink"
+            >
+              Corriger
+            </button>
+            <button
+              type="button"
+              onClick={() => setHidden(true)}
+              className="text-xs text-ink-faint hover:text-ink"
+            >
+              Plus tard
+            </button>
+          </div>
+        )}
       </div>
-      <div className="flex flex-wrap gap-2">
-        {ALL_TYPES.map((type) => (
+      {editing && (
+        <div className="space-y-3">
+          <div className="flex flex-wrap gap-2">
+            {ALL_TYPES.map((type) => (
+              <button
+                key={type}
+                type="button"
+                onClick={() => toggle(type)}
+                className={cn(
+                  "inline-flex h-8 items-center rounded-lg border px-3 text-xs font-medium transition-colors",
+                  selected.includes(type)
+                    ? "border-ink/40 bg-white/[0.08] text-ink"
+                    : "border-white/[0.08] bg-white/[0.03] text-ink-muted hover:bg-white/[0.06] hover:text-ink",
+                )}
+              >
+                {SITE_TYPE_LABEL[type]}
+              </button>
+            ))}
+          </div>
+          <p className="text-2xs text-ink-faint">Un site peut être de plusieurs types.</p>
           <button
-            key={type}
             type="button"
-            disabled={!isOwner}
-            onClick={() => toggle(type)}
-            className={cn(
-              "inline-flex h-8 items-center rounded-lg border px-3 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60",
-              selected.includes(type)
-                ? "border-ink/40 bg-white/[0.08] text-ink"
-                : "border-white/[0.08] bg-white/[0.03] text-ink-muted hover:bg-white/[0.06] hover:text-ink",
-            )}
+            disabled={saving}
+            onClick={() => void confirm(selected)}
+            className="inline-flex h-9 items-center rounded-lg bg-zinc-100 px-4 text-xs font-medium text-zinc-950 shadow-sm transition-colors hover:bg-zinc-200 disabled:opacity-60"
           >
-            {SITE_TYPE_LABEL[type]}
+            Confirmer
           </button>
-        ))}
-      </div>
-      {isOwner ? (
-        <button
-          type="button"
-          disabled={saving}
-          onClick={() => void confirm()}
-          className="inline-flex h-9 items-center rounded-lg bg-zinc-100 px-4 text-xs font-medium text-zinc-950 shadow-sm transition-colors hover:bg-zinc-200 disabled:opacity-60"
-        >
-          Confirmer
-        </button>
-      ) : (
-        <p className="text-xs text-ink-faint">
-          Seul le propriétaire du workspace peut confirmer le type de site.
-        </p>
+        </div>
       )}
     </section>
   );
 }
 ```
 
-- [ ] **Étape 4 : `plan-item-row.tsx`**
+- [ ] **Étape 4 : `google-step.tsx` (palier 2)**
+
+```tsx
+"use client";
+
+import { Loader2 } from "lucide-react";
+import Link from "next/link";
+
+import type {
+  AutolinkSummary,
+  LinkOutcomeDto,
+  MeasurementPlanDto,
+} from "@/lib/api/measurement";
+
+const BUTTON =
+  "inline-flex h-9 items-center rounded-lg bg-zinc-100 px-4 text-xs font-medium text-zinc-950 shadow-sm transition-colors hover:bg-zinc-200";
+
+function explain(label: string, outcome: LinkOutcomeDto): string | null {
+  switch (outcome.status) {
+    case "ambiguous":
+      return `Plusieurs ${label} correspondent à ce domaine : choisis la bonne dans « Connexions Google ».`;
+    case "none":
+      return `Aucun ${label} ne correspond à ce domaine dans ce compte Google : crée-le, ou choisis-en un dans « Connexions Google ».`;
+    default:
+      return null;
+  }
+}
+
+/** Palier 2 : un clic pour relier Google. Rien n'est affiché quand tout est déjà lié. */
+export function GoogleStep({
+  plan,
+  autolink,
+  linking,
+}: {
+  plan: MeasurementPlanDto;
+  autolink: AutolinkSummary | null;
+  linking: boolean;
+}) {
+  if (plan.google_connection === "none") {
+    return (
+      <section className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-white/[0.08] bg-surface/60 p-5">
+        <div className="max-w-xl space-y-1">
+          <p className="text-sm font-medium text-ink">Connecte Google pour voir tes vraies données</p>
+          <p className="text-xs leading-relaxed text-ink-muted">
+            Un clic : on relie automatiquement Google Analytics et Search Console à ce site, et les
+            lignes du plan passent à « Reçu par GA4 » quand les données arrivent.
+          </p>
+        </div>
+        <Link href="/connections" className={BUTTON}>
+          Connecter Google
+        </Link>
+      </section>
+    );
+  }
+
+  if (plan.google_connection === "needs_reauth") {
+    return (
+      <section className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-white/[0.08] bg-surface/60 p-5">
+        <div className="max-w-xl space-y-1">
+          <p className="text-sm font-medium text-ink">Ta connexion Google a expiré</p>
+          <p className="text-xs leading-relaxed text-ink-muted">
+            Reconnecte ton compte pour que les données GA4 et Search Console reviennent.
+          </p>
+        </div>
+        <Link href="/connections" className={BUTTON}>
+          Reconnecter Google
+        </Link>
+      </section>
+    );
+  }
+
+  if (plan.ga4_connected && plan.gsc_linked) return null;
+
+  if (linking || autolink === null) {
+    return (
+      <p className="flex items-center gap-2 text-xs text-ink-muted">
+        <Loader2 className="size-3.5 animate-spin" />
+        On relie ton compte Google à ce site…
+      </p>
+    );
+  }
+
+  const messages = [
+    plan.ga4_connected ? null : explain("propriété Google Analytics", autolink.ga4),
+    plan.gsc_linked ? null : explain("site Search Console", autolink.gsc),
+  ].filter((message): message is string => message !== null);
+  if (messages.length === 0) return null;
+
+  return (
+    <section className="space-y-2 rounded-xl border border-white/[0.08] bg-surface/60 p-5">
+      <p className="text-sm font-medium text-ink">Une dernière liaison à faire</p>
+      <ul className="space-y-1 text-xs leading-relaxed text-ink-muted">
+        {messages.map((message) => (
+          <li key={message}>{message}</li>
+        ))}
+      </ul>
+      <Link href="/connections" className={BUTTON}>
+        Ouvrir « Connexions Google »
+      </Link>
+    </section>
+  );
+}
+```
+
+- [ ] **Étape 5 : `next-actions.tsx` (palier 1 : les 3 prochaines actions)**
+
+```tsx
+"use client";
+
+import { ChevronRight } from "lucide-react";
+
+import type { MeasurementItemDto, MeasurementPlanDto } from "@/lib/api/measurement";
+
+import { REASON_LABEL, stateLabel } from "./labels";
+
+export function NextActions({
+  plan,
+  onOpen,
+}: {
+  plan: MeasurementPlanDto;
+  onOpen: (itemId: string) => void;
+}) {
+  if (plan.last_checked_at === null) return null;
+
+  const byId = new Map(plan.items.map((item) => [item.id, item]));
+  const items = plan.next_actions
+    .map((id) => byId.get(id))
+    .filter((item): item is MeasurementItemDto => item !== undefined);
+
+  if (items.length === 0) {
+    return (
+      <p className="text-xs text-ink-muted">
+        Rien d'urgent : tout ce qui compte est en place. Ouvre « Pour aller plus loin » pour
+        approfondir.
+      </p>
+    );
+  }
+
+  return (
+    <section className="space-y-2">
+      <h2 className="text-sm font-medium text-ink">Tes prochaines actions</h2>
+      <ul className="overflow-hidden rounded-xl border border-white/[0.08] bg-surface/30">
+        {items.map((item) => (
+          <li key={item.id} className="border-t border-white/[0.05] first:border-t-0">
+            <button
+              type="button"
+              onClick={() => onOpen(item.id)}
+              className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-white/[0.02]"
+            >
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-medium text-ink">{item.title}</span>
+                <span className="block text-xs leading-relaxed text-ink-muted">
+                  {item.reason && !item.done ? (REASON_LABEL[item.reason] ?? item.reason) : item.why}
+                </span>
+              </span>
+              <span className="shrink-0 text-xs text-ink-muted">{stateLabel(item)}</span>
+              <ChevronRight className="size-4 shrink-0 text-ink-faint" />
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+```
+
+- [ ] **Étape 6 : `plan-item-row.tsx`**
 
 ```tsx
 "use client";
@@ -5662,7 +7189,7 @@ export function PlanItemRow({
   selected: boolean;
   onToggle: () => void;
 }) {
-  const muted = item.state === "not_applicable" || item.state === "dismissed";
+  const muted = item.state === "dismissed";
   return (
     <div
       className={cn(
@@ -5708,7 +7235,7 @@ export function PlanItemRow({
 }
 ```
 
-- [ ] **Étape 5 : `item-drawer.tsx`**
+- [ ] **Étape 7 : `item-drawer.tsx`**
 
 ```tsx
 "use client";
@@ -5888,7 +7415,7 @@ export function ItemDrawer({
 }
 ```
 
-- [ ] **Étape 6 : `ads-settings.tsx`**
+- [ ] **Étape 8 : `ads-settings.tsx` (la publicité n'apparaît que si l'utilisateur en fait)**
 
 ```tsx
 "use client";
@@ -5904,6 +7431,8 @@ import {
 
 const INPUT =
   "h-9 w-full rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 text-xs text-ink placeholder:text-ink-faint focus:border-ink/40 focus:outline-none disabled:opacity-60";
+const SECONDARY =
+  "inline-flex h-9 items-center rounded-lg border border-white/[0.08] bg-white/[0.03] px-3.5 text-xs font-medium text-ink-muted transition-colors hover:bg-white/[0.06] hover:text-ink disabled:opacity-60";
 
 export function AdsSettings({
   websiteId,
@@ -5917,22 +7446,16 @@ export function AdsSettings({
   onChanged: (plan: MeasurementPlanDto) => void;
 }) {
   const params = plan.profile.params;
-  const [usesAds, setUsesAds] = useState(params.uses_google_ads !== false);
+  const usesAds = params.uses_google_ads === true;
   const [convId, setConvId] = useState(params.ads_conversion_id ?? "");
   const [label, setLabel] = useState(params.ads_conversion_label ?? "");
   const [saving, setSaving] = useState(false);
 
-  async function save() {
+  async function patch(body: Parameters<typeof patchMeasurementProfile>[1], done: string) {
     setSaving(true);
     try {
-      onChanged(
-        await patchMeasurementProfile(websiteId, {
-          uses_google_ads: usesAds,
-          ads_conversion_id: convId.trim() || null,
-          ads_conversion_label: label.trim() || null,
-        }),
-      );
-      toast("Réglages Ads enregistrés");
+      onChanged(await patchMeasurementProfile(websiteId, body));
+      toast(done);
     } catch (error) {
       toast.error(error instanceof ApiError ? error.message : "Enregistrement impossible");
     } finally {
@@ -5940,51 +7463,84 @@ export function AdsSettings({
     }
   }
 
+  if (!usesAds) {
+    return (
+      <section className="space-y-3 rounded-xl border border-white/[0.08] bg-surface/60 p-5">
+        <div className="space-y-1">
+          <p className="text-sm font-medium text-ink">Fais-tu de la publicité Google Ads ?</p>
+          <p className="max-w-2xl text-xs leading-relaxed text-ink-muted">
+            Si oui, on ajoute au plan les vérifications de conversion, le lien GA4 - Ads et le
+            Conversion Linker. Sinon, rien à faire : cette partie reste masquée.
+          </p>
+        </div>
+        {isOwner ? (
+          <button
+            type="button"
+            disabled={saving}
+            onClick={() => void patch({ uses_google_ads: true }, "Publicité ajoutée au plan")}
+            className={SECONDARY}
+          >
+            Oui, j'en fais
+          </button>
+        ) : (
+          <p className="text-xs text-ink-faint">Seul le propriétaire peut modifier ce réglage.</p>
+        )}
+      </section>
+    );
+  }
+
   return (
-    <section className="space-y-3 rounded-xl border border-white/[0.08] bg-surface/60 p-5 backdrop-blur-sm">
+    <section className="space-y-3 rounded-xl border border-white/[0.08] bg-surface/60 p-5">
       <div className="space-y-1">
         <p className="text-sm font-medium text-ink">Réglages Google Ads</p>
         <p className="max-w-2xl text-xs leading-relaxed text-ink-muted">
-          Si tu ne fais pas de publicité Google, désactive cette couche. Sinon, renseigne l'ID et le
-          libellé de ta conversion (Google Ads &gt; Objectifs &gt; Conversions) pour les inclure
-          dans « Mon conteneur GTM ».
+          Renseigne l'ID et le libellé de ta conversion (Google Ads &gt; Objectifs &gt;
+          Conversions) pour les inclure dans un conteneur GTM personnalisé.
         </p>
       </div>
-      <label className="flex items-center gap-2 text-xs text-ink-muted">
-        <input
-          type="checkbox"
-          checked={usesAds}
-          disabled={!isOwner}
-          onChange={(event) => setUsesAds(event.target.checked)}
-          className="size-3.5 accent-zinc-200"
-        />
-        Je fais de la publicité Google Ads
-      </label>
       <div className="grid gap-3 sm:grid-cols-2">
         <input
           className={INPUT}
           placeholder="ID de conversion (AW-123456789)"
           value={convId}
-          disabled={!isOwner || !usesAds}
+          disabled={!isOwner}
           onChange={(event) => setConvId(event.target.value)}
         />
         <input
           className={INPUT}
           placeholder="Libellé de conversion"
           value={label}
-          disabled={!isOwner || !usesAds}
+          disabled={!isOwner}
           onChange={(event) => setLabel(event.target.value)}
         />
       </div>
       {isOwner ? (
-        <button
-          type="button"
-          disabled={saving}
-          onClick={() => void save()}
-          className="inline-flex h-9 items-center rounded-lg border border-white/[0.08] bg-white/[0.03] px-3.5 text-xs font-medium text-ink-muted transition-colors hover:bg-white/[0.06] hover:text-ink disabled:opacity-60"
-        >
-          Enregistrer
-        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            disabled={saving}
+            onClick={() =>
+              void patch(
+                {
+                  ads_conversion_id: convId.trim() || null,
+                  ads_conversion_label: label.trim() || null,
+                },
+                "Réglages Ads enregistrés",
+              )
+            }
+            className={SECONDARY}
+          >
+            Enregistrer
+          </button>
+          <button
+            type="button"
+            disabled={saving}
+            onClick={() => void patch({ uses_google_ads: false }, "Publicité retirée du plan")}
+            className="text-xs text-ink-faint underline hover:text-ink disabled:opacity-60"
+          >
+            Je ne fais plus de publicité
+          </button>
+        </div>
       ) : (
         <p className="text-xs text-ink-faint">Seul le propriétaire peut modifier ces réglages.</p>
       )}
@@ -5993,7 +7549,7 @@ export function AdsSettings({
 }
 ```
 
-- [ ] **Étape 7 : `container-builder.tsx`**
+- [ ] **Étape 9 : `container-builder.tsx` (pack de démarrage + conteneur personnalisé)**
 
 ```tsx
 "use client";
@@ -6004,38 +7560,54 @@ import { toast } from "sonner";
 import { ApiError, saveBlob } from "@/lib/api/client";
 import {
   buildMeasurementContainer,
+  type ContainerSelection,
   type MeasurementItemDto,
+  type MeasurementPlanDto,
 } from "@/lib/api/measurement";
 
-export function ContainerBuilder({
+async function download(websiteId: string, selection: ContainerSelection) {
+  const result = await buildMeasurementContainer(websiteId, selection);
+  saveBlob(
+    new Blob([JSON.stringify(result.container, null, 2)], { type: "application/json" }),
+    result.filename,
+  );
+  return result;
+}
+
+const IMPORT_STEPS =
+  "Dans Google Tag Manager : Administration > Importer un conteneur > choisis le fichier > " +
+  "espace de travail existant > « Fusionner » > confirme, puis clique sur « Envoyer » pour publier.";
+
+function siteCodeNote(ids: string[], items: MeasurementItemDto[]): string | null {
+  if (ids.length === 0) return null;
+  const titles = ids
+    .map((id) => items.find((item) => item.id === id)?.title ?? id)
+    .join(", ");
+  return `Ces événements ont aussi besoin d'un petit code dans ton site (snippet dans la ligne correspondante) : ${titles}.`;
+}
+
+/** Palier 3 : un fichier, aucune case à cocher. */
+export function StarterPackCard({
   websiteId,
-  items,
-  selectedIds,
-  onSelectMissing,
-  onClear,
+  plan,
 }: {
   websiteId: string;
-  items: MeasurementItemDto[];
-  selectedIds: string[];
-  onSelectMissing: () => void;
-  onClear: () => void;
+  plan: MeasurementPlanDto;
 }) {
   const [busy, setBusy] = useState(false);
-  const [warnings, setWarnings] = useState<string[]>([]);
-  const selectable = items.filter((item) => item.actions.includes("gtm_container"));
+  const [notes, setNotes] = useState<string[]>([]);
 
   async function generate() {
     setBusy(true);
     try {
-      const result = await buildMeasurementContainer(websiteId, selectedIds);
-      saveBlob(
-        new Blob([JSON.stringify(result.container, null, 2)], { type: "application/json" }),
-        result.filename,
+      const result = await download(websiteId, { pack: "starter" });
+      setNotes(
+        [
+          ...result.warnings,
+          siteCodeNote(result.needs_site_code, plan.items),
+        ].filter((note): note is string => note !== null),
       );
-      setWarnings(result.warnings);
-      toast("Conteneur GTM généré", {
-        description: "Importe-le dans GTM : Administration > Importer un conteneur > Fusionner.",
-      });
+      toast("Pack de démarrage généré", { description: IMPORT_STEPS });
     } catch (error) {
       toast.error(error instanceof ApiError ? error.message : "Génération impossible");
     } finally {
@@ -6044,46 +7616,123 @@ export function ContainerBuilder({
   }
 
   return (
-    <section className="space-y-3 rounded-xl border border-white/[0.08] bg-surface/60 p-5 backdrop-blur-sm">
+    <section className="space-y-3 rounded-xl border border-white/[0.08] bg-surface/60 p-5">
       <div className="space-y-1">
-        <p className="text-sm font-medium text-ink">Mon conteneur GTM</p>
+        <p className="text-sm font-medium text-ink">Pack de démarrage</p>
         <p className="max-w-2xl text-xs leading-relaxed text-ink-muted">
-          Coche les lignes à mettre en place (case à gauche des lignes concernées) : on génère un
-          seul fichier à importer dans GTM, avec les balises et déclencheurs correspondants.{" "}
-          {selectable.length} ligne{selectable.length > 1 ? "s" : ""} concernée
-          {selectable.length > 1 ? "s" : ""}.
+          Un seul fichier à importer dans Google Tag Manager, avec Google Analytics 4 et les
+          événements essentiels pour ton type de site. Aucun choix à faire : on vérifie ensuite
+          tout seul que ça marche.
+        </p>
+      </div>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => void generate()}
+        className="inline-flex h-9 items-center rounded-lg bg-zinc-100 px-4 text-xs font-medium text-zinc-950 shadow-sm transition-colors hover:bg-zinc-200 disabled:opacity-60"
+      >
+        Générer mon pack de démarrage
+      </button>
+      <p className="text-2xs leading-relaxed text-ink-faint">{IMPORT_STEPS}</p>
+      {notes.length > 0 && (
+        <ul className="space-y-1 text-xs leading-relaxed text-warn">
+          {notes.map((note) => (
+            <li key={note}>{note}</li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+/** Option avancée : choisir soi-même les lignes du conteneur. */
+export function AdvancedContainer({
+  websiteId,
+  plan,
+  selectMode,
+  onToggleSelectMode,
+  selectedIds,
+  onSelectMissing,
+  onClear,
+}: {
+  websiteId: string;
+  plan: MeasurementPlanDto;
+  selectMode: boolean;
+  onToggleSelectMode: () => void;
+  selectedIds: string[];
+  onSelectMissing: () => void;
+  onClear: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [notes, setNotes] = useState<string[]>([]);
+
+  async function generate() {
+    setBusy(true);
+    try {
+      const result = await download(websiteId, { item_ids: selectedIds });
+      setNotes(
+        [
+          ...result.warnings,
+          siteCodeNote(result.needs_site_code, plan.items),
+        ].filter((note): note is string => note !== null),
+      );
+      toast("Conteneur GTM généré", { description: IMPORT_STEPS });
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : "Génération impossible");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="space-y-3 rounded-xl border border-white/[0.08] bg-surface/60 p-5">
+      <div className="space-y-1">
+        <p className="text-sm font-medium text-ink">Conteneur GTM personnalisé</p>
+        <p className="max-w-2xl text-xs leading-relaxed text-ink-muted">
+          Pour aller plus loin que le pack de démarrage : choisis toi-même les lignes à inclure.
         </p>
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
-          onClick={onSelectMissing}
+          onClick={onToggleSelectMode}
           className="inline-flex h-8 items-center rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 text-xs font-medium text-ink-muted transition-colors hover:bg-white/[0.06] hover:text-ink"
         >
-          Cocher les lignes manquantes
+          {selectMode ? "Terminer la sélection" : "Choisir les lignes"}
         </button>
-        {selectedIds.length > 0 && (
-          <button
-            type="button"
-            onClick={onClear}
-            className="text-xs text-ink-faint underline hover:text-ink"
-          >
-            Tout décocher
-          </button>
+        {selectMode && (
+          <>
+            <button
+              type="button"
+              onClick={onSelectMissing}
+              className="inline-flex h-8 items-center rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 text-xs font-medium text-ink-muted transition-colors hover:bg-white/[0.06] hover:text-ink"
+            >
+              Cocher les lignes manquantes
+            </button>
+            {selectedIds.length > 0 && (
+              <button
+                type="button"
+                onClick={onClear}
+                className="text-xs text-ink-faint underline hover:text-ink"
+              >
+                Tout décocher
+              </button>
+            )}
+            <button
+              type="button"
+              disabled={busy || selectedIds.length === 0}
+              onClick={() => void generate()}
+              className="inline-flex h-9 items-center rounded-lg bg-zinc-100 px-4 text-xs font-medium text-zinc-950 shadow-sm transition-colors hover:bg-zinc-200 disabled:opacity-50"
+            >
+              Générer ({selectedIds.length})
+            </button>
+          </>
         )}
-        <button
-          type="button"
-          disabled={busy || selectedIds.length === 0}
-          onClick={() => void generate()}
-          className="inline-flex h-9 items-center rounded-lg bg-zinc-100 px-4 text-xs font-medium text-zinc-950 shadow-sm transition-colors hover:bg-zinc-200 disabled:opacity-50"
-        >
-          Générer ({selectedIds.length})
-        </button>
       </div>
-      {warnings.length > 0 && (
-        <ul className="space-y-1 text-xs text-warn">
-          {warnings.map((warning) => (
-            <li key={warning}>{warning}</li>
+      {notes.length > 0 && (
+        <ul className="space-y-1 text-xs leading-relaxed text-warn">
+          {notes.map((note) => (
+            <li key={note}>{note}</li>
           ))}
         </ul>
       )}
@@ -6092,20 +7741,23 @@ export function ContainerBuilder({
 }
 ```
 
-- [ ] **Étape 8 : `plan-view.tsx`**
+- [ ] **Étape 10 : `plan-view.tsx`**
 
 ```tsx
 "use client";
 
 import { Loader2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { PageShell } from "@/components/shell/page-shell";
 import { ApiError } from "@/lib/api/client";
 import {
+  autolinkGoogle,
   fetchMeasurementPlan,
+  isStale,
   refreshMeasurementPlan,
+  type AutolinkSummary,
   type MeasurementItemDto,
   type MeasurementLayer,
   type MeasurementPlanDto,
@@ -6114,12 +7766,14 @@ import { useIsOwner } from "@/lib/api/use-is-owner";
 import { useShell } from "@/lib/shell/shell-context";
 
 import { AdsSettings } from "./ads-settings";
-import { ContainerBuilder } from "./container-builder";
+import { AdvancedContainer, StarterPackCard } from "./container-builder";
+import { GoogleStep } from "./google-step";
 import { ItemDrawer } from "./item-drawer";
 import { LAYER_LABEL } from "./labels";
+import { NextActions } from "./next-actions";
 import { PlanItemRow } from "./plan-item-row";
 import { PlanProgress } from "./plan-progress";
-import { ProfileConfirm } from "./profile-confirm";
+import { ProfileBanner } from "./profile-banner";
 
 const LAYERS: MeasurementLayer[] = ["foundations", "events", "conversions", "ads", "seo"];
 
@@ -6134,31 +7788,59 @@ export function PlanView() {
   const [refreshing, setRefreshing] = useState(false);
   const [realConditions, setRealConditions] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [autolink, setAutolink] = useState<AutolinkSummary | null>(null);
+  const [linking, setLinking] = useState(false);
+  // Une seule tentative d'auto-liaison par site et par ouverture de la page.
+  const autolinkTried = useRef<string | null>(null);
 
-  const refresh = useCallback(
-    async (id: string, headless: boolean) => {
-      setRefreshing(true);
+  const refresh = useCallback(async (id: string, headless: boolean) => {
+    setRefreshing(true);
+    try {
+      const next = await refreshMeasurementPlan(id, headless);
+      setPlan(next);
+      if (next.headless_skipped) {
+        toast("Vérification réelle déjà faite il y a moins de 5 minutes", {
+          description: "Les autres vérifications ont été relancées.",
+        });
+      }
+      if (next.headless_error) {
+        toast.error("Le navigateur de vérification a échoué", {
+          description: next.headless_error,
+        });
+      }
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Vérification impossible");
+    } finally {
+      setRefreshing(false);
+    }
+  }, []);
+
+  const runAutolink = useCallback(
+    async (id: string) => {
+      setLinking(true);
       try {
-        const next = await refreshMeasurementPlan(id, headless);
-        setPlan(next);
-        if (next.headless_skipped) {
-          toast("Vérification réelle déjà faite il y a moins de 5 minutes", {
-            description: "Les autres vérifications ont été relancées.",
+        const result = await autolinkGoogle(id);
+        setAutolink(result);
+        setPlan(result.plan);
+        if (result.ga4.status === "linked" || result.gsc.status === "linked") {
+          toast("Google relié à ce site", {
+            description: "On revérifie ton plan avec tes vraies données.",
           });
+          await refresh(id, false);
         }
-        if (next.headless_error) {
-          toast.error("Le navigateur de vérification a échoué", {
-            description: next.headless_error,
-          });
-        }
-      } catch (err) {
-        toast.error(err instanceof ApiError ? err.message : "Vérification impossible");
+      } catch {
+        // Silencieux : l'étape Google garde un lien vers « Connexions Google ».
+        setAutolink({
+          ga4: { status: "skipped", resource_id: null, candidates: [] },
+          gsc: { status: "skipped", resource_id: null, candidates: [] },
+        });
       } finally {
-        setRefreshing(false);
+        setLinking(false);
       }
     },
-    [],
+    [refresh],
   );
 
   const load = useCallback(
@@ -6169,13 +7851,20 @@ export function PlanView() {
         const current = await fetchMeasurementPlan(id);
         setPlan(current);
         setStatus("loaded");
-        if (current.last_checked_at === null) await refresh(id, false);
+        if (isStale(current.last_checked_at)) await refresh(id, false);
+        const needsLinks =
+          current.google_connection === "active" &&
+          (!current.ga4_connected || !current.gsc_linked);
+        if (needsLinks && autolinkTried.current !== id) {
+          autolinkTried.current = id;
+          await runAutolink(id);
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : "Erreur inconnue");
         setStatus("error");
       }
     },
-    [refresh],
+    [refresh, runAutolink],
   );
 
   useEffect(() => {
@@ -6242,6 +7931,7 @@ export function PlanView() {
         !item.done,
     )
     .map((item) => item.id);
+  const visibleCount = Array.from(byLayer.values()).reduce((sum, list) => sum + list.length, 0);
 
   return (
     <PageShell
@@ -6270,67 +7960,77 @@ export function PlanView() {
         </div>
       }
     >
-      {plan.profile.needs_confirmation && (
-        <ProfileConfirm
-          websiteId={websiteId}
-          plan={plan}
-          isOwner={isOwner}
-          onChanged={setPlan}
-        />
-      )}
-
-      <PlanProgress plan={plan} />
-
-      {!plan.ga4_connected && (
-        <p className="text-xs text-ink-muted">
-          GA4 n'est pas connecté : les lignes ne peuvent pas passer à « Reçu par GA4 ». Connecte-le
-          dans « Connexions Google » pour obtenir une preuve fiable.
-        </p>
-      )}
-
-      {LAYERS.map((layer) => {
-        const items = byLayer.get(layer) ?? [];
-        if (items.length === 0) return null;
-        return (
-          <section key={layer} className="space-y-2">
-            <h2 className="text-sm font-medium text-ink">{LAYER_LABEL[layer]}</h2>
-            <div className="overflow-hidden rounded-xl border border-white/[0.08] bg-surface/30">
-              {items.map((item) => (
-                <PlanItemRow
-                  key={item.id}
-                  item={item}
-                  onOpen={() => setOpenId(item.id)}
-                  selectable={selectableIds.includes(item.id)}
-                  selected={selectedIds.includes(item.id)}
-                  onToggle={() =>
-                    setSelectedIds((current) =>
-                      current.includes(item.id)
-                        ? current.filter((id) => id !== item.id)
-                        : [...current, item.id],
-                    )
-                  }
-                />
-              ))}
-            </div>
-          </section>
-        );
-      })}
-
-      <ContainerBuilder
-        websiteId={websiteId}
-        items={plan.items}
-        selectedIds={selectedIds}
-        onSelectMissing={() => setSelectedIds(missingIds)}
-        onClear={() => setSelectedIds([])}
-      />
-
-      <AdsSettings
-        key={JSON.stringify(plan.profile.params)}
+      <ProfileBanner
+        key={plan.profile.effective_types.join(",")}
         websiteId={websiteId}
         plan={plan}
         isOwner={isOwner}
         onChanged={setPlan}
       />
+
+      <PlanProgress plan={plan} />
+
+      <GoogleStep plan={plan} autolink={autolink} linking={linking} />
+
+      <NextActions plan={plan} onOpen={setOpenId} />
+
+      <StarterPackCard websiteId={websiteId} plan={plan} />
+
+      <details className="group rounded-xl border border-white/[0.08] bg-surface/30">
+        <summary className="cursor-pointer select-none px-5 py-4 text-sm font-medium text-ink">
+          Pour aller plus loin{" "}
+          <span className="font-normal text-ink-muted">
+            ({visibleCount} ligne{visibleCount > 1 ? "s" : ""}, conteneur personnalisé, publicité)
+          </span>
+        </summary>
+        <div className="space-y-6 px-5 pb-5">
+          {LAYERS.map((layer) => {
+            const items = byLayer.get(layer) ?? [];
+            if (items.length === 0) return null;
+            return (
+              <section key={layer} className="space-y-2">
+                <h2 className="text-sm font-medium text-ink">{LAYER_LABEL[layer]}</h2>
+                <div className="overflow-hidden rounded-xl border border-white/[0.08] bg-surface/30">
+                  {items.map((item) => (
+                    <PlanItemRow
+                      key={item.id}
+                      item={item}
+                      onOpen={() => setOpenId(item.id)}
+                      selectable={selectMode && selectableIds.includes(item.id)}
+                      selected={selectedIds.includes(item.id)}
+                      onToggle={() =>
+                        setSelectedIds((current) =>
+                          current.includes(item.id)
+                            ? current.filter((id) => id !== item.id)
+                            : [...current, item.id],
+                        )
+                      }
+                    />
+                  ))}
+                </div>
+              </section>
+            );
+          })}
+
+          <AdvancedContainer
+            websiteId={websiteId}
+            plan={plan}
+            selectMode={selectMode}
+            onToggleSelectMode={() => setSelectMode((value) => !value)}
+            selectedIds={selectedIds}
+            onSelectMissing={() => setSelectedIds(missingIds)}
+            onClear={() => setSelectedIds([])}
+          />
+
+          <AdsSettings
+            key={JSON.stringify(plan.profile.params)}
+            websiteId={websiteId}
+            plan={plan}
+            isOwner={isOwner}
+            onChanged={setPlan}
+          />
+        </div>
+      </details>
 
       <ItemDrawer
         item={openItem}
@@ -6344,30 +8044,38 @@ export function PlanView() {
   );
 }
 ```
+- [ ] **Étape 11 : vérifier**
 
-- [ ] **Étape 9 : vérifier**
+`cd frontend && npm run lint && npm run build` → 0 erreur / 0 warning ; la route `/plan`
+apparaît dans la liste des routes.
 
-`cd frontend && npm run lint && npm run build` → 0 erreur / 0 warning ; la route
-`/plan` apparaît dans la liste des routes.
+- [ ] **Étape 12 : vérification dans le navigateur**
 
-- [ ] **Étape 10 : vérification dans le navigateur** (voir aussi Tâche 14). Démarrer
-  le backend et le frontend (`scripts/dev.sh`, ou l'aperçu intégré), s'inscrire,
-  ajouter un site réel, ouvrir `/plan` : le plan se calcule à l'ouverture, le type
-  de site est proposé, les lignes s'affichent groupées par couche, un tiroir
-  s'ouvre avec explication / guide / snippet, « Vérifier maintenant » fonctionne,
-  « Cocher les lignes manquantes » puis « Générer » télécharge un JSON. Arrêter les
-  serveurs ensuite.
+Démarrer le backend et le frontend (`scripts/dev.sh`, ou l'aperçu intégré), créer un
+compte, ajouter un site réel, ouvrir `/plan` :
+1. Sans connexion Google : le plan se calcule à l'ouverture ; le bandeau propose le type
+   deviné ; la carte « Connecte Google » est présente ; « Tes prochaines actions » liste au
+   plus 3 lignes ; le pack de démarrage est le bouton principal ; « Pour aller plus loin »
+   est **replié** et la couche publicité n'apparaît pas.
+2. « Générer mon pack de démarrage » télécharge un JSON ; les notes signalent les
+   événements qui ont besoin d'un snippet.
+3. En dépliant « Pour aller plus loin » : « Choisir les lignes » fait apparaître les cases,
+   « Cocher les lignes manquantes » puis « Générer » télécharge un JSON ; répondre « Oui,
+   j'en fais » sous « Fais-tu de la publicité… » ajoute la couche Ads à la liste.
+4. Un tiroir s'ouvre avec explication, constat, guide et snippet ; « Vérifier maintenant »
+   fonctionne.
+Arrêter les serveurs ensuite.
 
-- [ ] **Étape 11 : commit**
+- [ ] **Étape 13 : commit**
 
 ```bash
 git add frontend/app/\(shell\)/plan frontend/components/plan frontend/lib/shell/routes.ts
-git commit -m "feat(frontend): page Plan de mesure (progression, lignes par couche, tiroir, conteneur GTM)"
+git commit -m "feat(frontend): page Plan de mesure en paliers (prochaines actions, pack de demarrage, etape Google)"
 ```
 
 ---
 
-### Tâche 13 : Carte d'avancement (vue d'ensemble) et préremplissage du conseiller
+### Tâche 14 : Carte d'avancement (vue d'ensemble) et préremplissage du conseiller
 
 **Fichiers :**
 - Créer : `frontend/components/overview/plan-progress-card.tsx`
@@ -6375,9 +8083,9 @@ git commit -m "feat(frontend): page Plan de mesure (progression, lignes par couc
 - Modifier : `frontend/components/conseiller/advisor-view.tsx`
 
 **Interfaces :**
-- Consomme : `fetchMeasurementPlan` (Tâche 11), `workspace.websiteId`.
-- Produit : carte cliquable vers `/plan` sur la vue d'ensemble ; le conseiller lit
-  `?prompt=` et préremplit `chatInput` une seule fois.
+- Consomme : `fetchMeasurementPlan` (Tâche 12), `workspace.websiteId`.
+- Produit : carte cliquable vers `/plan` sur la vue d'ensemble, qui affiche la **prochaine
+  action** ; le conseiller lit `?prompt=` et préremplit `chatInput` une seule fois.
 
 - [ ] **Étape 1 : `plan-progress-card.tsx`**
 
@@ -6410,6 +8118,7 @@ export function PlanProgressCard({ websiteId }: { websiteId: string | undefined 
   if (!websiteId || plan === null) return null;
 
   const started = plan.last_checked_at !== null;
+  const next = plan.items.find((item) => item.id === plan.next_actions[0]);
   return (
     <Link
       href="/plan"
@@ -6418,9 +8127,11 @@ export function PlanProgressCard({ websiteId }: { websiteId: string | undefined 
       <div className="space-y-1">
         <p className="text-sm font-medium text-ink">Plan de mesure</p>
         <p className="text-xs text-ink-muted">
-          {started
-            ? `${plan.overall_done} point${plan.overall_done > 1 ? "s" : ""} en place sur ${plan.overall_total}. Ouvre le plan pour voir la suite.`
-            : "Découvre ce qu'il faut mettre en place pour mesurer ton trafic et tes conversions."}
+          {!started
+            ? "Découvre ce qu'il faut mettre en place pour mesurer ton trafic et tes conversions."
+            : next
+              ? `Prochaine action : ${next.title}.`
+              : "Tout ce qui compte est en place."}
         </p>
       </div>
       {started && (
@@ -6457,20 +8168,20 @@ dans le champ de saisie : l'utilisateur relit et envoie lui-même.
 - [ ] **Étape 4 : vérifier**
 
 `cd frontend && npm run lint && npm run build` → 0 erreur / 0 warning. Vérification
-dans le navigateur : la carte apparaît sur `/overview` pour un site réel et mène à
-`/plan` ; depuis un tiroir, « Demander au conseiller » ouvre `/conseiller` avec le
-champ prérempli.
+dans le navigateur : la carte apparaît sur `/overview` pour un site réel, affiche la
+prochaine action et mène à `/plan` ; depuis un tiroir, « Demander au conseiller » ouvre
+`/conseiller` avec le champ prérempli.
 
 - [ ] **Étape 5 : commit**
 
 ```bash
 git add frontend/components/overview frontend/components/conseiller/advisor-view.tsx
-git commit -m "feat(frontend): carte d'avancement sur la vue d'ensemble et prompt prerempli du conseiller"
+git commit -m "feat(frontend): carte d'avancement avec prochaine action et prompt prerempli du conseiller"
 ```
 
 ---
 
-### Tâche 14 : Vérification finale et mémoire
+### Tâche 15 : Vérification finale et mémoire
 
 **Fichiers :** aucun changement de code attendu.
 
@@ -6500,15 +8211,32 @@ Attendu : 0 erreur / 0 warning ; routes `/plan` présente.
 Avec `scripts/dev.sh` (vérifier d'abord qu'aucun processus orphelin n'occupe les
 ports 8020 / 4000 ; ne tuer que ce qu'on a démarré soi-même), sur un vrai site
 (par exemple `qaopscareer.com`, où `generate_lead` est connu comme manquant) :
-1. Le plan se calcule à l'ouverture de `/plan`, le type de site est proposé.
+**Palier 1 (aucune connexion Google) :**
+1. Le plan se calcule à l'ouverture de `/plan` ; le bandeau propose le type de site
+   deviné (sans bloquer) ; « Tes prochaines actions » liste au plus 3 lignes, la
+   première étant la plus utile ; la couche publicité est absente.
 2. Les lignes « GTM installé » et « balise GA4 » reflètent la réalité du site.
 3. Sans GA4 connecté, aucune ligne d'événement n'affiche « Reçu par GA4 ».
-4. « En conditions réelles » lance le navigateur headless (Chromium installé) et
+4. La carte « Connecte Google pour voir tes vraies données » est visible.
+5. « Générer mon pack de démarrage » télécharge un JSON valide ; les notes signalent
+   les événements qui ont besoin d'un snippet dans le site.
+6. « Pour aller plus loin » est replié ; une fois déplié : « Choisir les lignes », puis
+   « Cocher les lignes manquantes », puis « Générer » télécharge un JSON valide ;
+   « Oui, j'en fais » (publicité) ajoute la couche Ads.
+
+**Palier 2 (compte Google réel, Google Cloud Console configuré comme pour `/connections`) :**
+7. Après « Connecter Google » sur `/connections`, revenir sur `/plan` : l'auto-liaison
+   s'exécute une seule fois, un message « Google relié à ce site » apparaît, et le plan
+   est revérifié (des lignes passent à « Reçu par GA4 » si GA4 reçoit des données).
+   Si plusieurs propriétés correspondent, ou aucune, la carte l'explique et renvoie vers
+   « Connexions Google » sans rien lier.
+8. « En conditions réelles » lance le navigateur headless (Chromium installé) et
    améliore les lignes GA4 / Consent Mode / Ads ; un second clic dans les 5 minutes
    affiche le message de délai.
-5. « Cocher les lignes manquantes » puis « Générer » télécharge un JSON valide.
-6. Un utilisateur non propriétaire voit le plan mais ne peut pas confirmer le type,
-   écarter une ligne ni modifier les réglages Ads.
+
+**Rôles :**
+9. Un utilisateur non propriétaire voit le plan mais ne peut ni confirmer le type,
+   ni écarter une ligne, ni modifier les réglages Ads.
 Consigner les constats (et toute anomalie) dans le compte rendu.
 
 - [ ] **Étape 4 : contrôle manuel du conteneur GTM** (voir Tâche 8, étape 5) :
@@ -6523,6 +8251,7 @@ mettre à jour la ligne correspondante de `MEMORY.md`.
 
 - [ ] **Étape 6 : rapport à l'utilisateur** : nombre de tests, résultat build/lint,
   constats du contrôle navigateur, résultat de l'import GTM de test, rappel que le
-  déploiement Cloud Run reste à valider par lui (nouvelle migration à appliquer :
-  `alembic upgrade head` est déjà exécuté au démarrage du conteneur), et que le
-  contenu du catalogue (titres, explications, guides) est à relire.
+  déploiement Cloud Run reste à valider par lui (la nouvelle migration `8f2a6c41d7b3`
+  s'applique via le Cloud Run Job de migration de `scripts/deploy-backend.sh`, issu du
+  lot 0 : le conteneur ne migre plus au démarrage), et que le contenu du catalogue
+  (titres, explications, guides) est à relire.
