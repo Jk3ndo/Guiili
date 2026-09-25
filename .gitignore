@@ -27,3 +27,7 @@ docker-compose.override.yml
 
 # scripts/dev.sh runtime (pids + logs)
 .dev/
+
+# Fichiers d'environnement de deploiement (contiennent des secrets)
+deploy/env.*.yaml
+!deploy/env.example.yaml
