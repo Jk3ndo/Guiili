@@ -33,6 +33,8 @@ from app.services.gtm_check import GtmFinding
 _GTM_HOST_HINT = "googletagmanager.com"
 _GA4_HOSTS = ("google-analytics.com", "analytics.google.com")
 _ADS_HOSTS = ("googleadservices.com", "googleads.g.doubleclick.net")
+_GA4_ID_RE = re.compile(r"^G-[A-Z0-9]{4,20}$")
+_MAX_GA4_IDS = 10
 _CSP_HINT = "content security policy"
 # Chrome imprime la ressource bloquee entre apostrophes en tete du message
 # ("Refused to load the script 'https://...'" / "Loading the script '...'
@@ -79,7 +81,16 @@ def _is_ga4_collect(url: str) -> bool:
 
 def _ga4_id_from_url(url: str) -> str | None:
     values = parse_qs(urlparse(url).query).get("tid")
-    return values[0] if values else None
+    if not values or not _GA4_ID_RE.fullmatch(values[0]):
+        return None
+    return values[0]
+
+
+def _record_ga4_id(ids: list[str], url: str) -> None:
+    """Ajoute l'identifiant GA4 de `url` a `ids` (valide, sans doublon, plafonne)."""
+    tid = _ga4_id_from_url(url)
+    if tid and tid not in ids and len(ids) < _MAX_GA4_IDS:
+        ids.append(tid)
 
 
 def _is_ads_request(url: str) -> bool:
@@ -194,14 +205,12 @@ async def verify_gtm(url: str, *, timeout: float = 20.0) -> GtmHeadlessResult:
 
                 def _on_request(request: Any) -> None:
                     nonlocal ads_requests
-                    url = request.url
-                    if _GTM_HOST_HINT in url:
-                        requests_gtm.append(url)
-                    if _is_ga4_collect(url):
-                        tid = _ga4_id_from_url(url)
-                        if tid:
-                            ga4_ids.append(tid)
-                    if _is_ads_request(url):
+                    req_url = request.url
+                    if _GTM_HOST_HINT in req_url:
+                        requests_gtm.append(req_url)
+                    if _is_ga4_collect(req_url):
+                        _record_ga4_id(ga4_ids, req_url)
+                    if _is_ads_request(req_url):
                         ads_requests += 1
 
                 def _on_console(msg: Any) -> None:
@@ -223,12 +232,16 @@ async def verify_gtm(url: str, *, timeout: float = 20.0) -> GtmHeadlessResult:
                     for e in raw_events
                     if isinstance(e, dict) and e.get("event")
                 ]
-                consent_default_seen = bool(
-                    await page.evaluate(
-                        "(window.dataLayer || []).some("
-                        "e => e && e[0] === 'consent' && e[1] === 'default')"
+                try:
+                    consent_default_seen = bool(
+                        await page.evaluate(
+                            "Array.isArray(window.dataLayer) && window.dataLayer.some("
+                            "e => e && e[0] === 'consent' && e[1] === 'default')"
+                        )
                     )
-                )
+                except Exception:  # pragma: no cover - jamais exerce en test
+                    # Un echec ici ne doit pas annuler le reste du resultat.
+                    consent_default_seen = False
             finally:
                 await browser.close()
     except Exception as exc:  # pragma: no cover - jamais exerce en test (voir docstring)
