@@ -17,7 +17,7 @@ ERROR_MESSAGES: dict[str, str] = {
     "site_unreachable": "Ton site n'a pas pu être analysé par Google (page injoignable).",
     "unreachable": "Ton site ne répond pas.",
     "website_inactive": "Site archivé : suivi suspendu.",
-    "not_dispatched": "La tâche n'a pas démarré : nouvel essai au prochain passage.",
+    "not_dispatched": "La tâche n'a pas démarré : nouvel essai au prochain créneau.",
     "enqueue_failed": "La tâche n'a pas pu être programmée : nouvel essai au prochain passage.",
     "lease_expired": "La tâche a été interrompue : nouvel essai automatique.",
     "job_lease_lost": "La tâche a été reprise par une autre exécution.",

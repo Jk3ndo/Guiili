@@ -15,10 +15,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, literal, select, true, update
+from sqlalchemy import func, literal, select, text, true, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,6 +40,9 @@ from app.services.jobs.queue import EnqueueError, TaskMessage, TaskQueue
 logger = logging.getLogger(__name__)
 
 STALE_QUEUED_AFTER = timedelta(hours=2)
+# Verrou consultatif du passage : il sérialise la lecture de la limite quotidienne et
+# l'insertion des lignes « en file » (deux passages concurrents la dépasseraient).
+TICK_LOCK_KEY = "jobs:tick"
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,7 +99,7 @@ async def due_schedules(
             Schedule.next_due_at <= now,
             Website.archived_at.is_(None),
         )
-        .order_by(Schedule.next_due_at)
+        .order_by(Schedule.next_due_at, Schedule.id)
         .limit(limit)
         .with_for_update(of=Schedule, skip_locked=True)
     )
@@ -147,19 +150,40 @@ async def insert_queued(
             JobRun.status == "failed",
             JobRun.error_code == "enqueue_failed",
         )
-        .values(status="queued", error_code=None, recoverable=None, finished_at=None)
+        .values(
+            status="queued", error_code=None, recoverable=None, finished_at=None,
+            # Repart de zéro : sinon la tâche redéposée après une longue panne compterait
+            # « bloquée en file » (santé) puis serait expirée alors qu'elle vient d'être déposée.
+            enqueued_at=now,
+        )
     )
     return (reset.rowcount or 0) > 0
 
 
 async def runs_today(session: AsyncSession, workspace_id: UUID, *, now: datetime) -> int:
-    midnight = datetime.combine(now.date(), time.min, tzinfo=now.tzinfo)
+    now = now.astimezone(UTC)
+    midnight = datetime.combine(now.date(), time.min, tzinfo=UTC)
     count = await session.scalar(
         select(func.count())
         .select_from(JobRun)
         .where(JobRun.workspace_id == workspace_id, JobRun.enqueued_at >= midnight)
     )
     return count or 0
+
+
+@dataclass(frozen=True, slots=True)
+class _Planned:
+    """Tâche réservée en phase 2 ; `schedule_id`, `previous_due` et `posed_due` servent à
+    restaurer l'échéance si le dépôt échoue (maintenance : `schedule_id` vide)."""
+
+    spec: RunSpec
+    schedule_id: UUID | None = None
+    previous_due: datetime | None = None
+    posed_due: datetime | None = None
+
+
+def _next_midnight(now: datetime) -> datetime:
+    return datetime.combine(now.date() + timedelta(days=1), time.min, tzinfo=UTC)
 
 
 async def tick(
@@ -171,66 +195,103 @@ async def tick(
     daily_cap: int,
     max_attempts: int,
 ) -> TickResult:
+    now = now.astimezone(UTC)
     materialized = await materialize_default_schedules(session, now=now)
     expired = await expire_stale_queued(session, now=now)
     await session.commit()
 
-    # (planning ou None pour la maintenance, échéance précédente, tâche)
-    planned: list[tuple[Schedule | None, datetime | None, RunSpec]] = []
+    planned: list[_Planned] = []
     counts: dict[UUID, int] = {}
+    held: dict[UUID, int] = {}
     capped = 0
-    for schedule, website in await due_schedules(session, now=now, limit=batch):
-        workspace_id = website.workspace_id
-        if workspace_id not in counts:
-            counts[workspace_id] = await runs_today(session, workspace_id, now=now)
-        if counts[workspace_id] >= daily_cap:
-            capped += 1
-            continue
-        counts[workspace_id] += 1
-        spec = plan_run(schedule, website, now=now)
-        previous_due = schedule.next_due_at
-        interval = effective_interval(KINDS[schedule.kind], schedule.frequency)
-        schedule.next_due_at = slot_start(now, interval) + interval
-        if await insert_queued(session, spec, now=now, max_attempts=max_attempts):
-            planned.append((schedule, previous_due, spec))
-    maintenance = RunSpec("partition_maintenance", None, None, now.strftime("%Y%m%d"))
-    if await insert_queued(session, maintenance, now=now, max_attempts=max_attempts):
-        planned.append((None, None, maintenance))
+    got_lock = await session.scalar(
+        text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"), {"key": TICK_LOCK_KEY}
+    )
+    if got_lock:
+        for schedule, website in await due_schedules(session, now=now, limit=batch):
+            workspace_id = website.workspace_id
+            if workspace_id not in counts:
+                counts[workspace_id] = await runs_today(session, workspace_id, now=now)
+            interval = effective_interval(KINDS[schedule.kind], schedule.frequency)
+            previous_due = schedule.next_due_at
+            next_slot = slot_start(now, interval) + interval
+            if counts[workspace_id] >= daily_cap:
+                # Retenu par la limite du jour : l'échéance avance quand même (au plus tard
+                # à minuit UTC, quand la limite se remet à zéro), sinon les plus anciens
+                # plannings seraient re-sélectionnés en tête à chaque passage, priveraient
+                # les autres workspaces du lot et compteraient « en retard » (alertes).
+                schedule.next_due_at = min(next_slot, _next_midnight(now))
+                held[workspace_id] = held.get(workspace_id, 0) + 1
+                capped += 1
+                continue
+            spec = plan_run(schedule, website, now=now)
+            schedule.next_due_at = next_slot
+            if await insert_queued(session, spec, now=now, max_attempts=max_attempts):
+                counts[workspace_id] += 1
+                planned.append(_Planned(spec, schedule.id, previous_due, next_slot))
+        maintenance = RunSpec("partition_maintenance", None, None, now.strftime("%Y%m%d"))
+        if await insert_queued(session, maintenance, now=now, max_attempts=max_attempts):
+            planned.append(_Planned(maintenance))
     await session.commit()
+    for workspace_id, count in held.items():
+        logger.warning(
+            "limite quotidienne de tâches atteinte",
+            extra={"event": "job_daily_cap_reached", "workspace_id": str(workspace_id), "held": count},
+        )
 
     enqueued = 0
-    failed: list[tuple[Schedule | None, datetime | None, RunSpec]] = []
+    failed: list[_Planned] = []
     for item in planned:
-        spec = item[2]
+        spec = item.spec
         try:
             await queue.enqueue(TaskMessage(spec, spec.queue))
-        except Exception as exc:  # une file défaillante ne doit pas perdre les tâches suivantes
-            # `EnqueueError.reason` est un code stable ; pour toute autre exception, le type
-            # seul (le message peut embarquer une URL ou un jeton).
-            reason = exc.reason if isinstance(exc, EnqueueError) else type(exc).__name__
+        except EnqueueError as exc:
             logger.warning(
                 "dépôt de tâche en échec",
-                extra={"event": "job_enqueue_failed", "job_key": spec.key, "reason": reason},
+                extra={"event": "job_enqueue_failed", "job_key": spec.key, "reason": exc.reason},
+            )
+            failed.append(item)
+        except Exception as exc:  # une file défaillante ne doit pas perdre les tâches suivantes
+            # Type seul : le message d'une exception peut embarquer une URL ou un jeton.
+            logger.error(
+                "dépôt de tâche en erreur inattendue",
+                extra={
+                    "event": "job_enqueue_error",
+                    "job_key": spec.key,
+                    "error_type": type(exc).__name__,
+                },
             )
             failed.append(item)
         else:
             enqueued += 1
 
-    for schedule, previous_due, spec in failed:
-        if schedule is not None and previous_due is not None:
-            # Par l'ORM (objet encore chargé, `expire_on_commit=False`) : une mise à jour
-            # SQL directe laisserait l'objet en mémoire périmé.
-            schedule.next_due_at = previous_due
+    for item in failed:
+        if item.schedule_id is not None and item.previous_due is not None:
+            # Conditionnel : si le planning a été modifié entre-temps (PUT du propriétaire),
+            # on n'écrase pas son échéance. `synchronize_session` met à jour l'objet chargé.
+            await session.execute(
+                update(Schedule)
+                .where(Schedule.id == item.schedule_id, Schedule.next_due_at == item.posed_due)
+                .values(next_due_at=item.previous_due)
+                .execution_options(synchronize_session="fetch")
+            )
         await session.execute(
             update(JobRun)
-            .where(JobRun.idempotency_key == spec.key, JobRun.status == "queued")
+            .where(JobRun.idempotency_key == item.spec.key, JobRun.status == "queued")
             .values(status="failed", error_code="enqueue_failed", recoverable=True, finished_at=now)
         )
     if failed:
         await session.commit()
 
-    report_jobs_health(await compute_jobs_health(session, now=now))
-    await session.commit()
+    try:
+        report_jobs_health(await compute_jobs_health(session, now=now))
+        await session.commit()
+    except Exception as exc:  # la santé ne casse jamais un passage dont les dépôts sont faits
+        await session.rollback()
+        logger.error(
+            "santé des tâches indisponible",
+            extra={"event": "jobs_health_failed", "error_type": type(exc).__name__},
+        )
     return TickResult(
         materialized=materialized,
         enqueued=enqueued,

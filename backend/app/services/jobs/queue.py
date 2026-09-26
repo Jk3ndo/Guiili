@@ -38,6 +38,9 @@ class InlineQueue:
     def __init__(self, execute: Callable[[RunSpec], Awaitable[object]]) -> None:
         self._execute = execute
         self.executed: list[str] = []
+        # Types des exceptions levées par les tâches : un test ne doit pas passer sur un
+        # exécuteur qui plante.
+        self.failed: list[str] = []
 
     async def enqueue(self, message: TaskMessage) -> None:
         self.executed.append(message.spec.key)
@@ -45,7 +48,8 @@ class InlineQueue:
             await self._execute(message.spec)
         except Exception as exc:  # une tâche en échec ne casse pas le passage du planificateur
             # Type seul : le message d'une exception peut embarquer une URL ou un jeton.
-            logger.warning(
+            self.failed.append(type(exc).__name__)
+            logger.error(
                 "tâche exécutée en ligne en échec",
                 extra={
                     "event": "job_inline_failed",

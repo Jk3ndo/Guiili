@@ -1,7 +1,8 @@
 import asyncio
-from datetime import UTC, datetime, timedelta
+import logging
+from datetime import UTC, datetime, timedelta, timezone
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.job_run import JobRun
@@ -10,14 +11,17 @@ from app.models.user import User
 from app.models.website import Website
 from app.models.workspace import Workspace
 from app.models.workspace_member import WorkspaceMember
-from app.services.jobs.health import report_jobs_health
+from app.services.jobs.health import compute_jobs_health, report_jobs_health
 from app.services.jobs.kinds import RunSpec
-from app.services.jobs.queue import InlineQueue, TaskMessage
+from app.services.jobs.queue import EnqueueError, InlineQueue, TaskMessage
+from app.services.jobs.runner import lock_key
 from app.services.jobs.scheduler import (
+    TICK_LOCK_KEY,
     due_schedules,
     expire_stale_queued,
     materialize_default_schedules,
     plan_run,
+    runs_today,
     tick,
 )
 from tests.jobs_fakes import RecordingQueue, make_site
@@ -117,16 +121,61 @@ async def test_the_frequency_floor_applies_even_to_a_bad_row(
 
 
 async def test_the_workspace_daily_cap_holds_back_extra_tasks(
-    db_session: AsyncSession, make_user
+    db_session: AsyncSession, make_user, caplog
 ) -> None:
     site = await make_site(db_session, make_user, "tick-cap.test")
     queue = RecordingQueue()
-    result = await _tick(db_session, queue, daily_cap=2)
+    with caplog.at_level(logging.WARNING, logger="app.services.jobs.scheduler"):
+        result = await _tick(db_session, queue, daily_cap=2)
     site_messages = [m for m in queue.messages if m.spec.website_id == site.id]
     assert len(site_messages) == 2 and result.capped == 3
-    # Les plannings retenus restent dus : ils partiront le lendemain.
+    # Écart au brief : les plannings retenus AVANCENT aussi (au plus tard à minuit UTC),
+    # sinon ils seraient re-sélectionnés en tête de chaque passage et compteraient
+    # « en retard ». Sondes 8 h : créneau suivant ; les autres : minuit.
     schedules = await _schedules(db_session, site.id)
-    assert sum(1 for s in schedules.values() if s.next_due_at == NOW) == 3
+    midnight = datetime(2026, 9, 27, tzinfo=UTC)
+    assert {kind: s.next_due_at for kind, s in schedules.items()} == {
+        "collect_ga4": midnight,
+        "collect_gsc": midnight,
+        "collect_cwv": midnight,
+        "collect_probes": datetime(2026, 9, 26, 8, tzinfo=UTC),
+        "measurement_check": midnight,
+    }
+    records = [r for r in caplog.records if getattr(r, "event", "") == "job_daily_cap_reached"]
+    assert [(r.workspace_id, r.held) for r in records] == [(str(site.workspace_id), 3)]
+
+
+async def test_held_schedules_beyond_the_batch_do_not_starve_another_workspace(
+    db_session: AsyncSession, make_user
+) -> None:
+    big_a = await make_site(db_session, make_user, "tick-big-a.test")
+    big_b = await make_site(db_session, make_user, "tick-big-b.test")
+    other = await make_site(db_session, make_user, "tick-other.test")
+    # Le workspace « gros » : 2 sites dans le même workspace.
+    big_b.workspace_id = big_a.workspace_id
+    await db_session.flush()
+    await materialize_default_schedules(db_session, now=NOW)
+    for schedule in (await db_session.scalars(select(Schedule))).all():
+        if schedule.website_id in (big_a.id, big_b.id):
+            schedule.next_due_at = NOW - timedelta(days=1)  # les plus anciens : en tête du lot
+    await db_session.flush()
+
+    queue = RecordingQueue()
+    kwargs = {"now": NOW, "batch": 6, "daily_cap": 1, "max_attempts": 5}
+    first = await tick(db_session, queue, **kwargs)
+    assert first.enqueued == 2 and first.capped == 5  # 1 tâche du gros + la maintenance
+    second = await tick(db_session, queue, **kwargs)
+    # Les 10 plannings retenus dépassent le lot (6) mais ont avancé : le second passage
+    # atteint l'autre workspace.
+    website_ids = [m.spec.website_id for m in queue.messages]
+    assert website_ids.count(other.id) == 1
+    assert website_ids.count(big_a.id) + website_ids.count(big_b.id) == 1
+    assert second.capped >= 4
+    big = [
+        s for s in (await db_session.scalars(select(Schedule))).all()
+        if s.website_id in (big_a.id, big_b.id)
+    ]
+    assert len(big) == 10 and all(s.next_due_at > NOW for s in big)
 
 
 async def test_a_failed_deposit_is_retried_at_the_next_tick(
@@ -153,6 +202,15 @@ async def test_archived_sites_and_disabled_schedules_are_not_due(
     site = await make_site(db_session, make_user, "tick-disabled.test")
     db_session.add(
         Schedule(website_id=site.id, kind="collect_cwv", frequency="daily", enabled=False,
+                 next_due_at=NOW - timedelta(days=1))
+    )
+    await db_session.flush()
+    assert await due_schedules(db_session, now=NOW, limit=10) == []
+
+    archived = await make_site(db_session, make_user, "tick-archived-due.test")
+    archived.archived_at = NOW
+    db_session.add(
+        Schedule(website_id=archived.id, kind="collect_cwv", frequency="daily", enabled=True,
                  next_due_at=NOW - timedelta(days=1))
     )
     await db_session.flush()
@@ -226,7 +284,7 @@ async def test_a_key_already_queued_or_finished_is_not_deposited_again(
 
 
 async def test_a_deposit_failing_with_an_unexpected_error_does_not_lose_the_others(
-    db_session: AsyncSession, make_user
+    db_session: AsyncSession, make_user, caplog
 ) -> None:
     site = await make_site(db_session, make_user, "tick-boom.test")
 
@@ -237,7 +295,11 @@ async def test_a_deposit_failing_with_an_unexpected_error_does_not_lose_the_othe
             await super().enqueue(message)
 
     queue = Exploding()
-    result = await _tick(db_session, queue)
+    with caplog.at_level(logging.WARNING, logger="app.services.jobs.scheduler"):
+        result = await _tick(db_session, queue)
+    assert "secret-token-in-url" not in caplog.text
+    errors = [r for r in caplog.records if getattr(r, "event", "") == "job_enqueue_error"]
+    assert [(r.levelno, r.error_type) for r in errors] == [(logging.ERROR, "RuntimeError")]
     assert result.failed_enqueue == 1 and result.enqueued == 5
     schedules = await _schedules(db_session, site.id)
     assert schedules["collect_cwv"].next_due_at == NOW
@@ -255,6 +317,7 @@ async def test_a_failing_inline_task_does_not_break_the_tick(
     result = await _tick(db_session, queue)
     assert result.enqueued == 6 and result.failed_enqueue == 0
     assert len(queue.executed) == 6
+    assert queue.failed == ["RuntimeError"] * 6  # visible pour un test : rien n'est avalé
 
 
 async def test_the_health_report_runs_with_the_injected_clock_and_never_breaks_the_tick(
@@ -325,3 +388,113 @@ async def test_concurrent_ticks_never_take_the_same_schedule(engine) -> None:
             await cleanup.execute(delete(Workspace).where(Workspace.id == workspace_id))
             await cleanup.execute(delete(User).where(User.id == user_id))
             await cleanup.commit()
+
+
+async def test_a_redeposited_task_restarts_its_queue_clock(
+    db_session: AsyncSession, make_user
+) -> None:
+    site = await make_site(db_session, make_user, "tick-redeposit.test")
+    await _tick(db_session, RecordingQueue(failing_kinds=frozenset({"collect_cwv"})))
+    later = NOW + timedelta(hours=3)
+    queue = RecordingQueue()
+    result = await _tick(db_session, queue, now=later)
+    run = await db_session.scalar(
+        select(JobRun).where(JobRun.idempotency_key == f"collect_cwv:{site.id}:20260926T0000")
+    )
+    await db_session.refresh(run)
+    assert run.status == "queued" and run.enqueued_at == later
+    assert "collect_cwv" in [m.spec.kind for m in queue.messages]
+    assert (await compute_jobs_health(db_session, now=later)).stuck_queued == 0
+    # Au passage suivant, la tâche fraîchement redéposée n'est pas expirée.
+    third = await _tick(db_session, RecordingQueue(), now=later + timedelta(minutes=15))
+    await db_session.refresh(run)
+    assert third.expired_queued == 0 and run.status == "queued"
+    assert result.failed_enqueue == 0
+
+
+async def test_a_failed_restore_does_not_overwrite_a_schedule_changed_meanwhile(
+    db_session: AsyncSession, make_user
+) -> None:
+    site = await make_site(db_session, make_user, "tick-restore.test")
+    edited = NOW + timedelta(days=5)
+
+    class EditingQueue(RecordingQueue):
+        async def enqueue(self, message: TaskMessage) -> None:
+            if message.spec.kind == "collect_cwv":
+                # Le propriétaire modifie le planning pendant le dépôt.
+                await db_session.execute(
+                    update(Schedule)
+                    .where(Schedule.website_id == site.id, Schedule.kind == "collect_cwv")
+                    .values(next_due_at=edited)
+                )
+                raise EnqueueError("network")
+            await super().enqueue(message)
+
+    result = await _tick(db_session, EditingQueue())
+    assert result.failed_enqueue == 1
+    schedules = await _schedules(db_session, site.id)
+    await db_session.refresh(schedules["collect_cwv"])
+    assert schedules["collect_cwv"].next_due_at == edited
+
+
+async def test_a_tick_that_cannot_take_the_tick_lock_deposits_nothing(engine) -> None:
+    maker = async_sessionmaker(bind=engine, expire_on_commit=False)
+    async with maker() as setup:
+        user = User(email="tick-glock@example.com", google_sub="tick-glock-sub")
+        setup.add(user)
+        await setup.flush()
+        workspace = Workspace(name="tick-glock", owner_user_id=user.id)
+        setup.add(workspace)
+        await setup.flush()
+        setup.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
+        setup.add(Website(workspace_id=workspace.id, domain="tick-glock.test", display_name="g"))
+        await setup.commit()
+        workspace_id, user_id = workspace.id, user.id
+
+    try:
+        async with maker() as holder, maker() as other:
+            await lock_key(holder, TICK_LOCK_KEY)  # un autre passage tient le verrou
+            queue = RecordingQueue()
+            result = await tick(other, queue, now=NOW, batch=100, daily_cap=300, max_attempts=5)
+            assert queue.messages == [] and result.enqueued == 0
+            assert await other.scalar(select(func.count()).select_from(JobRun)) == 0
+            await holder.rollback()
+            result = await tick(other, queue, now=NOW, batch=100, daily_cap=300, max_attempts=5)
+            assert result.enqueued == 6
+    finally:
+        async with maker() as cleanup:
+            await cleanup.execute(delete(JobRun).where(JobRun.workspace_id == workspace_id))
+            await cleanup.execute(delete(JobRun).where(JobRun.kind == "partition_maintenance"))
+            await cleanup.execute(delete(Workspace).where(Workspace.id == workspace_id))
+            await cleanup.execute(delete(User).where(User.id == user_id))
+            await cleanup.commit()
+
+
+async def test_a_failing_health_computation_never_breaks_the_tick(
+    db_session: AsyncSession, make_user, monkeypatch, caplog
+) -> None:
+    await make_site(db_session, make_user, "tick-health-fail.test")
+
+    async def boom(session, *, now):
+        raise RuntimeError("db down secret")
+
+    monkeypatch.setattr("app.services.jobs.scheduler.compute_jobs_health", boom)
+    queue = RecordingQueue()
+    with caplog.at_level(logging.ERROR, logger="app.services.jobs.scheduler"):
+        result = await _tick(db_session, queue)
+    assert result.enqueued == 6 and len(queue.messages) == 6
+    assert "secret" not in caplog.text
+    assert "jobs_health_failed" in [getattr(r, "event", "") for r in caplog.records]
+
+
+async def test_the_clock_is_normalised_to_utc(db_session: AsyncSession, make_user) -> None:
+    site = await make_site(db_session, make_user, "tick-tz.test")
+    paris = timezone(timedelta(hours=2))
+    # 01:30 à Paris le 27 = 23:30 UTC le 26 : le jour de la limite et de la maintenance
+    # est celui de l'UTC.
+    local_now = datetime(2026, 9, 27, 1, 30, tzinfo=paris)
+    queue = RecordingQueue()
+    await tick(db_session, queue, now=local_now, batch=100, daily_cap=300, max_attempts=5)
+    keys = {m.spec.key for m in queue.messages}
+    assert "partition_maintenance:global:20260926" in keys
+    assert await runs_today(db_session, site.workspace_id, now=local_now) == 5
