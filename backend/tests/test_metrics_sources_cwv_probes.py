@@ -525,3 +525,71 @@ async def test_both_probes_raising_is_a_typed_recoverable_error() -> None:
     with pytest.raises(SourceError) as excinfo:
         await probe.collect(SITE, TODAY_ONLY)
     assert excinfo.value.reason == "unreachable" and excinfo.value.recoverable
+
+
+_HUGE = 10**400  # entier JSON valide, mais hors de portée d'un flottant
+
+
+def test_parse_cwv_rejects_a_huge_integer_percentile_and_score() -> None:
+    origin = {"LARGEST_CONTENTFUL_PAINT_MS": {"percentile": _HUGE}}
+    for payload in (
+        _payload(origin=origin),
+        _payload(origin={"CUMULATIVE_LAYOUT_SHIFT_SCORE": {"percentile": -_HUGE}}),
+        _payload(origin=_ORIGIN, score=_HUGE),
+        _payload(origin=_ORIGIN, score=-_HUGE),
+    ):
+        with pytest.raises(SourceError) as excinfo:
+            parse_cwv(payload, day=TODAY)
+        assert excinfo.value.reason == "api_error" and excinfo.value.recoverable
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '{"lighthouseResult": {}, "originLoadingExperience": {"metrics": '
+        '{"LARGEST_CONTENTFUL_PAINT_MS": {"percentile": 1' + "0" * 400 + "}}}}",
+        '{"lighthouseResult": {"categories": {"performance": {"score": 1' + "0" * 400 + "}}}}",
+    ],
+)
+async def test_cwv_source_types_a_huge_integer_from_raw_json(body: str) -> None:
+    source = CwvSource(
+        api_key="cle",
+        client=_client(lambda request: httpx.Response(200, content=body.encode())),
+        today=lambda: TODAY,
+    )
+    with pytest.raises(SourceError) as excinfo:
+        await source.collect(SITE, TODAY_ONLY)
+    assert excinfo.value.reason == "api_error" and excinfo.value.recoverable
+
+
+async def test_cwv_non_ascii_api_key_is_a_typed_definitive_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("aucun appel attendu")
+
+    source = CwvSource(api_key="clé-secrète", client=_client(handler), today=lambda: TODAY)
+    with pytest.raises(SourceError) as excinfo:
+        await source.collect(SITE, TODAY_ONLY)
+    error = excinfo.value
+    assert (error.reason, error.recoverable) == ("api_key_rejected", False)
+    assert "secr" not in str(error) and "secr" not in repr(error.__dict__)
+    assert error.__cause__ is None
+
+
+async def test_window_end_equal_to_today_is_included() -> None:
+    # Un `day < end` à la place de `day <= end` ferait échouer ces deux tests.
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=_payload(origin=_ORIGIN))
+
+    source = CwvSource(api_key="cle", client=_client(handler), today=lambda: TODAY)
+    assert len(await source.collect(SITE, DayRange(date(2026, 9, 20), TODAY))) == 4
+    assert len(seen) == 1
+
+
+async def test_probes_window_end_equal_to_today_is_included() -> None:
+    calls: list = []
+    probe = _probe(_tls("valid", 45), _page(200), calls)
+    assert len(await probe.collect(SITE, DayRange(date(2026, 9, 20), TODAY))) == 2
+    assert len(calls) == 1

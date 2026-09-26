@@ -53,6 +53,20 @@ def _section(value: dict[str, Any], key: str) -> dict[str, Any]:
     return inner
 
 
+def _finite_number(value: Any) -> float | None:
+    """`value` en flottant si c'est un nombre JSON fini (jamais un booléen), sinon `None`.
+
+    Un entier JSON géant (`10**400`) est valide en JSON mais ne tient pas dans un flottant :
+    `OverflowError`, traité comme une valeur invalide."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) else None
+
+
 def _percentile(metrics: dict[str, Any], *keys: str) -> float | None:
     """Premier percentile présent parmi `keys` ; `None` si aucune clé n'est présente."""
     for key in keys:
@@ -61,15 +75,10 @@ def _percentile(metrics: dict[str, Any], *keys: str) -> float | None:
         entry = metrics[key]
         if not isinstance(entry, dict):
             raise _bad_shape()
-        value = entry.get("percentile")
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, int | float)
-            or not math.isfinite(value)
-            or value < 0
-        ):
+        number = _finite_number(entry.get("percentile"))
+        if number is None or number < 0:
             raise _bad_shape()
-        return float(value)
+        return number
     return None
 
 
@@ -94,14 +103,10 @@ def parse_cwv(payload: Any, *, day: date) -> list[Observation]:
     # `score: null` est la réponse de Lighthouse quand la mesure a échoué : pas de donnée.
     score = performance.get("score")
     if score is not None:
-        if (
-            isinstance(score, bool)
-            or not isinstance(score, int | float)
-            or not math.isfinite(score)
-            or not 0 <= score <= 1
-        ):
+        number = _finite_number(score)
+        if number is None or not 0 <= number <= 1:
             raise _bad_shape()
-        observations.append(Observation("performance_score", day, round(score * 100, 1)))
+        observations.append(Observation("performance_score", day, round(number * 100, 1)))
     return observations
 
 
@@ -202,6 +207,10 @@ class CwvSource:
             "strategy": "mobile",
             "category": "performance",
         }
+        if self._api_key and not (self._api_key.isascii() and self._api_key.isprintable()):
+            # Une clé non ASCII ne peut pas être encodée en en-tête : clé mal saisie,
+            # donc rejetée par principe (jamais recopiée dans l'erreur).
+            raise SourceError("api_key_rejected", recoverable=False)
         # La clé voyage dans un en-tête : une URL peut finir dans un log ou une exception.
         headers = {"X-Goog-Api-Key": self._api_key} if self._api_key else {}
         owns = self._client is None
