@@ -20,6 +20,7 @@ import { useIsOwner } from "@/lib/api/use-is-owner";
 import { useShell } from "@/lib/shell/shell-context";
 
 import { AdsSettings } from "./ads-settings";
+import { AutoTrackingCard } from "./auto-tracking-card";
 import { AdvancedContainer, StarterPackCard } from "./container-builder";
 import { formatDateTime, truncate } from "./format";
 import { GoogleStep } from "./google-step";
@@ -266,6 +267,8 @@ function PlanPanel({
       <NextActions plan={plan} onOpen={setOpenId} />
 
       <StarterPackCard websiteId={websiteId} plan={plan} />
+
+      <AutoTrackingCard websiteId={websiteId} />
 
       <details className="group rounded-xl border border-white/[0.08] bg-surface/30">
         <summary className="cursor-pointer select-none px-5 py-4 text-sm font-medium text-ink">
