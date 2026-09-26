@@ -11,7 +11,7 @@ import asyncio
 import sys
 
 from app.config import Settings, get_settings
-from app.db.session import AsyncSessionLocal
+from app.db.session import AsyncSessionLocal, engine
 from app.services.jobs.handlers import build_handlers, default_job_services
 from app.services.jobs.kinds import RunSpec
 from app.services.jobs.queue import InlineQueue
@@ -25,19 +25,22 @@ _USAGE = "usage: python -m app.tools.jobs tick"
 async def _run_tick(settings: Settings) -> TickResult:
     limits = JobLimits.from_settings(settings)
     handlers = build_handlers(default_job_services(settings))
-    async with AsyncSessionLocal() as session:
+    try:
+        async with AsyncSessionLocal() as session:
 
-        async def execute(spec: RunSpec) -> RunResult:
-            return await execute_run(session, spec, handlers=handlers, limits=limits)
+            async def execute(spec: RunSpec) -> RunResult:
+                return await execute_run(session, spec, handlers=handlers, limits=limits)
 
-        return await tick(
-            session,
-            InlineQueue(execute),
-            now=utc_now(),
-            batch=settings.jobs_tick_batch,
-            daily_cap=settings.jobs_workspace_daily_cap,
-            max_attempts=limits.max_attempts,
-        )
+            return await tick(
+                session,
+                InlineQueue(execute),
+                now=utc_now(),
+                batch=settings.jobs_tick_batch,
+                daily_cap=settings.jobs_workspace_daily_cap,
+                max_attempts=limits.max_attempts,
+            )
+    finally:
+        await engine.dispose()
 
 
 def main(argv: list[str], *, settings: Settings | None = None) -> int:

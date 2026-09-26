@@ -23,7 +23,7 @@ from app.models.website import Website
 from app.services.gcp_metadata import MetadataTokenProvider
 from app.services.gtm_headless import GtmHeadlessVerifier, headless_result_to_dict, verify_gtm
 from app.services.jobs.cloud_tasks import CloudTasksQueue
-from app.services.jobs.handlers import JobServices, build_handlers, default_job_services
+from app.services.jobs.handlers import JobServices, build_handlers
 from app.services.jobs.health import compute_jobs_health
 from app.services.jobs.kinds import BACKFILL_SOURCES, KINDS, RunSpec
 from app.services.jobs.queue import InlineQueue, TaskQueue
@@ -34,8 +34,15 @@ from app.services.metrics.types import utc_now
 logger = logging.getLogger(__name__)
 
 # `GET /internal/jobs/health` ne renvoie que les plus anciens échecs (le total reste dans
-# `failing_total`) : la réponse et la requête restent bornées.
+# `failing_total`) : seule la RÉPONSE est bornée (`compute_jobs_health` lit toutes les
+# lignes concernées).
 HEALTH_FAILING_LIMIT = 100
+# Vérification headless : borne globale d'une vérification (lancement du navigateur,
+# navigation et évaluations comprises) et attente maximale du créneau. Au-delà, 503 : un
+# site client qui boucle ne doit jamais geler la vérification de l'instance.
+HEADLESS_TIMEOUT_SECONDS = 60.0
+HEADLESS_SLOT_WAIT_SECONDS = 5.0
+RETRY_AFTER_SECONDS = "60"
 
 router = APIRouter(include_in_schema=False, dependencies=[Depends(require_internal_caller)])
 
@@ -56,8 +63,10 @@ def get_job_limits(settings: WorkerSettingsDep) -> JobLimits:
     return JobLimits.from_settings(settings)
 
 
-def get_job_services(settings: WorkerSettingsDep) -> JobServices:
-    return default_job_services(settings)
+def get_job_services(request: Request) -> JobServices:
+    """Services construits une seule fois au démarrage (`create_worker_app`) : une clé de
+    chiffrement invalide fait échouer le démarrage, pas chaque requête."""
+    return request.app.state.job_services
 
 
 JobLimitsDep = Annotated[JobLimits, Depends(get_job_limits)]
@@ -172,7 +181,17 @@ class HeadlessIn(BaseModel):
             port = parts.port
         except ValueError:
             raise ValueError("URL https d'un site attendue") from None
-        if parts.scheme != "https" or not parts.hostname or parts.username or port not in (None, 443):
+        # Même cible que l'audit public : `https://{domaine}` exactement (pas de chemin,
+        # de requête ni de fragment).
+        if (
+            parts.scheme != "https"
+            or not parts.hostname
+            or parts.username
+            or port not in (None, 443)
+            or parts.path not in ("", "/")
+            or parts.query
+            or parts.fragment
+        ):
             raise ValueError("URL https d'un site attendue")
         return value
 
@@ -216,21 +235,35 @@ async def run_task(
     limits: JobLimitsDep,
 ) -> RunTaskOut:
     spec = body.to_spec()
-    if spec.website_id is not None:
-        website = await session.get(Website, spec.website_id)
-        if website is None:
-            # Site supprimé entre le dépôt et l'exécution : rien à faire, pas de reprise.
-            await session.commit()
-            return RunTaskOut(claim="gone", status=None)
-        if website.workspace_id != spec.workspace_id:
-            raise HTTPException(
-                status_code=422,
-                detail="workspace incohérent avec le site",
-            )
-    result = await execute_run(session, spec, handlers=build_handlers(services), limits=limits)
+    try:
+        if spec.website_id is not None:
+            website = await session.get(Website, spec.website_id)
+            if website is None:
+                # Site supprimé entre le dépôt et l'exécution : rien à faire, pas de reprise.
+                await session.commit()
+                return RunTaskOut(claim="gone", status=None)
+            if website.workspace_id != spec.workspace_id:
+                raise HTTPException(status_code=422, detail="workspace incohérent avec le site")
+        result = await execute_run(session, spec, handlers=build_handlers(services), limits=limits)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Erreur inattendue (base, réclamation…) : la file doit réessayer, sans trace ni
+        # message dans les journaux (le message peut embarquer une URL ou un identifiant).
+        await session.rollback()
+        logger.error(
+            "exécution de tâche en échec",
+            extra={"event": "task_run_failed", "job_kind": spec.kind,
+                   "error_type": type(exc).__name__},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="exécution en échec",
+            headers={"Retry-After": RETRY_AFTER_SECONDS},
+        ) from None
     if result.retry:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-        response.headers["Retry-After"] = "60"
+        response.headers["Retry-After"] = RETRY_AFTER_SECONDS
     return RunTaskOut(claim=result.claim, status=result.status)
 
 
@@ -262,6 +295,25 @@ async def headless_verify(
     await session.commit()
     if not known:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="site inconnu")
-    async with _HEADLESS_SLOT:
-        result = await verifier(body.url)
+    try:
+        await asyncio.wait_for(_HEADLESS_SLOT.acquire(), HEADLESS_SLOT_WAIT_SECONDS)
+    except TimeoutError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="vérification headless occupée",
+            headers={"Retry-After": RETRY_AFTER_SECONDS},
+        ) from None
+    try:
+        # L'annulation par `wait_for` se propage jusqu'au `finally` de `verify_gtm`, qui
+        # ferme le navigateur ; le créneau est libéré dans tous les cas.
+        result = await asyncio.wait_for(verifier(body.url), HEADLESS_TIMEOUT_SECONDS)
+    except TimeoutError:
+        logger.warning("vérification headless trop longue", extra={"event": "headless_timeout"})
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="vérification headless trop longue",
+            headers={"Retry-After": RETRY_AFTER_SECONDS},
+        ) from None
+    finally:
+        _HEADLESS_SLOT.release()
     return headless_result_to_dict(result)

@@ -23,6 +23,7 @@ from app.db.session import engine, get_session
 from app.logging_config import RequestContextMiddleware, configure_logging
 from app.observability import init_sentry
 from app.security.oidc import OidcVerifier
+from app.services.jobs.handlers import default_job_services
 
 
 @asynccontextmanager
@@ -59,6 +60,8 @@ def create_worker_app(
         openapi_url=None,
     )
     application.state.settings = settings
+    # Construits une fois : une clé de chiffrement invalide échoue dès le démarrage.
+    application.state.job_services = default_job_services(settings)
     if oidc_verifier is None and settings.internal_oidc_audience:
         oidc_verifier = OidcVerifier(
             audience=settings.internal_oidc_audience,
