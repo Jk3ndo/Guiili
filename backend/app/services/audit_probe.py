@@ -353,7 +353,6 @@ class RealAuditProbe(AuditProbe):
                     )
                 )
             )
-            .tuples()
             .all()
         )
 
