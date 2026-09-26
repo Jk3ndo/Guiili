@@ -18,14 +18,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.metric_point import MetricPoint
 from app.models.metric_rollup import MetricRollup
-from app.services.metrics.aggregate import aggregate, period_end, periods_between, siblings_needed
+from app.services.metrics.aggregate import (
+    aggregate,
+    month_start,
+    period_end,
+    periods_between,
+    siblings_needed,
+)
+from app.services.metrics.partitions import RETENTION_MONTHS, add_months
 from app.services.metrics.registry import MetricDef
 from app.services.metrics.types import DayRange
 
 Granularity = Literal["day", "week", "month"]
 Compare = Literal["none", "previous_period", "previous_year"]
+# 800 jours couvrent la rétention (25 mois, au plus ~790 jours entre le plancher et hier).
 MAX_RANGE_DAYS = 800
 DEFAULT_RANGE_DAYS = 28
+
+
+def retention_floor(today: date) -> date:
+    """Premier jour encore stocké dans `metric_points` (les points plus anciens sont purgés
+    par la maintenance ; les cumuls, eux, restent)."""
+    return add_months(month_start(today), -RETENTION_MONTHS)
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +57,9 @@ class Series:
     end: date
     points: tuple[SeriesPoint, ...]
     total: float | None
+    # Couverture du `total` : jours de la fenêtre portant une valeur / jours attendus.
+    days_covered: int
+    days_expected: int
 
 
 class Freshness(NamedTuple):
@@ -51,18 +68,26 @@ class Freshness(NamedTuple):
 
 
 def shift_year(day: date) -> date:
+    """Même jour un an plus tôt (le 29 février devient le 28). Lève `ValueError` hors du
+    calendrier géré (an 1)."""
     try:
         return day.replace(year=day.year - 1)
-    except ValueError:  # 29 février
-        return day.replace(year=day.year - 1, day=28)
+    except ValueError:
+        if day.month == 2 and day.day == 29 and day.year > 1:
+            return day.replace(year=day.year - 1, day=28)
+        raise
 
 
 def comparison_range(start: date, end: date, compare: str) -> tuple[date, date] | None:
-    if compare == "previous_period":
-        length = (end - start).days + 1
-        return start - timedelta(days=length), start - timedelta(days=1)
-    if compare == "previous_year":
-        return shift_year(start), shift_year(end)
+    """Fenêtre de comparaison, ou `None` si aucune n'est demandée ou représentable."""
+    try:
+        if compare == "previous_period":
+            length = (end - start).days + 1
+            return start - timedelta(days=length), start - timedelta(days=1)
+        if compare == "previous_year":
+            return shift_year(start), shift_year(end)
+    except (ValueError, OverflowError):
+        return None
     return None
 
 
@@ -121,11 +146,12 @@ async def build_series(
     values = daily[defn.name]
     siblings = {name: daily[name] for name in siblings_needed(defn)}
     total = aggregate(defn, values, siblings)
+    expected_days = (end - start).days + 1
     points: list[SeriesPoint] = []
     if granularity == "day":
         for day in DayRange(start, end).days():
             points.append(SeriesPoint(day, day, values.get(day), 1 if day in values else 0, 1))
-        return Series(start, end, tuple(points), total)
+        return Series(start, end, tuple(points), total, len(values), expected_days)
 
     grain = "week" if granularity == "week" else "month"
     starts = periods_between(start, end, grain)
@@ -142,7 +168,7 @@ async def build_series(
             value = aggregate(defn, window, window_siblings)
             covered = len(window)
         points.append(SeriesPoint(period, period_end(period, grain), value, covered, expected))
-    return Series(start, end, tuple(points), total)
+    return Series(start, end, tuple(points), total, len(values), expected_days)
 
 
 async def freshness(session: AsyncSession, website_id: UUID, source: str) -> Freshness:

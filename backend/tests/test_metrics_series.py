@@ -103,3 +103,51 @@ async def test_freshness_reports_the_last_collection(db_session: AsyncSession, m
     await _store(db_session, site, "ga4", [Observation("sessions", date(2026, 9, 25), 1.0)])
     fresh = await freshness(db_session, site.id, "ga4")
     assert fresh.last_collected_at == NOW and fresh.data_until == date(2026, 9, 25)
+
+
+async def test_a_full_month_comes_from_the_rollups(db_session: AsyncSession, make_user) -> None:
+    site = await make_site(db_session, make_user, "series-month.test")
+    await _store(db_session, site, "ga4", [
+        Observation("sessions", date(2026, 8, day), 1.0) for day in range(1, 32)
+    ])
+    rollup = await db_session.get(
+        MetricRollup, (site.id, "ga4", "sessions", "", "month", date(2026, 8, 1))
+    )
+    assert rollup is not None and rollup.days_covered == 31
+    rollup.value = 999.0
+    await db_session.flush()
+    series = await build_series(
+        db_session, website_id=site.id, defn=SESSIONS,
+        start=date(2026, 8, 1), end=date(2026, 8, 31), granularity="month",
+    )
+    (point,) = series.points
+    assert (point.value, point.days_covered, point.days_expected) == (999.0, 31, 31)
+    # Le total du bloc vient des points journaliers et expose sa couverture.
+    assert (series.total, series.days_covered, series.days_expected) == (31.0, 31, 31)
+
+
+async def test_leap_day_windows_expose_their_different_lengths(
+    db_session: AsyncSession, make_user
+) -> None:
+    site = await make_site(db_session, make_user, "series-leap.test")
+    start, end = date(2028, 2, 1), date(2028, 2, 29)
+    other = comparison_range(start, end, "previous_year")
+    assert other == (date(2027, 2, 1), date(2027, 2, 28))
+    current = await build_series(
+        db_session, website_id=site.id, defn=SESSIONS, start=start, end=end, granularity="day"
+    )
+    previous = await build_series(
+        db_session, website_id=site.id, defn=SESSIONS, start=other[0], end=other[1],
+        granularity="day",
+    )
+    assert (current.days_expected, len(current.points)) == (29, 29)
+    assert (previous.days_expected, len(previous.points)) == (28, 28)
+    assert current.total is None and current.days_covered == 0
+
+
+def test_extreme_dates_do_not_crash_the_comparison_helpers() -> None:
+    assert comparison_range(date(1, 1, 1), date(1, 1, 10), "previous_period") is None
+    assert comparison_range(date(1, 1, 1), date(1, 1, 10), "previous_year") is None
+    assert shift_year(date(2028, 2, 29)) == date(2027, 2, 28)
+    with pytest.raises(ValueError):
+        shift_year(date(1, 1, 1))

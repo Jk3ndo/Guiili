@@ -12,6 +12,9 @@ from app.models.website import Website
 from app.models.workspace_member import WorkspaceMember
 from app.services.jobs.kinds import KINDS
 from app.services.jobs.schedules import upsert_schedule
+from app.services.metrics.aggregate import month_start
+from app.services.metrics.partitions import RETENTION_MONTHS, add_months
+from app.services.metrics.series import shift_year
 from app.services.metrics.store import store_observations
 from app.services.metrics.types import Observation, utc_now, utc_today
 from tests.conftest import owner_workspace_id
@@ -69,6 +72,31 @@ async def test_series_returns_the_stored_values(
         ({"metric": "ga4.sessions", "start": "26/09/2026"}, "date invalide"),
         ({"metric": "ga4.sessions", "start": "2026-09-20", "end": "2026-09-01"}, "début"),
         ({"metric": "ga4.sessions", "start": "2020-01-01", "end": "2026-01-01"}, "trop longue"),
+        ({"metric": "ga4.sessions", "dimension": "page"}, "dimension non prise en charge"),
+        ({"metric": "ga4.sessions", "start": "2000-01-01", "end": "2000-01-10"}, "rétention"),
+        # Dates extrêmes forgées : 422, jamais 500.
+        (
+            {"metric": "ga4.sessions", "start": "0001-01-01", "end": "0001-01-10",
+             "compare": "previous_period"},
+            "hors limites",
+        ),
+        (
+            {"metric": "ga4.sessions", "start": "0001-01-01", "end": "0001-01-10",
+             "compare": "previous_year"},
+            "hors limites",
+        ),
+        ({"metric": "ga4.sessions", "end": "0001-01-05"}, "hors limites"),
+        (
+            {"metric": "ga4.sessions", "start": "9999-12-20", "end": "9999-12-31",
+             "granularity": "week"},
+            "hors limites",
+        ),
+        (
+            {"metric": "ga4.sessions", "start": "9999-12-20", "end": "9999-12-31",
+             "granularity": "month"},
+            "hors limites",
+        ),
+        ({"metric": "ga4.sessions", "start": "0000-01-01"}, "date invalide"),
     ],
 )
 async def test_series_parameters_are_validated_in_french(
@@ -197,3 +225,89 @@ async def test_tightening_a_schedule_pulls_the_due_date_forward_but_never_into_t
         db_session, website_id=site.id, kind=kind, frequency="weekly", enabled=False, now=now
     )
     assert row.next_due_at == now and row.enabled is False
+
+
+async def test_series_expose_block_coverage(
+    authed_client: tuple[AsyncClient, User], db_session: AsyncSession
+) -> None:
+    client, user = authed_client
+    site = await _own_site(db_session, user, "api-coverage.test")
+    yesterday = utc_today() - timedelta(days=1)
+    await store_observations(
+        db_session, website_id=site.id, source="ga4",
+        observations=[Observation("sessions", yesterday, 4.0)], run_id=None, now=utc_now(),
+    )
+    body = (
+        await client.get(
+            f"/api/v1/websites/{site.id}/metrics/series", params={"metric": "ga4.sessions"}
+        )
+    ).json()
+    assert (body["current"]["days_covered"], body["current"]["days_expected"]) == (1, 28)
+    assert body["comparison_unavailable"] is None and body["comparison"] is None
+
+
+async def test_previous_year_comparison_reads_the_year_before(
+    authed_client: tuple[AsyncClient, User], db_session: AsyncSession
+) -> None:
+    client, user = authed_client
+    site = await _own_site(db_session, user, "api-prev-year.test")
+    yesterday = utc_today() - timedelta(days=1)
+    await store_observations(
+        db_session, website_id=site.id, source="ga4",
+        observations=[Observation("sessions", shift_year(yesterday), 10.0)],
+        run_id=None, now=utc_now(),
+    )
+    resp = await client.get(
+        f"/api/v1/websites/{site.id}/metrics/series",
+        params={"metric": "ga4.sessions", "compare": "previous_year"},
+    )
+    assert resp.status_code == 200, resp.text
+    comparison = resp.json()["comparison"]
+    assert comparison["end"] == shift_year(yesterday).isoformat()
+    assert comparison["total"] == 10.0 and comparison["days_covered"] == 1
+    assert resp.json()["current"]["total"] is None
+
+
+@pytest.mark.parametrize("compare", ["previous_year", "previous_period"])
+async def test_a_comparison_beyond_the_retention_is_absent_with_a_reason(
+    authed_client: tuple[AsyncClient, User], db_session: AsyncSession, compare: str
+) -> None:
+    client, user = authed_client
+    site = await _own_site(db_session, user, f"api-retention-{compare}.test")
+    floor = add_months(month_start(utc_today()), -RETENTION_MONTHS)
+    resp = await client.get(
+        f"/api/v1/websites/{site.id}/metrics/series",
+        params={
+            "metric": "ga4.sessions",
+            "start": floor.isoformat(),
+            "end": (floor + timedelta(days=30)).isoformat(),
+            "compare": compare,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["comparison"] is None and body["comparison_unavailable"] == "hors_retention"
+    assert body["current"]["start"] == floor.isoformat()
+
+
+async def test_the_points_of_another_site_never_leak_into_a_series(
+    authed_client: tuple[AsyncClient, User], db_session: AsyncSession
+) -> None:
+    client, user = authed_client
+    mine = await _own_site(db_session, user, "api-leak-mine.test")
+    other = await _own_site(db_session, user, "api-leak-other.test")
+    yesterday = utc_today() - timedelta(days=1)
+    for site, value in ((mine, 3.0), (other, 500.0)):
+        await store_observations(
+            db_session, website_id=site.id, source="ga4",
+            observations=[Observation("sessions", yesterday, value)], run_id=None,
+            now=utc_now(),
+        )
+    for granularity in ("day", "week", "month"):
+        resp = await client.get(
+            f"/api/v1/websites/{mine.id}/metrics/series",
+            params={"metric": "ga4.sessions", "granularity": granularity},
+        )
+        body = resp.json()
+        assert body["current"]["total"] == 3.0
+        assert all(p["value"] in (None, 3.0) for p in body["current"]["points"])
