@@ -25,7 +25,7 @@ from pydantic_core import ErrorDetails
 from app.config import Settings
 from app.security.token_crypto import TokenCryptoConfigError, load_token_cipher
 
-_JSON_KEYS = {"token_enc_keys", "cors_origins"}
+_JSON_KEYS = {"token_enc_keys", "cors_origins", "internal_allowed_invokers"}
 _CLOUD_RUN_MANAGED = {"PORT", "K_SERVICE", "K_REVISION", "K_CONFIGURATION"}
 _ENVIRONMENTS = ("local", "staging", "production")
 

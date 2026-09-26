@@ -78,6 +78,22 @@ class Settings(BaseSettings):
     # Tâches déposées au plus par passage du planificateur.
     jobs_tick_batch: int = 100
 
+    # --- Files et appels internes (lot B) ---
+    # "inline" : exécution dans le processus (local, tests). "cloud_tasks" : production.
+    task_queue_backend: Literal["inline", "cloud_tasks"] = "inline"
+    gcp_project: str = ""
+    cloud_tasks_location: str = ""
+    # Files « {préfixe}-{ga4|gsc|cwv|light|heavy} » (ex. guiili-staging-ga4).
+    cloud_tasks_queue_prefix: str = "guiili"
+    # Compte de service dont Cloud Tasks joint le jeton OIDC en appelant le worker.
+    tasks_invoker_service_account: str = ""
+    # URL https du service worker (appels internes, délégation headless).
+    worker_base_url: str = ""
+    # Audience attendue des jetons OIDC reçus par le worker (en général = worker_base_url).
+    internal_oidc_audience: str = ""
+    # E-mails des comptes autorisés à appeler /internal/* (Scheduler, Tasks, API).
+    internal_allowed_invokers: list[str] = []
+
     # {version:int -> clé base64 de 32 octets}. pydantic-settings parse le JSON
     # de la variable d'environnement automatiquement pour un type dict ; chaque
     # valeur est enveloppée en SecretStr (jamais en clair dans un repr/log).

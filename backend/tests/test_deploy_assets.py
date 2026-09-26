@@ -250,3 +250,8 @@ def test_main_non_string_error_never_prints_the_value(
     assert main(["check_env", path]) == 1
     err = capsys.readouterr().err
     assert "APP_SECRET_KEY" in err and "123456789" not in err
+
+
+def test_validate_env_parses_the_internal_invokers_list_as_json() -> None:
+    invokers = '["guiili-tasks@guiili.iam.gserviceaccount.com"]'
+    assert validate_env({**_VALID, "INTERNAL_ALLOWED_INVOKERS": invokers}) == []
