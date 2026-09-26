@@ -1,9 +1,10 @@
 import asyncio
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
+from uuid import uuid4
 
 from sqlalchemy import delete, func, select, text
-from sqlalchemy.exc import DBAPIError, ProgrammingError
+from sqlalchemy.exc import DBAPIError, IntegrityError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.job_run import JobRun
@@ -407,3 +408,151 @@ async def test_a_handler_commit_before_failing_survives_the_rollback(
     )
     assert (result.status, result.retry) == ("failed", False)
     assert await db_session.scalar(select(func.count()).select_from(MetricPoint)) == 1
+
+
+async def _reclaimed_while_running(session, run, *, spec: RunSpec) -> None:
+    """Simule la livraison B : bail de A expiré, B reprend la tâche (tentative 2)."""
+    claim = await claim_run(session, spec, now=NOW + timedelta(minutes=16), limits=LIMITS)
+    assert (claim.status, claim.run.attempt) == ("claimed", 2)
+    await session.commit()
+
+
+async def test_a_late_finish_of_a_lost_lease_overwrites_nothing(
+    db_session: AsyncSession, make_user
+) -> None:
+    site = await make_site(db_session, make_user, "run-lost.test")
+    site_id, workspace_id = site.id, site.workspace_id
+    spec = _spec(site)
+    schedule = Schedule(
+        website_id=site_id, kind="collect_probes", frequency="daily", enabled=True,
+        next_due_at=NOW,
+    )
+    db_session.add(schedule)
+    await db_session.flush()
+
+    async def slow_then_fail(session, run) -> HandlerOutcome:
+        await _reclaimed_while_running(session, run, spec=spec)
+        raise SourceError("quota", recoverable=True)
+
+    async def slow_then_succeed(session, run) -> HandlerOutcome:
+        await _reclaimed_while_running(session, run, spec=spec)
+        return HandlerOutcome(observations=9)
+
+    late_failure = await execute_run(
+        db_session, spec, handlers={"collect_probes": slow_then_fail}, limits=LIMITS, clock=_clock
+    )
+    assert (late_failure.status, late_failure.retry) == ("running", False)
+    run = await db_session.scalar(select(JobRun).where(JobRun.website_id == site_id))
+    assert (run.status, run.attempt, run.error_code) == ("running", 2, None)
+    assert run.lease_expires_at == NOW + timedelta(minutes=16) + LIMITS.lease
+    await db_session.refresh(schedule)
+    assert schedule.last_status is None and schedule.failing_since is None
+
+    # Un succès tardif de la première réclamation n'écrase pas non plus la reprise.
+    other_spec = RunSpec("collect_probes", site_id, workspace_id, "w2")
+
+    async def slow_then_succeed_w2(session, run) -> HandlerOutcome:
+        await _reclaimed_while_running(session, run, spec=other_spec)
+        return HandlerOutcome(observations=9)
+
+    late_success = await execute_run(
+        db_session, other_spec, handlers={"collect_probes": slow_then_succeed_w2},
+        limits=LIMITS, clock=_clock,
+    )
+    assert (late_success.status, late_success.retry) == ("running", False)
+    run2 = await db_session.scalar(select(JobRun).where(JobRun.window_label == "w2"))
+    assert (run2.status, run2.attempt, run2.observations) == ("running", 2, 0)
+    await db_session.refresh(schedule)
+    assert schedule.last_status is None and schedule.last_success_at is None
+
+
+async def test_the_workspace_lock_serializes_claims_of_different_keys(engine) -> None:
+    maker = async_sessionmaker(bind=engine, expire_on_commit=False)
+    async with maker() as setup:
+        user = User(email="jobs-wslock@example.com", google_sub="jobs-wslock-sub")
+        setup.add(user)
+        await setup.flush()
+        workspace = Workspace(name="jobs-wslock", owner_user_id=user.id)
+        setup.add(workspace)
+        await setup.flush()
+        setup.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
+        site = Website(workspace_id=workspace.id, domain="jobs-wslock.test", display_name="ws")
+        setup.add(site)
+        await setup.commit()
+        site_id, workspace_id, user_id = site.id, workspace.id, user.id
+
+    first_spec = RunSpec("collect_probes", site_id, workspace_id, "ws-a")
+    second_spec = RunSpec("collect_probes", site_id, workspace_id, "ws-b")
+    try:
+        async with maker() as holder, maker() as other:
+            first = await claim_run(holder, first_spec, now=NOW, limits=LIMITS)
+            assert first.status == "claimed"  # verrous de clé ET de workspace tenus
+            # Clés différentes : seul le verrou du workspace peut bloquer la seconde.
+            task = asyncio.create_task(claim_run(other, second_spec, now=NOW, limits=LIMITS))
+            waiting = 0
+            for _ in range(200):
+                assert not task.done(), "la seconde réclamation doit attendre le verrou du workspace"
+                waiting = await holder.scalar(
+                    text("SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted")
+                )
+                if waiting:
+                    break
+                await asyncio.sleep(0.05)
+            assert waiting, "la seconde réclamation doit attendre le verrou du workspace"
+            await holder.commit()
+            second = await asyncio.wait_for(task, timeout=10)
+            assert second.status == "claimed"  # 1 tâche en cours < limite de 2
+            await other.commit()
+    finally:
+        async with maker() as cleanup:
+            await cleanup.execute(delete(Website).where(Website.id == site_id))
+            await cleanup.execute(delete(Workspace).where(Workspace.id == workspace_id))
+            await cleanup.execute(delete(User).where(User.id == user_id))
+            await cleanup.commit()
+
+
+async def test_a_flush_error_after_the_handler_is_classified(
+    db_session: AsyncSession, make_user
+) -> None:
+    site = await make_site(db_session, make_user, "run-flush.test")
+    site_id = site.id
+
+    async def pending_bad_write(session, run) -> HandlerOutcome:
+        # Site inexistant : la violation de clé étrangère ne sort qu'au vidage final.
+        session.add(
+            MetricPoint(
+                website_id=uuid4(), source="probe", metric="page_up", dim_key="",
+                day=date(2026, 9, 26), value=1.0, dims={}, collected_at=NOW,
+            )
+        )
+        return HandlerOutcome(observations=1)
+
+    result = await execute_run(
+        db_session, _spec(site), handlers={"collect_probes": pending_bad_write},
+        limits=LIMITS, clock=_clock,
+    )
+    assert (result.status, result.retry) == ("failed", True)
+    run = await db_session.scalar(select(JobRun).where(JobRun.website_id == site_id))
+    assert (run.error_code, run.error_detail) == ("internal_error", IntegrityError.__name__)
+    assert run.observations == 0
+    assert await db_session.scalar(select(func.count()).select_from(MetricPoint)) == 0
+
+
+async def test_an_exhausted_lease_updates_the_schedule(
+    db_session: AsyncSession, make_user
+) -> None:
+    site = await make_site(db_session, make_user, "run-exh-schedule.test")
+    limits = replace(LIMITS, max_attempts=1)
+    schedule = Schedule(
+        website_id=site.id, kind="collect_probes", frequency="daily", enabled=True,
+        next_due_at=NOW,
+    )
+    db_session.add(schedule)
+    await db_session.flush()
+    await claim_run(db_session, _spec(site), now=NOW, limits=limits)
+    later = NOW + timedelta(minutes=16)
+    claim = await claim_run(db_session, _spec(site), now=later, limits=limits)
+    assert claim.status == "exhausted"
+    await db_session.refresh(schedule)
+    assert schedule.last_status == "failed" and schedule.last_error_code == "lease_expired"
+    assert schedule.failing_since == later and schedule.last_run_at == later

@@ -7,8 +7,20 @@ ensemble, et le décompte des tâches en cours d'un workspace est exact. La réc
 est committée avant le travail : aucune transaction ne reste ouverte pendant la
 collecte réseau.
 
-Ordre de prise des verrous (constant, pour éviter les interblocages) : clé de la tâche,
-puis workspace, puis, dans le gestionnaire, `lock_metrics` (site, source).
+Ordre réel de prise des verrous (constant, pour éviter les interblocages) :
+1. transaction de réclamation : verrou consultatif de la clé de la tâche, puis verrou
+   consultatif du workspace, puis verrou de ligne `job_runs` ; elle est COMMITTÉE avant
+   le travail, ce qui libère ces verrous ;
+2. transaction(s) du gestionnaire, distincte(s) de la première : `lock_metrics` (site,
+   source) puis les écritures ;
+3. transaction de clôture (`_finish`), distincte des deux autres : verrou de ligne
+   `job_runs`, puis verrou de ligne `schedules` (`record_schedule_outcome`), donc APRÈS
+   `lock_metrics` (déjà relâché à ce stade). Aucune transaction ne prend ces verrous dans
+   un autre ordre.
+
+Une clôture n'est acceptée que par la réclamation qui la détient : si le bail a expiré et
+qu'une autre livraison a repris la tâche (tentative suivante), la clôture tardive de
+l'ancienne réclamation est ignorée (`job_lease_lost`) et n'écrase rien.
 
 Un gestionnaire dont un effet doit survivre à un échec (par exemple une connexion Google
 passée à `needs_reauth` par la résolution des identifiants) COMMITTE cet effet lui-même
@@ -164,6 +176,7 @@ async def claim_run(
     if run.attempt >= run.max_attempts:
         if run.status == "running":  # bail expiré sur la dernière tentative
             _close(run, status="failed", error_code="lease_expired", recoverable=True, now=now)
+            await record_schedule_outcome(session, run, now=now)
             await session.flush()
         return Claim("exhausted", run)
     if run.workspace_id is not None:
@@ -232,13 +245,26 @@ async def _finish(
     error_code: str | None,
     recoverable: bool | None,
     now: datetime,
+    claimed_attempt: int,
     observations: int = 0,
     detail: str | None = None,
+    log_extra: Mapping[str, str] | None = None,
 ) -> RunResult:
     run = await session.get(JobRun, run_id, with_for_update=True, populate_existing=True)
     if run is None:  # site supprimé pendant l'exécution (cascade)
         await session.commit()
         return RunResult("claimed", None, retry=False)
+    if run.status != "running" or run.attempt != claimed_attempt:
+        # Bail perdu : une autre livraison a repris la tâche (ou l'a déjà close). On
+        # n'écrase ni la ligne, ni le planning, et la file ne doit pas réessayer.
+        current_status = run.status  # avant le rollback, qui expire l'objet
+        await session.rollback()
+        logger.warning(
+            "clôture ignorée : bail perdu",
+            extra={**(log_extra or {}), "event": "job_lease_lost",
+                   "claimed_attempt": claimed_attempt},
+        )
+        return RunResult("claimed", current_status, retry=False)
     _close(
         run,
         status=status,
@@ -268,18 +294,22 @@ async def execute_run(
         return RunResult(claim.status, claim.run.status, retry=claim.status in ("busy", "throttled"))
 
     run_id = claim.run.id
+    claimed_attempt = claim.run.attempt
     handler = handlers.get(spec.kind)
     log_extra = {"job_kind": spec.kind, "job_key": spec.key}
     try:
         if handler is None:
             raise SourceError("unknown_kind", recoverable=False)
         outcome = await handler(session, claim.run)
+        # Les écritures en attente du gestionnaire sont vidées ICI, dans le `try` : une
+        # erreur de base (contrainte, verrou) est ainsi classée comme les autres.
+        await session.flush()
     except SourceError as exc:
         await session.rollback()
         if exc.not_applicable:
             return await _finish(
                 session, run_id, status="skipped", error_code=exc.reason, recoverable=None,
-                now=clock(),
+                now=clock(), claimed_attempt=claimed_attempt, log_extra=log_extra,
             )
         logger.warning(
             "tâche en échec",
@@ -288,7 +318,8 @@ async def execute_run(
         )
         return await _finish(
             session, run_id, status="failed", error_code=exc.reason,
-            recoverable=exc.recoverable, now=clock(),
+            recoverable=exc.recoverable, now=clock(), claimed_attempt=claimed_attempt,
+            log_extra=log_extra,
         )
     except Exception as exc:
         await session.rollback()
@@ -299,14 +330,17 @@ async def execute_run(
             )
             return await _finish(
                 session, run_id, status="failed", error_code="db_transient", recoverable=True,
-                now=clock(), detail=type(exc).__name__,
+                now=clock(), claimed_attempt=claimed_attempt, log_extra=log_extra,
+                detail=type(exc).__name__,
             )
         logger.exception("tâche en échec inattendu", extra={**log_extra, "event": "job_crashed"})
         return await _finish(
             session, run_id, status="failed", error_code="internal_error", recoverable=True,
-            now=clock(), detail=type(exc).__name__,
+            now=clock(), claimed_attempt=claimed_attempt, log_extra=log_extra,
+            detail=type(exc).__name__,
         )
     return await _finish(
         session, run_id, status=outcome.status, error_code=outcome.note, recoverable=None,
-        now=clock(), observations=outcome.observations,
+        now=clock(), claimed_attempt=claimed_attempt, log_extra=log_extra,
+        observations=outcome.observations,
     )
