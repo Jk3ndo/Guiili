@@ -170,3 +170,93 @@ async def test_purge_never_touches_the_current_window(db_session: AsyncSession) 
     result = await purge_expired(db_session, today=TODAY)
     assert result.dropped == () and result.deleted_default_rows == 0
     assert "metric_points_p2026_09" in {p.name for p in await list_partitions(db_session)}
+
+
+async def test_lock_timeout_is_set_for_the_transaction(db_session: AsyncSession) -> None:
+    await ensure_partitions(db_session, today=TODAY, months_back=0, months_ahead=0)
+    assert await db_session.scalar(text("SHOW lock_timeout")) == "5s"
+    await db_session.execute(text("SET LOCAL lock_timeout = 0"))
+    await purge_expired(db_session, today=TODAY)
+    assert await db_session.scalar(text("SHOW lock_timeout")) == "5s"
+
+
+async def test_purge_ignores_foreign_partition_names_and_purges_the_rest(
+    db_session: AsyncSession,
+) -> None:
+    await db_session.execute(
+        text(
+            "CREATE TABLE metric_points_foreign_old PARTITION OF metric_points "
+            "FOR VALUES FROM ('2020-01-01') TO ('2020-02-01')"
+        )
+    )
+    await ensure_partitions(db_session, today=date(2024, 5, 10), months_back=0, months_ahead=0)
+
+    result = await purge_expired(db_session, today=TODAY)
+    assert result.dropped == ("metric_points_p2024_05",)
+    assert result.unexpected == ("metric_points_foreign_old",)
+    names = {p.name for p in await list_partitions(db_session)}
+    assert "metric_points_foreign_old" in names
+
+
+async def test_unrecognised_bound_is_never_default_nor_purged(db_session: AsyncSession) -> None:
+    await db_session.execute(
+        text(
+            "CREATE TABLE metric_points_pmin PARTITION OF metric_points "
+            "FOR VALUES FROM (MINVALUE) TO ('2020-01-01')"
+        )
+    )
+    by_name = {p.name: p for p in await list_partitions(db_session)}
+    assert by_name["metric_points_pmin"].kind == "unknown"
+    assert by_name[DEFAULT_PARTITION].kind == "default"
+
+    result = await purge_expired(db_session, today=TODAY)
+    assert result.dropped == ()
+    assert "metric_points_pmin" in result.unexpected
+    assert "metric_points_pmin" in {p.name for p in await list_partitions(db_session)}
+
+
+async def test_parameters_are_validated(db_session: AsyncSession) -> None:
+    with pytest.raises(ValueError):
+        await purge_expired(db_session, today=TODAY, retention_months=0)
+    with pytest.raises(ValueError):
+        await purge_expired(db_session, today=TODAY, retention_months=-3)
+    with pytest.raises(ValueError):
+        await ensure_partitions(db_session, today=TODAY, months_back=-1)
+    with pytest.raises(ValueError):
+        await ensure_partitions(db_session, today=TODAY, months_ahead=-1)
+
+
+async def test_purge_boundary_first_day_versus_last_day_of_month(
+    db_session: AsyncSession,
+) -> None:
+    await ensure_partitions(db_session, today=date(2024, 6, 10), months_back=0, months_ahead=1)
+    # Le 2026-08-31 la limite est le 2024-07-01 : seul juin 2024 est entièrement expiré.
+    last_day = await purge_expired(db_session, today=date(2026, 8, 31))
+    assert last_day.dropped == ("metric_points_p2024_06",)
+    # Le 2026-09-01 la limite passe au 2024-08-01 : juillet 2024 est expiré à son tour.
+    first_day = await purge_expired(db_session, today=date(2026, 9, 1))
+    assert first_day.dropped == ("metric_points_p2024_07",)
+
+
+async def test_purge_boundary_across_a_year_change(db_session: AsyncSession) -> None:
+    await ensure_partitions(db_session, today=date(2024, 11, 5), months_back=0, months_ahead=1)
+    # Le 2027-01-15 la limite est le 2024-12-01 : novembre 2024 est expiré, pas décembre.
+    result = await purge_expired(db_session, today=date(2027, 1, 15))
+    assert result.dropped == ("metric_points_p2024_11",)
+    assert "metric_points_p2024_12" in {p.name for p in await list_partitions(db_session)}
+
+
+async def test_default_partition_row_exactly_on_the_cutoff_is_kept(
+    db_session: AsyncSession, make_user
+) -> None:
+    site = await _site(db_session, make_user, "part-cutoff.test")
+    # Limite au 2026-09-26 : 2024-08-01. La veille est supprimée, le jour même conservé.
+    db_session.add_all([_point(site, date(2024, 7, 31)), _point(site, date(2024, 8, 1))])
+    await db_session.flush()
+
+    result = await purge_expired(db_session, today=TODAY)
+    assert result.deleted_default_rows == 1
+    days = (
+        await db_session.execute(select(MetricPoint.day).where(MetricPoint.website_id == site.id))
+    ).scalars().all()
+    assert days == [date(2024, 8, 1)]
