@@ -1,10 +1,11 @@
 import os
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest_asyncio
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.config import get_settings
@@ -32,6 +33,10 @@ EXPECTED_TABLES = {
     "website_profiles",
     "measurement_item_statuses",
     "measurement_item_events",
+    "metric_points",
+    "metric_rollups",
+    "schedules",
+    "job_runs",
 }
 
 
@@ -85,3 +90,36 @@ async def test_models_match_migration(clean_migrations_db) -> None:
     assert _alembic("upgrade", "head").returncode == 0
     check = _alembic("check")
     assert check.returncode == 0, f"schéma désynchronisé:\n{check.stdout}\n{check.stderr}"
+
+
+async def test_metric_points_is_partitioned_by_month_with_a_default(
+    clean_migrations_db,
+) -> None:
+    assert _alembic("upgrade", "head").returncode == 0
+    engine = create_async_engine(MIG_URL)
+    try:
+        async with engine.connect() as conn:
+            strategy = await conn.scalar(
+                text(
+                    "SELECT p.partstrat::text FROM pg_partitioned_table p "
+                    "JOIN pg_class c ON c.oid = p.partrelid WHERE c.relname = 'metric_points'"
+                )
+            )
+            children = set(
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT c.relname FROM pg_inherits i "
+                            "JOIN pg_class c ON c.oid = i.inhrelid "
+                            "JOIN pg_class p ON p.oid = i.inhparent "
+                            "WHERE p.relname = 'metric_points'"
+                        )
+                    )
+                ).scalars()
+            )
+    finally:
+        await engine.dispose()
+    assert strategy == "r"  # RANGE
+    assert "metric_points_default" in children
+    assert f"metric_points_p{datetime.now(UTC):%Y_%m}" in children
+    assert len(children) == 9  # partition par défaut + M-4 .. M+3
