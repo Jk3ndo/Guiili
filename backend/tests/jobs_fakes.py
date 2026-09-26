@@ -44,20 +44,35 @@ class RecordingQueue:
 
 
 class FakeSource:
-    """Source factice : renvoie les observations comprises dans la fenêtre demandée."""
+    """Source factice : renvoie les observations comprises dans la fenêtre demandée.
+
+    - `error` : levée à chaque appel, ou seulement au n-ième (1-based) si `error_on_call`
+      est donné (mutable : un test peut « réparer » la source entre deux exécutions) ;
+    - `session` : si fournie, vérifie qu'AUCUNE transaction n'est ouverte pendant
+      l'appel réseau simulé."""
 
     def __init__(
-        self, name: str, observations: Sequence[Observation] = (), error: SourceError | None = None
+        self,
+        name: str,
+        observations: Sequence[Observation] = (),
+        error: SourceError | None = None,
+        *,
+        error_on_call: int | None = None,
+        session: AsyncSession | None = None,
     ) -> None:
         self.spec = SOURCE_SPECS[name]
         self._observations = list(observations)
-        self._error = error
+        self.error = error
+        self.error_on_call = error_on_call
+        self._session = session
         self.calls: list[DayRange] = []
 
     async def collect(self, website, day_range: DayRange) -> list[Observation]:
+        if self._session is not None:
+            assert not self._session.in_transaction(), "transaction ouverte pendant le réseau"
         self.calls.append(day_range)
-        if self._error is not None:
-            raise self._error
+        if self.error is not None and self.error_on_call in (None, len(self.calls)):
+            raise self.error
         return [obs for obs in self._observations if day_range.contains(obs.day)]
 
 
@@ -91,10 +106,9 @@ def fake_services(sources: dict[str, FakeSource], calls: list[str] | None = None
             calls.append(name)
         return sources[name]
 
-    return JobServices(
+    return JobServices.from_clock(
         source_factory=factory,
         page_fetcher=offline_fetcher,
         reader_factory=unlinked_reader_factory,
-        today=lambda: TODAY,
-        now=lambda: NOW,
+        clock=lambda: NOW,
     )

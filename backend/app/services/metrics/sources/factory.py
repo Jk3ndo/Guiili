@@ -2,14 +2,15 @@
 lisent les jetons des liaisons du site (base + rafraîchissement OAuth) : l'appelant
 committe ensuite, AVANT de lancer la collecte réseau.
 
-`today` (horloge injectable) est transmise aux sources qui datent leurs observations
-elles-mêmes (Core Web Vitals, sondes). La sonde TLS lit aussi l'heure : c'est à
-l'appelant de fournir un `tls_checker` déjà lié à la même horloge."""
+`clock` (horloge injectable, la MÊME que celle de `JobServices.from_clock`) fournit la
+date des sources qui datent leurs observations elles-mêmes (Core Web Vitals, sondes).
+La sonde TLS lit aussi l'heure : c'est à l'appelant de fournir un `tls_checker` déjà lié
+à la même horloge."""
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,7 +23,7 @@ from app.services.metrics.sources.cwv import CwvSource
 from app.services.metrics.sources.ga4 import Ga4Source
 from app.services.metrics.sources.gsc import GscSource
 from app.services.metrics.sources.probes import ProbeSource
-from app.services.metrics.types import MetricSource, SourceError, utc_today
+from app.services.metrics.types import MetricSource, SourceError, utc_now
 
 SourceFactory = Callable[[AsyncSession, Website, str], Awaitable[MetricSource]]
 
@@ -34,8 +35,11 @@ def default_source_factory(
     cipher: Any,
     tls_checker: TlsChecker,
     page_fetcher: PageFetcher,
-    today: Callable[[], date] = utc_today,
+    clock: Callable[[], datetime] = utc_now,
 ) -> SourceFactory:
+    def today() -> date:
+        return clock().date()
+
     async def build(session: AsyncSession, website: Website, name: str) -> MetricSource:
         if name in ("ga4", "gsc"):
             credentials = await resolve_google_credentials(

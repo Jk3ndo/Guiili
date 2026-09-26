@@ -29,6 +29,9 @@ OVERDUE_AFTER = timedelta(hours=2)
 STUCK_QUEUED_AFTER = timedelta(hours=1)
 # Marge après l'expiration d'un bail : le temps que la file redélivre la tâche.
 STUCK_RUNNING_GRACE = timedelta(minutes=5)
+# Maintenance des partitions (tâche globale, sans planning) : une nuit manquée est
+# rattrapée le lendemain ; au-delà de 48 h sans succès, les mois à venir ne sont plus créés.
+MAINTENANCE_STALE_AFTER = timedelta(hours=48)
 # Échecs que seul le client peut lever (reconnexion Google, droits, site injoignable ou
 # hors ligne). Tout le reste (dont `api_key_rejected`, `db_transient`,
 # `token_refresh_failed`, `bad_request`, `truncated`, l'exécuteur) ainsi que tout code
@@ -64,6 +67,9 @@ class JobsHealth:
     overdue: int
     stuck_running: int
     stuck_queued: int
+    # Dernière maintenance des partitions réussie il y a plus de 48 h (ou jamais, alors
+    # que des tâches existent depuis plus de 48 h) : défaut côté opérateur.
+    maintenance_stale: bool = False
 
     @property
     def internal_failures(self) -> tuple[FailingSchedule, ...]:
@@ -71,7 +77,13 @@ class JobsHealth:
 
     @property
     def ok(self) -> bool:
-        return not self.failing and not self.overdue and not self.stuck_running and not self.stuck_queued
+        return not (
+            self.failing
+            or self.overdue
+            or self.stuck_running
+            or self.stuck_queued
+            or self.maintenance_stale
+        )
 
 
 def _active_schedules():
@@ -80,6 +92,19 @@ def _active_schedules():
         .join(Website, Website.id == Schedule.website_id)
         .where(Schedule.enabled.is_(True), Website.archived_at.is_(None))
     )
+
+
+async def _maintenance_stale(session: AsyncSession, *, now: datetime) -> bool:
+    last_success = await session.scalar(
+        select(func.max(JobRun.finished_at)).where(
+            JobRun.kind == "partition_maintenance", JobRun.status == "succeeded"
+        )
+    )
+    if last_success is not None:
+        return last_success < now - MAINTENANCE_STALE_AFTER
+    # Jamais réussie : anormal seulement si le système tourne depuis plus de 48 h.
+    first_activity = await session.scalar(select(func.min(JobRun.enqueued_at)))
+    return first_activity is not None and first_activity < now - MAINTENANCE_STALE_AFTER
 
 
 async def compute_jobs_health(session: AsyncSession, *, now: datetime) -> JobsHealth:
@@ -127,12 +152,14 @@ async def compute_jobs_health(session: AsyncSession, *, now: datetime) -> JobsHe
         .select_from(JobRun)
         .where(JobRun.status == "queued", JobRun.enqueued_at < now - STUCK_QUEUED_AFTER)
     )
+    maintenance_stale = await _maintenance_stale(session, now=now)
     return JobsHealth(
         checked_at=now,
         failing=failing,
         overdue=overdue or 0,
         stuck_running=stuck_running or 0,
         stuck_queued=stuck_queued or 0,
+        maintenance_stale=maintenance_stale,
     )
 
 
@@ -154,9 +181,16 @@ def report_jobs_health(health: JobsHealth, *, capture: Capture | None = None) ->
         "overdue": health.overdue,
         "stuck_running": health.stuck_running,
         "stuck_queued": health.stuck_queued,
+        "maintenance_stale": health.maintenance_stale,
         "kinds": sorted({item.kind for item in health.failing}),
     }
-    ours = internal or health.overdue or health.stuck_running or health.stuck_queued
+    ours = (
+        internal
+        or health.overdue
+        or health.stuck_running
+        or health.stuck_queued
+        or health.maintenance_stale
+    )
     level = logging.ERROR if ours else logging.WARNING
     logger.log(level, "jobs_health_alert", extra={"event": "jobs_health_alert", **extra})
     if level == logging.ERROR:

@@ -9,6 +9,7 @@ from app.models.schedule import Schedule
 from app.services.jobs.health import (
     CLIENT_ACTION_CODES,
     FAILING_AFTER,
+    MAINTENANCE_STALE_AFTER,
     OVERDUE_AFTER,
     STUCK_QUEUED_AFTER,
     STUCK_RUNNING_GRACE,
@@ -132,7 +133,8 @@ def test_our_failures_are_errors_sent_to_sentry(caplog: pytest.LogCaptureFixture
         (
             "Tâches planifiées en échec ou en retard",
             {"failing_internal": 1, "failing_client_action": 1, "overdue": 0,
-             "stuck_running": 0, "stuck_queued": 2, "kinds": ["collect_gsc"]},
+             "stuck_running": 0, "stuck_queued": 2, "maintenance_stale": False,
+             "kinds": ["collect_gsc"]},
         )
     ]
 
@@ -295,3 +297,61 @@ def test_a_failing_sentry_capture_never_breaks_the_report(
     failure = next(r for r in caplog.records if r.message == "jobs_health_capture_failed")
     assert failure.levelno == logging.WARNING and failure.error_type == "RuntimeError"
     assert "secret-dsn-value" not in caplog.text
+
+
+def _maintenance(site, key: str, **values) -> JobRun:
+    base = {"kind": "partition_maintenance", "website_id": None, "workspace_id": None,
+            "status": "succeeded", "attempt": 1, "finished_at": NOW}
+    base.update(values)
+    return _run(site, key, **base)
+
+
+async def test_a_stale_partition_maintenance_is_reported(
+    db_session: AsyncSession, make_user
+) -> None:
+    site = await make_site(db_session, make_user, "health-maint.test")
+    db_session.add_all(
+        [
+            _maintenance(site, "m-old", finished_at=NOW - MAINTENANCE_STALE_AFTER - timedelta(hours=1)),
+            _run(site, "recent", status="succeeded", enqueued_at=NOW - timedelta(hours=1)),
+        ]
+    )
+    await db_session.flush()
+    health = await compute_jobs_health(db_session, now=NOW)
+    assert health.maintenance_stale and not health.ok
+
+
+async def test_a_recent_or_failed_partition_maintenance(
+    db_session: AsyncSession, make_user
+) -> None:
+    site = await make_site(db_session, make_user, "health-maint2.test")
+    db_session.add(_maintenance(site, "m-ok", finished_at=NOW - timedelta(hours=20)))
+    await db_session.flush()
+    assert not (await compute_jobs_health(db_session, now=NOW)).maintenance_stale
+    # Un échec plus récent ne compte pas comme un succès : le dernier succès date de 60 h.
+    later = NOW + timedelta(hours=40)
+    assert (await compute_jobs_health(db_session, now=later)).maintenance_stale
+
+
+async def test_a_missing_partition_maintenance_is_reported_only_after_48_hours(
+    db_session: AsyncSession, make_user
+) -> None:
+    site = await make_site(db_session, make_user, "health-maint3.test")
+    # Aucune tâche du tout : rien à signaler.
+    assert not (await compute_jobs_health(db_session, now=NOW)).maintenance_stale
+    db_session.add(_run(site, "first", status="succeeded", enqueued_at=NOW - timedelta(hours=47)))
+    await db_session.flush()
+    assert not (await compute_jobs_health(db_session, now=NOW)).maintenance_stale
+    assert (await compute_jobs_health(db_session, now=NOW + timedelta(hours=2))).maintenance_stale
+
+
+def test_a_stale_maintenance_is_an_operator_alert(caplog: pytest.LogCaptureFixture) -> None:
+    captured: list = []
+    with caplog.at_level(logging.INFO, logger="app.services.jobs.health"):
+        report_jobs_health(
+            _health(maintenance_stale=True),
+            capture=lambda message, extra: captured.append(message),
+        )
+    record = next(r for r in caplog.records if r.message == "jobs_health_alert")
+    assert record.levelno == logging.ERROR and record.maintenance_stale is True
+    assert captured == ["Tâches planifiées en échec ou en retard"]

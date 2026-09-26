@@ -17,6 +17,7 @@ from app.models.metric_rollup import MetricRollup
 from app.models.oauth_state import OAuthState
 from app.models.password_reset_token import PasswordResetToken
 from app.models.schedule import Schedule
+from app.models.source_quota_event import SourceQuotaEvent
 from app.models.user import User
 from app.models.website import Website
 from app.models.website_google_link import WebsiteGoogleLink
@@ -42,6 +43,7 @@ __all__ = [
     "OAuthState",
     "PasswordResetToken",
     "Schedule",
+    "SourceQuotaEvent",
     "User",
     "UserAdvisorSettings",
     "Website",

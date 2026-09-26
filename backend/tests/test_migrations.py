@@ -37,6 +37,7 @@ EXPECTED_TABLES = {
     "metric_rollups",
     "schedules",
     "job_runs",
+    "source_quota_events",
 }
 
 

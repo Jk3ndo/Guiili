@@ -6,17 +6,19 @@ intermédiaires : `execute_run` enregistre le résultat final et le planning."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from functools import partial
 from uuid import UUID
 
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.job_run import JobRun
+from app.models.source_quota_event import SourceQuotaEvent
 from app.models.website import Website
 from app.services.gtm_headless import GtmHeadlessResult
 from app.services.jobs.kinds import BACKFILL_SOURCES, COLLECT_KIND_BY_SOURCE
@@ -26,13 +28,24 @@ from app.services.measurement.service import ReaderFactory, refresh_plan
 from app.services.metrics.partitions import ensure_partitions, purge_expired
 from app.services.metrics.sources.factory import SourceFactory
 from app.services.metrics.store import store_observations
-from app.services.metrics.types import MetricSource, SourceError, utc_now, utc_today
+from app.services.metrics.types import (
+    DayRange,
+    MetricSource,
+    Observation,
+    SourceError,
+    utc_now,
+)
 
 logger = logging.getLogger(__name__)
 
 BREAKER_WINDOW = timedelta(minutes=30)
 BREAKER_THRESHOLD = 3
 JOB_RUNS_RETENTION = timedelta(days=90)
+# Les événements de quota ne servent qu'à la fenêtre du disjoncteur : 2 jours de marge.
+QUOTA_EVENTS_RETENTION = timedelta(days=2)
+# Borne de la vérification du plan de mesure : `refresh_plan` garde une transaction (et
+# le verrou du site) ouverte pendant ses appels réseau (pire cas ~100 s).
+MEASUREMENT_CHECK_TIMEOUT_SECONDS = 120
 
 # Une sonde complète produit les deux mesures ; l'absence de l'une (TLS illisible, page
 # muette) est un résultat partiel, à signaler sans en faire un échec.
@@ -40,13 +53,40 @@ _PROBE_METRICS = frozenset({"tls_days_remaining", "page_up"})
 PROBE_PARTIAL = "probe_partial"
 
 
+def _default_today() -> date:
+    return utc_now().date()
+
+
 @dataclass(frozen=True, slots=True)
 class JobServices:
     source_factory: SourceFactory
     page_fetcher: PageFetcher
     reader_factory: ReaderFactory
-    today: Callable[[], date] = utc_today
-    now: Callable[[], datetime] = utc_now
+    today: Callable[[], date] = field(default=_default_today)
+    now: Callable[[], datetime] = field(default=utc_now)
+
+    @classmethod
+    def from_clock(
+        cls,
+        *,
+        source_factory: SourceFactory,
+        page_fetcher: PageFetcher,
+        reader_factory: ReaderFactory,
+        clock: Callable[[], datetime] = utc_now,
+    ) -> JobServices:
+        """Services dont la date et l'heure dérivent de la MÊME horloge (à donner aussi à
+        `default_source_factory(clock=...)`) : jamais deux horloges qui divergent."""
+
+        def today() -> date:
+            return clock().date()
+
+        return cls(
+            source_factory=source_factory,
+            page_fetcher=page_fetcher,
+            reader_factory=reader_factory,
+            today=today,
+            now=clock,
+        )
 
 
 async def _active_website(session: AsyncSession, run: JobRun) -> Website:
@@ -59,23 +99,32 @@ async def _active_website(session: AsyncSession, run: JobRun) -> Website:
 async def quota_breaker_open(
     session: AsyncSession, *, workspace_id: UUID, source: str, now: datetime
 ) -> bool:
-    """Disjoncteur (spec §6 mesure 8) : trop d'échecs `quota` récents pour ce workspace
-    et cette source Google ⇒ on n'appelle plus Google pendant `BREAKER_WINDOW`."""
-    kind = COLLECT_KIND_BY_SOURCE[source]
+    """Disjoncteur (spec §6 mesure 8) : `BREAKER_THRESHOLD` échecs `quota` en
+    `BREAKER_WINDOW` pour ce workspace et cette source Google ⇒ on n'appelle plus Google.
+    Le décompte lit `source_quota_events` (ajout seul) et non `job_runs` : une nouvelle
+    tentative réécrit la ligne de sa tâche, ce qui ferait retomber le compteur."""
     count = await session.scalar(
         select(func.count())
-        .select_from(JobRun)
+        .select_from(SourceQuotaEvent)
         .where(
-            JobRun.workspace_id == workspace_id,
-            JobRun.error_code == "quota",
-            JobRun.finished_at >= now - BREAKER_WINDOW,
-            or_(
-                JobRun.kind == kind,
-                and_(JobRun.kind == "backfill", JobRun.params["source"].astext == source),
-            ),
+            SourceQuotaEvent.workspace_id == workspace_id,
+            SourceQuotaEvent.source == source,
+            SourceQuotaEvent.at >= now - BREAKER_WINDOW,
         )
     )
     return (count or 0) >= BREAKER_THRESHOLD
+
+
+async def _record_quota_event(
+    services: JobServices, session: AsyncSession, run: JobRun, name: str
+) -> None:
+    """Un échec `quota` = UN événement, committé avant de propager l'erreur (l'exécuteur
+    fait `rollback`). L'échec `circuit_open` n'en enregistre aucun : il n'appelle pas
+    Google."""
+    if run.workspace_id is None:
+        return
+    session.add(SourceQuotaEvent(workspace_id=run.workspace_id, source=name, at=services.now()))
+    await session.commit()
 
 
 async def _open_source(
@@ -102,12 +151,33 @@ async def _open_source(
     return source
 
 
+async def _fetch(
+    services: JobServices,
+    session: AsyncSession,
+    run: JobRun,
+    source: MetricSource,
+    name: str,
+    website: Website,
+    window: DayRange,
+) -> list[Observation]:
+    try:
+        return await source.collect(website, window)
+    except SourceError as exc:
+        if exc.reason == "quota":
+            await _record_quota_event(services, session, run, name)
+        raise
+
+
 async def collect(
     services: JobServices, name: str, session: AsyncSession, run: JobRun
 ) -> HandlerOutcome:
     website = await _active_website(session, run)
     source = await _open_source(services, session, website, name, run)
-    observations = await source.collect(website, source.spec.regular_window(services.today()))
+    window = source.spec.regular_window(services.today())
+    observations = await _fetch(services, session, run, source, name, website, window)
+    if name == "probe" and not observations:
+        # Une sonde sans aucune mesure n'est pas une réussite silencieuse.
+        raise SourceError("no_observation", recoverable=True)
     result = await store_observations(
         session,
         website_id=website.id,
@@ -136,7 +206,7 @@ async def backfill(services: JobServices, session: AsyncSession, run: JobRun) ->
         raise SourceError("bad_params", recoverable=False)
     written = 0
     for chunk in window.chunks(source.spec.max_days_per_call):
-        observations = await source.collect(website, chunk)
+        observations = await _fetch(services, session, run, source, name, website, chunk)
         result = await store_observations(
             session,
             website_id=website.id,
@@ -165,15 +235,18 @@ async def measurement_check(
     # Une connexion Google passée à `needs_reauth` par la construction du lecteur est
     # enregistrée avant le rafraîchissement (qui tient ensuite le verrou du site).
     await session.commit()
-    await refresh_plan(
-        session,
-        website,
-        fetcher=services.page_fetcher,
-        reader=reader,
-        verifier=_no_browser,
-        run_headless=False,
-        now=services.now(),
-    )
+    # `TimeoutError` : reclassée par l'exécuteur en `internal_error` récupérable, avec
+    # `rollback` (libère la transaction et le verrou du site).
+    async with asyncio.timeout(MEASUREMENT_CHECK_TIMEOUT_SECONDS):
+        await refresh_plan(
+            session,
+            website,
+            fetcher=services.page_fetcher,
+            reader=reader,
+            verifier=_no_browser,
+            run_headless=False,
+            now=services.now(),
+        )
     return HandlerOutcome()
 
 
@@ -183,6 +256,13 @@ async def purge_old_job_runs(
     result = await session.execute(
         delete(JobRun).where(JobRun.finished_at.is_not(None), JobRun.finished_at < now - keep)
     )
+    return result.rowcount or 0
+
+
+async def purge_old_quota_events(
+    session: AsyncSession, *, now: datetime, keep: timedelta = QUOTA_EVENTS_RETENTION
+) -> int:
+    result = await session.execute(delete(SourceQuotaEvent).where(SourceQuotaEvent.at < now - keep))
     return result.rowcount or 0
 
 
@@ -200,6 +280,7 @@ async def partition_maintenance(
     await lock_key(session, "partition_maintenance")
     purged = await purge_expired(session, today=services.today())
     deleted_runs = await purge_old_job_runs(session, now=services.now())
+    deleted_quota_events = await purge_old_quota_events(session, now=services.now())
     await session.commit()
 
     logger.info(
@@ -210,6 +291,7 @@ async def partition_maintenance(
             "dropped_partitions": list(purged.dropped),
             "deleted_default_rows": purged.deleted_default_rows,
             "deleted_job_runs": deleted_runs,
+            "deleted_quota_events": deleted_quota_events,
         },
     )
     if purged.unexpected:
