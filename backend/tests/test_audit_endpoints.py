@@ -19,7 +19,11 @@ from app.models.enums import SnapshotSource, StackKind
 from app.models.user import User
 from app.models.website import Website
 from app.services.audit_probe import MockAuditProbe
-from app.services.gtm_headless import GtmHeadlessResult, _derive_findings
+from app.services.gtm_headless import (
+    GtmHeadlessResult,
+    _derive_findings,
+    failed_headless_result,
+)
 from app.services.stack_detector import StackDetection
 from app.services.tls_check import TlsStatus
 from tests.conftest import owner_workspace_id
@@ -409,6 +413,54 @@ async def test_gtm_headless_merges_findings_into_audit_gtm_block(
     audit = (await client.get(f"/api/v1/websites/{site.id}/audit")).json()
     codes = [f["code"] for f in audit["gtm"]["findings"]]
     assert "headless_gtm_not_loaded" in codes
+
+
+async def test_a_failed_headless_run_never_erases_the_last_good_result(
+    authed_client: tuple[AsyncClient, User],
+    db_session: AsyncSession,
+    mock_detector: None,
+) -> None:
+    client, user = authed_client
+    site = await _website(db_session, user=user, domain="headless5.test")
+    await _snapshot(
+        db_session,
+        site,
+        {
+            "ga4": {}, "gsc": {}, "cwv": {},
+            "gtm": {
+                "containers": [], "ga4_tags": [], "snippet_form": "standard",
+                "snippet_in_head": True, "data_layer_name": "dataLayer",
+                "consent_platform": None, "gtm_consent_gated": False,
+                "csp_present": False, "csp_allows_gtm": None, "csp_blocks_preview": None,
+                "server_side": False, "query_stripped_on_redirect": False,
+                "findings": [], "checked_at": datetime.now(UTC).isoformat(), "error": None,
+            },
+        },
+    )
+
+    async def _failing(url: str) -> GtmHeadlessResult:
+        _ = url
+        return failed_headless_result()
+
+    url = f"/api/v1/websites/{site.id}/gtm/headless"
+    try:
+        app.dependency_overrides[get_gtm_headless_verifier] = _fake_headless_ok
+        assert (await client.post(url)).status_code == 200
+        good = (await client.get(f"/api/v1/websites/{site.id}/audit")).json()["gtm"]
+        assert good["headless_checked_at"] is not None
+
+        app.dependency_overrides[get_gtm_headless_verifier] = lambda: _failing
+        failed = await client.post(url)
+    finally:
+        app.dependency_overrides.pop(get_gtm_headless_verifier, None)
+
+    # Le contrat de réponse est inchangé : 200 avec le code d'erreur...
+    assert failed.status_code == 200
+    assert failed.json()["error"] == "headless_failed"
+    assert failed.json()["gtm_js_loaded"] is False
+    # ... mais la dernière vérification réussie reste celle affichée par /audit.
+    after = (await client.get(f"/api/v1/websites/{site.id}/audit")).json()["gtm"]
+    assert after["headless_checked_at"] == good["headless_checked_at"]
 
 
 async def test_gtm_headless_409_without_static_check(

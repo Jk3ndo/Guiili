@@ -4,6 +4,7 @@ import { apiDownload, apiPost, apiPostSlow, saveBlob } from "./client";
 import { notifyDemoMode } from "./demo";
 import type { GtmHeadlessDto, ScanDto } from "./dto";
 import { emitDiagnosticComplete } from "./events";
+import { describeMeasurementError, HEADLESS_TIMEOUT_MS } from "./measurement";
 import { resolveWebsiteId } from "./workspaces";
 
 /** Lance un scan backend pour le site ; retombe sur un toast « démo » sinon. */
@@ -25,17 +26,31 @@ export async function runDiagnostic(domain: string): Promise<void> {
 }
 
 /** Verifie la configuration GTM dans un vrai navigateur (Chromium headless).
- *  Peut prendre jusqu'à ~20 s (navigation + networkidle) ; timeout client 30 s. */
+ *  Deploye, le navigateur tourne sur le service worker (jusqu'a ~150 s avec le
+ *  demarrage a froid) : delai client de 180 s. Un delai depasse, un 5xx, un 429 ou
+ *  un echec du navigateur ne sont JAMAIS une API hors ligne : message clair, pas de
+ *  mode demo (reserve au site inconnu du backend). */
 export async function verifyGtmHeadless(domain: string): Promise<boolean> {
+  let websiteId: string;
   try {
-    const websiteId = await resolveWebsiteId(domain);
+    websiteId = await resolveWebsiteId(domain);
+  } catch {
+    notifyDemoMode();
+    return false;
+  }
+  try {
     const result = await apiPostSlow<GtmHeadlessDto>(
       `/websites/${websiteId}/gtm/headless`,
       undefined,
-      30_000,
+      HEADLESS_TIMEOUT_MS,
     );
     if (result.error) {
-      toast.error("Vérification impossible", { description: result.error });
+      // Le code brut (`headless_failed`) ne s'affiche jamais : l'échec du navigateur
+      // n'a pas modifié la dernière vérification réussie.
+      toast.error("Vérification impossible", {
+        description:
+          "La vérification en conditions réelles n'a pas pu s'exécuter, réessaie dans un instant.",
+      });
       return false;
     }
     toast.success("Vérification headless terminée", {
@@ -45,8 +60,10 @@ export async function verifyGtmHeadless(domain: string): Promise<boolean> {
     });
     emitDiagnosticComplete();
     return true;
-  } catch {
-    notifyDemoMode();
+  } catch (error) {
+    toast.error("Vérification impossible", {
+      description: describeMeasurementError(error),
+    });
     return false;
   }
 }

@@ -6,32 +6,17 @@ exactement comme un échec local de `verify_gtm`."""
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
 
 import httpx
 
 from app.services.gcp_metadata import IdentityTokenProvider, MetadataError
 from app.services.gtm_headless import (
-    HEADLESS_FAILED,
     GtmHeadlessResult,
+    failed_headless_result,
     headless_result_from_dict,
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _failed() -> GtmHeadlessResult:
-    return GtmHeadlessResult(
-        gtm_js_loaded=False,
-        containers_initialised=(),
-        datalayer_present=False,
-        gtm_events=(),
-        requests_before_consent=False,
-        csp_console_errors=(),
-        findings=(),
-        checked_at=datetime.now(UTC),
-        error=HEADLESS_FAILED,
-    )
 
 
 class RemoteHeadlessVerifier:
@@ -58,7 +43,7 @@ class RemoteHeadlessVerifier:
                 "jeton d'identité indisponible pour le worker",
                 extra={"event": "headless_delegation"},
             )
-            return _failed()
+            return failed_headless_result()
         owns = self._client is None
         http = self._client or httpx.AsyncClient(timeout=self._timeout)
         try:
@@ -70,7 +55,7 @@ class RemoteHeadlessVerifier:
                 "worker injoignable pour la vérification headless",
                 extra={"event": "headless_delegation", "error": type(exc).__name__},
             )
-            return _failed()
+            return failed_headless_result()
         finally:
             if owns:
                 await http.aclose()
@@ -79,9 +64,9 @@ class RemoteHeadlessVerifier:
                 "le worker a refusé la vérification headless",
                 extra={"event": "headless_delegation", "status": response.status_code},
             )
-            return _failed()
+            return failed_headless_result()
         try:
             return headless_result_from_dict(response.json())
         except ValueError:
             logger.warning("réponse headless illisible", extra={"event": "headless_delegation"})
-            return _failed()
+            return failed_headless_result()

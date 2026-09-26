@@ -712,16 +712,26 @@ async def verify_gtm_headless_endpoint(
             detail="lance d'abord un diagnostic complet (check GTM statique requis)",
         )
 
-    result = await verifier(f"https://{site.domain}")
-    headless_block = headless_result_to_dict(result)
-    # Reassignation complete (pas de mutation en place) : `metrics` est un
-    # `Mapped[dict]` JSONB simple, sans `MutableDict` — seule la reassignation
-    # de l'attribut marque la ligne comme modifiee pour SQLAlchemy.
-    snapshot.metrics = {
-        **snapshot.metrics,
-        "gtm": {**snapshot.metrics["gtm"], "headless": headless_block},
-    }
+    # Fin de la transaction de lecture avant l'appel au navigateur (jusqu'a ~150 s
+    # quand il est delegue au worker) : aucune connexion n'est tenue pendant l'attente.
+    domain = site.domain
     await session.commit()
+    result = await verifier(f"https://{domain}")
+    headless_block = headless_result_to_dict(result)
+    # Un echec (worker occupe, delai depasse, navigateur indisponible) est renvoye
+    # tel quel a l'appelant mais n'ecrase JAMAIS la derniere verification reussie
+    # (meme regle que le plan de mesure).
+    if result.error is None:
+        # Relecture : `metrics` a pu changer (nouveau scan) pendant l'attente.
+        await session.refresh(snapshot)
+        # Reassignation complete (pas de mutation en place) : `metrics` est un
+        # `Mapped[dict]` JSONB simple, sans `MutableDict` — seule la reassignation
+        # de l'attribut marque la ligne comme modifiee pour SQLAlchemy.
+        snapshot.metrics = {
+            **snapshot.metrics,
+            "gtm": {**snapshot.metrics["gtm"], "headless": headless_block},
+        }
+        await session.commit()
 
     return GtmHeadlessOut(
         gtm_js_loaded=result.gtm_js_loaded,

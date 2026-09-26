@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import UTC, datetime
 
 import httpx
@@ -16,6 +17,7 @@ from app.services.gtm_check import GtmFinding
 from app.services.gtm_headless import (
     HEADLESS_FAILED,
     GtmHeadlessResult,
+    failed_headless_result,
     headless_result_from_dict,
     headless_result_to_dict,
     verify_gtm,
@@ -60,7 +62,15 @@ def test_the_result_survives_the_round_trip() -> None:
 @pytest.mark.parametrize(
     "payload",
     [[], {}, {**headless_result_to_dict(RESULT), "gtm_js_loaded": "oui"},
-     {**headless_result_to_dict(RESULT), "findings": ["x"]}],
+     {**headless_result_to_dict(RESULT), "findings": ["x"]},
+     {**headless_result_to_dict(RESULT), "error": 42},
+     {**headless_result_to_dict(RESULT), "checked_at": 20260926},
+     {**headless_result_to_dict(RESULT), "findings": [
+         {"code": "c", "severity": "critical", "title": "t", "detail": "d"}]},
+     {**headless_result_to_dict(RESULT), "findings": [
+         {"code": 1, "severity": "high", "title": "t", "detail": "d"}]},
+     {**headless_result_to_dict(RESULT), "findings": [
+         {"code": "c", "severity": "high", "title": None, "detail": "d"}]}],
 )
 def test_an_unexpected_shape_is_rejected(payload) -> None:
     with pytest.raises(ValueError):
@@ -145,3 +155,82 @@ async def test_the_remote_verifier_speaks_the_real_worker_contract(
         client=httpx.AsyncClient(transport=ASGITransport(app=worker), base_url=WORKER),
     )
     assert await verifier("https://delegation.test") == RESULT
+
+
+async def test_a_failure_reported_by_the_worker_is_kept_as_is() -> None:
+    failed = headless_result_to_dict(failed_headless_result())
+    verifier = RemoteHeadlessVerifier(
+        base_url=WORKER, audience=WORKER, tokens=_Tokens(),
+        client=httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda r: httpx.Response(200, json=failed))
+        ),
+    )
+    result = await verifier("https://exemple.fr")
+    assert result.error == HEADLESS_FAILED and result.gtm_js_loaded is False
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(200, content=b"<html>pas du json</html>"),
+        httpx.Response(200, json=["pas", "un", "objet"]),
+        httpx.Response(200, json={"gtm_js_loaded": True}),
+    ],
+)
+async def test_an_unreadable_200_becomes_a_failed_result(response: httpx.Response) -> None:
+    verifier = RemoteHeadlessVerifier(
+        base_url=WORKER, audience=WORKER, tokens=_Tokens(),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(lambda r: response)),
+    )
+    assert (await verifier("https://exemple.fr")).error == HEADLESS_FAILED
+
+
+async def test_without_a_client_one_is_created_then_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[httpx.AsyncClient] = []
+    real_client = httpx.AsyncClient
+
+    def factory(*args, **kwargs) -> httpx.AsyncClient:
+        assert kwargs["timeout"].read == 150.0
+        client = real_client(
+            transport=httpx.MockTransport(
+                lambda r: httpx.Response(200, json=headless_result_to_dict(RESULT))
+            )
+        )
+        created.append(client)
+        return client
+
+    monkeypatch.setattr("app.services.worker_client.httpx.AsyncClient", factory)
+    verifier = RemoteHeadlessVerifier(base_url=WORKER, audience=WORKER, tokens=_Tokens())
+    assert await verifier("https://exemple.fr") == RESULT
+    assert len(created) == 1 and created[0].is_closed
+
+
+async def test_the_identity_token_never_reaches_the_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    token = google_id_token(audience=WORKER, email=API_ACCOUNT)
+
+    class _Fixed:
+        async def identity_token(self, audience: str) -> str:
+            return token
+
+    def refuse(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, text=f"occupé {token}")
+
+    def boom(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(f"injoignable {token}", request=request)
+
+    caplog.set_level(logging.DEBUG)
+    for handler in (refuse, boom):
+        verifier = RemoteHeadlessVerifier(
+            base_url=WORKER, audience=WORKER, tokens=_Fixed(),
+            client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        )
+        assert (await verifier("https://exemple.fr")).error == HEADLESS_FAILED
+    assert caplog.records
+    assert token not in caplog.text
+    assert "occupé" not in caplog.text
+    for record in caplog.records:
+        assert token not in repr(record.__dict__)

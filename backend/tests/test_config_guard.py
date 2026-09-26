@@ -61,12 +61,21 @@ def test_valid_production_passes_and_ignores_test_databases() -> None:
         ({"cors_origins": ["http://localhost:4000"]}, "CORS_ORIGINS"),
         ({"audit_probe_mock": True}, "AUDIT_PROBE_MOCK"),
         ({"advisor_mock": True}, "ADVISOR_MOCK"),
+        ({"worker_base_url": "http://worker.internal"}, "WORKER_BASE_URL"),
     ],
 )
 def test_production_rejects_unsafe_settings(override: dict, fragment: str) -> None:
     with pytest.raises(ValidationError) as excinfo:
         _settings(_PROD, **override)
     assert fragment in str(excinfo.value)
+
+
+def test_worker_url_is_free_locally_and_https_when_deployed() -> None:
+    # Local : repli sur le navigateur local ou worker de développement en http.
+    assert _settings(_LOCAL, worker_base_url="http://127.0.0.1:8030").worker_base_url
+    assert _settings(_PROD, worker_base_url="").worker_base_url == ""
+    deployed = _settings(_PROD, worker_base_url="https://worker.example.run.app")
+    assert deployed.worker_base_url.startswith("https://")
 
 
 def test_staging_tolerates_probe_and_advisor_mocks() -> None:

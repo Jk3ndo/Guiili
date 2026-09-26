@@ -129,6 +129,9 @@ class Settings(BaseSettings):
             problems.append("FRONTEND_BASE_URL doit commencer par https://")
         if any(not origin.startswith("https://") for origin in self.cors_origins):
             problems.append("CORS_ORIGINS ne doit contenir que des origines https://")
+        if self.worker_base_url and not self.worker_base_url.startswith("https://"):
+            # Le jeton d'identité de l'API part vers cette URL : jamais en clair.
+            problems.append("WORKER_BASE_URL doit commencer par https://")
         if self.environment == "production":
             if self.audit_probe_mock:
                 problems.append("AUDIT_PROBE_MOCK doit être false (données factices sinon)")
