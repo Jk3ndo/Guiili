@@ -42,8 +42,20 @@ class MetricDef:
     thresholds: Thresholds = field(default_factory=Thresholds)
 
 
-def _metric(source: str, name: str, label: str, unit: Unit, direction: Direction,
-            aggregation: Aggregation, **extra: object) -> MetricDef:
+def _metric(
+    source: str,
+    name: str,
+    label: str,
+    unit: Unit,
+    direction: Direction,
+    aggregation: Aggregation,
+    *,
+    dimensions: tuple[str, ...] = (),
+    top_n: int = 0,
+    ratio_of: tuple[str, str] | None = None,
+    weight_by: str | None = None,
+    thresholds: Thresholds | None = None,
+) -> MetricDef:
     return MetricDef(
         key=f"{source}.{name}",
         source=source,
@@ -52,7 +64,11 @@ def _metric(source: str, name: str, label: str, unit: Unit, direction: Direction
         unit=unit,
         direction=direction,
         aggregation=aggregation,
-        **extra,  # type: ignore[arg-type]
+        dimensions=dimensions,
+        top_n=top_n,
+        ratio_of=ratio_of,
+        weight_by=weight_by,
+        thresholds=thresholds or Thresholds(),
     )
 
 

@@ -35,6 +35,8 @@ def period_end(start: date, grain: Grain) -> date:
 
 def periods_between(start: date, end: date, grain: Grain) -> list[date]:
     periods: list[date] = []
+    if end < start:
+        return periods
     cursor = period_start(start, grain)
     while cursor <= end:
         periods.append(cursor)

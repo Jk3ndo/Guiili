@@ -1,9 +1,12 @@
+import copy
+import pickle
 from datetime import date, timedelta
 
 import pytest
 
+from app.services.metrics.dimensions import CLEANERS
 from app.services.metrics.registry import METRICS, METRICS_BY_KEY, metric_def, metrics_for_source
-from app.services.metrics.types import SOURCE_SPECS, DayRange, SourceError
+from app.services.metrics.types import SOURCE_SPECS, DayRange, Observation, SourceError
 
 
 def test_keys_are_unique_and_qualified() -> None:
@@ -90,3 +93,52 @@ def test_not_applicable_is_never_recoverable() -> None:
     error = SourceError("ga4_not_connected", recoverable=True, not_applicable=True)
     assert error.reason == "ga4_not_connected"
     assert error.not_applicable is True and error.recoverable is False
+    # Sans `not_applicable`, l'indicateur `recoverable` est conservé tel quel.
+    retryable = SourceError("quota", recoverable=True)
+    assert retryable.recoverable is True and retryable.not_applicable is False
+    final = SourceError("forbidden", recoverable=False)
+    assert final.recoverable is False and final.not_applicable is False
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        SourceError("quota", recoverable=True),
+        SourceError("forbidden", recoverable=False),
+        SourceError("ga4_not_connected", recoverable=True, not_applicable=True),
+    ],
+)
+def test_source_error_survives_copy_and_pickle(error: SourceError) -> None:
+    # Aller-retour d'un objet créé ici même (aucune donnée externe désérialisée).
+    roundtrip = pickle.loads(pickle.dumps(error))  # nosemgrep: python.lang.security.deserialization.pickle.avoid-pickle
+    for clone in (copy.copy(error), copy.deepcopy(error), roundtrip):
+        assert isinstance(clone, SourceError)
+        assert (clone.reason, clone.recoverable, clone.not_applicable) == (
+            error.reason,
+            error.recoverable,
+            error.not_applicable,
+        )
+        assert str(clone) == error.reason
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_observation_rejects_non_finite_values(value: float) -> None:
+    with pytest.raises(ValueError):
+        Observation("sessions", date(2026, 9, 25), value)
+
+
+def test_observation_accepts_finite_values() -> None:
+    observation = Observation("sessions", date(2026, 9, 25), 0.0)
+    assert observation.value == 0.0 and observation.dims == {}
+
+
+def test_every_dimension_has_a_cleaner() -> None:
+    for spec in SOURCE_SPECS.values():
+        assert set(spec.dimensions) <= set(CLEANERS), spec.name
+    for metric in METRICS:
+        assert set(metric.dimensions) <= set(CLEANERS), metric.key
+
+
+def test_source_spec_names_match_their_keys() -> None:
+    for key, spec in SOURCE_SPECS.items():
+        assert spec.name == key

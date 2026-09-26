@@ -6,6 +6,7 @@ une valeur inventée ni un zéro de remplacement."""
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Protocol
@@ -62,6 +63,12 @@ class Observation:
     value: float
     dims: dict[str, str] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        # Une valeur NaN ou infinie n'est jamais une mesure : la source doit l'écarter
+        # (ou échouer en `SourceError`), pas la stocker.
+        if not math.isfinite(self.value):
+            raise ValueError(f"valeur non finie pour la métrique {self.metric}")
+
 
 class SourceError(Exception):
     """Échec typé d'une source.
@@ -70,6 +77,10 @@ class SourceError(Exception):
       « ignorée », jamais une alerte, jamais retentée.
     - `recoverable` : une nouvelle tentative a du sens (quota, réseau, 5xx, réponse de
       forme inattendue). Sinon l'échec est définitif pour cette exécution (droits, jeton).
+
+    `reason` est un code court et stable (`"ga4_not_connected"`, `"api_error"`), jamais
+    `str(exc)` d'une exception réseau : le message serait stocké et affiché, et pourrait
+    porter une URL avec clé.
     """
 
     def __init__(self, reason: str, *, recoverable: bool, not_applicable: bool = False) -> None:
@@ -77,6 +88,14 @@ class SourceError(Exception):
         self.reason = reason
         self.not_applicable = not_applicable
         self.recoverable = recoverable and not not_applicable
+
+    def __reduce__(self) -> tuple[object, tuple[str, bool, bool]]:
+        # Le constructeur a des arguments nommés : sans cela, copy/pickle échouent.
+        return (_rebuild_source_error, (self.reason, self.recoverable, self.not_applicable))
+
+
+def _rebuild_source_error(reason: str, recoverable: bool, not_applicable: bool) -> SourceError:
+    return SourceError(reason, recoverable=recoverable, not_applicable=not_applicable)
 
 
 @dataclass(frozen=True, slots=True)
