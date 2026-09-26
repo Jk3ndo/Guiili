@@ -34,6 +34,7 @@ from app.models.enums import (
 from app.models.google_connection import GoogleConnection
 from app.models.issue_item import IssueItem
 from app.models.measurement_item_status import MeasurementItemStatus
+from app.models.schedule import Schedule
 from app.models.user import User
 from app.models.website import Website
 from app.models.website_google_link import WebsiteGoogleLink
@@ -106,6 +107,13 @@ CASES: dict[tuple[str, str], Body] = {
     ("PATCH", "/websites/{website_id}/measurement-plan/items/{item_id}"): {"dismissed": True},
     ("POST", "/websites/{website_id}/measurement-plan/gtm-container"): {"pack": "starter"},
     ("POST", "/websites/{website_id}/measurement-plan/google-autolink"): None,
+    ("GET", "/websites/{website_id}/metrics/series"): None,
+    ("GET", "/websites/{website_id}/schedules"): None,
+    ("PUT", "/websites/{website_id}/schedules"): {
+        "kind": "collect_ga4",
+        "frequency": "weekly",
+        "enabled": False,
+    },
     ("POST", "/websites/{website_id}/link-resource"): lambda w: {
         "google_connection_id": str(w.attacker_connection_id),
         "resource_type": "ga4_property",
@@ -364,6 +372,7 @@ async def test_a_stranger_cannot_reach_or_alter_another_workspace(
     assert invitations == 0 and members == 1 and links == 0
     assert await db_session.scalar(select(func.count()).select_from(WebsiteProfile)) == 0
     assert await db_session.scalar(select(func.count()).select_from(MeasurementItemStatus)) == 0
+    assert await db_session.scalar(select(func.count()).select_from(Schedule)) == 0
 
 
 async def test_the_real_owner_reaches_the_seeded_routes(
