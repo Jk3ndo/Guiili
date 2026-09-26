@@ -67,6 +67,17 @@ class Settings(BaseSettings):
     # Limitation de débit des routes sensibles (voir app/api/rate_limit.py).
     rate_limit_enabled: bool = True
 
+    # --- Tâches planifiées (lot B) ---
+    # Bail d'une tâche : au-delà, une autre livraison peut la reprendre.
+    jobs_lease_seconds: int = 900
+    # Aligné sur la configuration des files Cloud Tasks (runbook).
+    jobs_max_attempts: int = 5
+    # Tâches simultanées par workspace, et tâches déposées par jour et par workspace.
+    jobs_workspace_concurrency: int = 2
+    jobs_workspace_daily_cap: int = 300
+    # Tâches déposées au plus par passage du planificateur.
+    jobs_tick_batch: int = 100
+
     # {version:int -> clé base64 de 32 octets}. pydantic-settings parse le JSON
     # de la variable d'environnement automatiquement pour un type dict ; chaque
     # valeur est enveloppée en SecretStr (jamais en clair dans un repr/log).
