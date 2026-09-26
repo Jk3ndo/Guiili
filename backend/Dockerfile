@@ -1,13 +1,12 @@
-# Image de production pour Cloud Run.
+# Image de l'API publique (Cloud Run `backend-guiili`).
 #
-# Inclut Chromium (Playwright) pour la verification GTM headless — une
-# fonctionnalite reellement livree (voir app/services/gtm_headless.py) ;
-# la retirer casserait silencieusement ce bouton sans qu'on l'ait demande.
-# Contrepartie assumee : image plus lourde (~500 Mo de plus), cold start un
-# peu plus long sur Cloud Run (scale-to-zero). A retirer plus tard si le
-# cout/la latence pese trop pour l'usage reel (retirer les 2 lignes
-# `playwright install` et le service continue de fonctionner, ce bouton
-# renverra juste une erreur geree proprement, cf. gtm_headless.py).
+# Sans Chromium depuis le lot B : la verification GTM headless s'execute sur le
+# service worker (Dockerfile.worker), que l'API appelle avec un jeton d'identite
+# (app/services/worker_client.py). Image plus legere, demarrage a froid plus court.
+# Le PAQUET Python `playwright` reste installe (dependance normale de pyproject.toml :
+# app.services.gtm_headless l'importe au chargement) ; seul le binaire du navigateur
+# est absent. Sans WORKER_BASE_URL, le bouton headless renverrait une erreur geree
+# proprement (voir app/services/gtm_headless.py) : le script de deploiement l'exige.
 FROM python:3.12-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -25,10 +24,6 @@ RUN uv sync --frozen --no-dev --no-install-project
 
 COPY . .
 RUN uv sync --frozen --no-dev
-
-# Chromium + dependances systeme (fonts, libgtk, libnss...) necessaires au
-# rendu headless reel utilise par verify_gtm().
-RUN uv run playwright install --with-deps chromium
 
 ENV PATH="/app/.venv/bin:${PATH}"
 

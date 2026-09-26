@@ -1,0 +1,8 @@
+# Construit l'image du worker a partir de Dockerfile.worker (`gcloud builds submit
+# --tag` ne sait utiliser que `Dockerfile`). Appele par scripts/deploy-backend.sh
+# avec --substitutions _IMAGE=<region>-docker.pkg.dev/<projet>/.../<service>-worker:<sha>.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "Dockerfile.worker", "-t", "$_IMAGE", "."]
+images:
+  - "$_IMAGE"

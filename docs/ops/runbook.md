@@ -45,6 +45,18 @@ Variables clés d'un fichier d'environnement (modèle : `deploy/env.example.yaml
 `SENTRY_TRACES_SAMPLE_RATE` (défaut `0.0`), `ADVISOR_DAILY_BRIEF_CAP` (défaut 5),
 `ADVISOR_DAILY_MESSAGE_CAP` (défaut 40).
 
+Variables du lot B (tâches planifiées et service worker, obligatoires hors `local` pour
+le worker et vérifiées par `check_env --service worker`) : `TASK_QUEUE_BACKEND`
+(`cloud_tasks`), `GCP_PROJECT`, `CLOUD_TASKS_LOCATION`, `CLOUD_TASKS_QUEUE_PREFIX`
+(`guiili` en production, `guiili-staging` en préproduction), `TASKS_INVOKER_SERVICE_ACCOUNT`,
+`WORKER_BASE_URL`, `INTERNAL_OIDC_AUDIENCE` (en général égale à `WORKER_BASE_URL`),
+`INTERNAL_ALLOWED_INVOKERS` (JSON : comptes de Cloud Tasks, de Cloud Scheduler et de
+l'API). Réglages optionnels : `JOBS_WORKSPACE_CONCURRENCY` (2), `JOBS_WORKSPACE_DAILY_CAP`
+(300), `JOBS_TICK_BATCH` (100), `JOBS_LEASE_SECONDS` (900), `JOBS_MAX_ATTEMPTS` (5).
+Les deux services lisent le même fichier. L'API a elle aussi besoin de `WORKER_BASE_URL`
+(en `https://`) et de `INTERNAL_OIDC_AUDIENCE` : elle s'en sert pour déléguer la
+vérification GTM headless au worker.
+
 Chaque environnement a ses **propres** secrets : ne jamais réutiliser
 `APP_SECRET_KEY`, `TOKEN_ENC_KEYS` ni la base de production en préproduction.
 
@@ -65,29 +77,52 @@ modifications non committées ne sont pas dans l'image), venv backend installé
 
 Le script fait cinq étapes, dans l'ordre, et s'arrête à la première erreur (`set -e`) :
 
-1. **Vérification du fichier d'environnement** :
-   `python -m app.tools.check_env deploy/env.<env>.yaml --expect <env>` (mêmes règles que
-   le démarrage du service, plus les variables obligatoires). Aucune valeur du fichier
-   n'est affichée, seulement des noms de variables et des messages. Cette étape est
-   exécutée même avec `--dry-run`. Trois contrôles s'y ajoutent :
+1. **Vérification du fichier d'environnement**, deux fois : `check_env ... --expect
+   <env>` (règles de l'API) puis `check_env ... --expect <env> --service worker`
+   (variables du lot B). Mêmes garanties qu'avant : aucune valeur affichée, exécutée
+   même avec `--dry-run`. Trois contrôles s'y ajoutent :
    `--expect` refuse un fichier dont `ENVIRONMENT` est absent (il vaudrait `local` et
    toutes les règles de production seraient sautées) ou différent de la cible ;
    `TOKEN_ENC_KEYS` est chargé comme le fait l'API (JSON, base64 valide, 32 octets par
    clé, version active présente) ; toute valeur non textuelle (`true`, `42`, `null` sans
    guillemets) est refusée, car `gcloud --env-vars-file` n'accepte que des chaînes.
-2. **Construction de l'image** : `gcloud builds submit backend --tag
-   <région>-docker.pkg.dev/<projet>/cloud-run-source-deploy/<service>:<sha-court>`.
-3. **Migrations** : déploie puis exécute immédiatement le Cloud Run Job
-   `<service>-migrate` (`backend-guiili-migrate` en production,
-   `backend-guiili-staging-migrate` en préproduction) avec la commande
-   `alembic upgrade head`, `--max-retries 0`, délai de 10 minutes, `--wait`. **Un échec de
-   migration arrête tout avant de toucher au service** : l'ancienne révision continue de
-   servir. Le conteneur du service n'exécute plus les migrations au démarrage.
-4. **Déploiement du service** : `gcloud run deploy <service>` avec la même image,
-   512 Mi, 1 CPU, `--cpu-boost`, 3 instances maximum, `--allow-unauthenticated`.
-5. **Vérification** : lit l'URL du service et appelle `GET /health/db` jusqu'à 5 fois
-   (5 secondes d'écart). En cas d'échec, le script sort en erreur et affiche la commande de
-   retour arrière (voir §5). Non exécutée avec `--dry-run`.
+2. **Construction des images** : `<service>:<sha-court>` (API, `backend/Dockerfile`, sans
+   Chromium) et `<service>-worker:<sha-court>` (`backend/Dockerfile.worker`, avec
+   Chromium, construite via `backend/cloudbuild.worker.yaml`). Le paquet Python
+   `playwright` reste dans l'image de l'API (le code l'importe) ; seul le navigateur
+   n'y est pas installé.
+3. **Migrations** : inchangé (Cloud Run Job `<service>-migrate`, image de l'API) :
+   `backend-guiili-migrate` en production, `backend-guiili-staging-migrate` en
+   préproduction, commande `alembic upgrade head`, `--max-retries 0`, délai de 10
+   minutes, `--wait`. **Un échec de migration arrête tout avant de toucher aux
+   services** : les anciennes révisions continuent de servir. Les conteneurs ne
+   migrent jamais au démarrage. Le lot B ajoute deux migrations additives
+   (`c3a9e5f1b8d2` : tables du lot B dont `metric_points` partitionnée ;
+   `a7d41c9e2b56` : `source_quota_events`), appliquées par ce Job.
+4. **Déploiement des services** : `<service>` comme avant (public, 512 Mi, 3 instances) ;
+   puis `<service>-worker`, **privé** (`--no-allow-unauthenticated`), compte de service
+   `<service>-worker@<projet>.iam.gserviceaccount.com` (ou `WORKER_SERVICE_ACCOUNT`),
+   2 Gi, 1 CPU, 2 instances au plus, concurrence 10, délai de 900 s.
+5. **Vérification** : `/health/db` de l'API, puis celui du worker avec
+   `gcloud auth print-identity-token` (le worker refuse les appels anonymes). Jusqu'à 5
+   essais (5 secondes d'écart). En cas d'échec, le script sort en erreur et affiche les
+   commandes de retour arrière des deux services (voir §5). Non exécutée avec `--dry-run`.
+
+Variable `DEPLOY_ENV_FILE` : remplace le chemin du fichier d'environnement (par défaut
+`deploy/env.<env>.yaml`) ; elle sert aux tests du `--dry-run`.
+
+**Réglages du worker et leur justification.** Un seul processus `uvicorn` par instance
+(`--workers 1`, imposé dans `Dockerfile.worker`) : le sémaphore « un seul navigateur à la
+fois » est propre au processus, plusieurs processus multiplieraient les Chromium et
+dépasseraient 2 Gi. Concurrence Cloud Run 10 (les tâches de collecte sont surtout des
+attentes réseau ; la vérification headless, elle, est limitée à une à la fois par
+processus et renvoie 503 « occupée » au-delà de 5 secondes d'attente, ce qui déclenche une
+nouvelle tentative de la file). 2 instances au plus : au pire deux navigateurs en
+parallèle. Délai de requête 900 s = `dispatchDeadline` des tâches Cloud Tasks (900 s) =
+`JOBS_LEASE_SECONDS` (900 s) : un gestionnaire ne peut pas durer plus que le bail ; si
+Cloud Run coupe une requête à 900 s, le bail expire au même instant et l'exécution est
+reprise (`lease_expired` si elle ne l'est pas). Ne jamais réduire le bail sous le délai de
+requête du worker.
 
 **Attention après un retour arrière (§5)** : si le trafic a été épinglé sur une ancienne
 révision, `gcloud run deploy` crée la nouvelle révision **sans lui envoyer de trafic**.
@@ -99,9 +134,13 @@ reprendre les déploiements normaux :
 gcloud run services update-traffic backend-guiili --to-latest --region us-central1 --project guiili
 ```
 
-**Exposition** : le script passe **toujours** `--allow-unauthenticated`. Le service de
-préproduction est donc joignable publiquement : utiliser une URL de service non devinable,
-des secrets différents de la production et `ADVISOR_MOCK: "true"`.
+**Exposition** : le script passe **toujours** `--allow-unauthenticated` pour l'API. Le
+service de préproduction est donc joignable publiquement : utiliser une URL de service non
+devinable, des secrets différents de la production et `ADVISOR_MOCK: "true"`. Le worker,
+lui, n'est **jamais** public : seuls les comptes ayant `roles/run.invoker` (Cloud Tasks,
+Cloud Scheduler, API, propriétaire) l'atteignent, et le code vérifie en plus le jeton OIDC
+(audience et e-mail). Son `/health` et son `/health/db` ne demandent pas de jeton dans le
+code : ils ne sont protégés que par l'IAM Cloud Run (service privé).
 
 **Actions réservées au propriétaire** : `./scripts/deploy-backend.sh production` et le
 retour arrière `update-traffic` (§5) ne sont exécutés que par le propriétaire du projet
@@ -279,6 +318,9 @@ avec un en-tête `Retry-After`. Les chemins ci-dessous sont relatifs à `/api/v1
 | `POST /websites/{id}/gtm/headless` | utilisateur | 3 / 10 min |
 | `POST /websites/{id}/advisor/brief` | utilisateur | 5 / min |
 | `POST /advisor/threads/{id}/messages` | utilisateur | 20 / min |
+| `GET /websites/{id}/metrics/series` | utilisateur | 120 / min |
+| `GET /websites/{id}/schedules` | utilisateur | 120 / min |
+| `PUT /websites/{id}/schedules` | utilisateur | 30 / min |
 
 En plus, le conseiller applique des plafonds quotidiens configurables :
 `ADVISOR_DAILY_BRIEF_CAP` (5 briefs par jour) et `ADVISOR_DAILY_MESSAGE_CAP` (40 messages
@@ -368,11 +410,15 @@ Prérequis, tous **[PROPRIÉTAIRE]** :
 1. Workload Identity Federation entre GitHub et GCP (pool et fournisseur d'identité
    limités au dépôt `Jk3ndo/Guiili`).
 2. Un compte de service avec les rôles Cloud Run Admin, Cloud Build Editor, Service
-   Account User et Artifact Registry Writer.
+   Account User et Artifact Registry Writer, et, pour le lot B, le rôle Service Account
+   User sur le compte de service du worker (`backend-guiili-staging-worker@…`), sans quoi
+   le déploiement du worker échoue.
 3. Un environnement GitHub `staging` (Settings, Environments) contenant les secrets :
    - `GCP_WORKLOAD_IDENTITY_PROVIDER` : nom complet du fournisseur d'identité ;
    - `GCP_SERVICE_ACCOUNT` : adresse du compte de service ;
-   - `STAGING_ENV_YAML` : contenu **complet** de `deploy/env.staging.yaml`.
+   - `STAGING_ENV_YAML` : contenu **complet** de `deploy/env.staging.yaml`, variables du
+     lot B comprises (sans elles, la deuxième vérification de l'étape 1 refuse le
+     déploiement).
 4. La préproduction existe déjà (§4).
 5. Recommandé : restreindre l'environnement GitHub `staging` aux branches de déploiement
    autorisées (Settings, Environments, Deployment branches, par exemple `main`
@@ -411,13 +457,18 @@ Liste de contrôle, dans l'ordre :
 9. **Contacter** : le propriétaire du projet GCP `guiili` et, pour la base, le
    propriétaire du projet Neon ; noter l'heure, le `x-request-id` d'une requête en échec
    et la révision Cloud Run en cours.
+10. **Collectes en échec ou en retard** : `GET <WORKER_URL>/internal/jobs/health` avec
+    `-H "Authorization: Bearer $(gcloud auth print-identity-token --audiences=<WORKER_URL>)"`
+    (le compte doit figurer dans `INTERNAL_ALLOWED_INVOKERS`), puis §15.5.
+11. **Quota Google atteint en boucle** : le disjoncteur suspend 30 minutes la source d'un
+    workspace après 3 échecs `quota` ; vérifier le débit de la file (`gcloud tasks queues
+    describe guiili-ga4 ...`) avant de l'augmenter.
 
 ## 13. Hors périmètre du lot 0
 
 Renvoi vers la spec `docs/superpowers/specs/2026-09-25-roadmap-v3-architecture-design.md` :
 
-- séparation des services `api` / `worker` et image API allégée sans Chromium (lot B) ;
-  aujourd'hui une seule image, avec Chromium pour la vérification GTM headless ;
+- séparation des services `api` / `worker` : faite au lot B (§15) ;
 - Secret Manager effectif (le §10 décrit seulement la marche à suivre) ;
 - export et suppression RGPD d'un workspace ;
 - sécurité au niveau des lignes de Postgres (RLS), évaluée après l'isolation applicative ;
@@ -429,3 +480,184 @@ Le conteneur GTM généré par le plan de mesure (« Générer mon pack de déma
 jamais été importé dans un vrai GTM : ne le propose pas aux utilisateurs avant la
 procédure décrite dans `docs/ops/gtm-container-import-check.md` (fichier d'exemple :
 `docs/ops/gtm-sample-container.json`).
+
+## 15. Tâches planifiées et service worker (lot B)
+
+### 15.1 Architecture
+
+Cloud Scheduler appelle `POST <WORKER_URL>/internal/tick` toutes les 15 minutes (jeton
+OIDC du compte `guiili-scheduler`). Le passage matérialise les plannings par défaut,
+réserve les échéances dues et dépose une tâche Cloud Tasks par exécution, dans la file
+de sa source (`<préfixe>-ga4`, `-gsc`, `-cwv`, `-light`, `-heavy`). Cloud Tasks appelle
+`POST <WORKER_URL>/internal/tasks/run` avec un jeton OIDC du compte `guiili-tasks` ;
+une réponse 503 déclenche une nouvelle tentative (5 au plus, backoff 60 s → 1 h). Chaque
+exécution laisse une ligne `job_runs` (clé d'idempotence `type:site:fenêtre`, bail de
+15 minutes). L'API appelle `POST <WORKER_URL>/internal/headless/verify` pour la
+vérification GTM en conditions réelles (le navigateur n'existe que dans l'image du
+worker). Aucune de ces routes n'existe dans l'API publique.
+
+Fréquences proposées : toutes les heures, 3 fois par jour, tous les jours, tous les 3
+jours, toutes les semaines ; planchers : 8 h pour GA4, Search Console, Core Web Vitals
+et la vérification du plan de mesure, 1 h pour les sondes (TLS, disponibilité). Limites
+par workspace : 2 tâches simultanées, 300 tâches déposées par jour.
+
+Comportement des tentatives (à connaître avant de modifier une file) :
+
+- `max-attempts` de chaque file vaut 5. Les réponses « occupé » (`busy`), « ralenti »
+  (`throttled`) et les 503 ne consomment pas de tentative côté `job_runs` : elles ne sont
+  bornées que par la limite de la file.
+- Une erreur définitive (422, corps de tâche invalide) est elle aussi rejouée par la file
+  jusqu'à sa limite de 5 tentatives, puis abandonnée : ce n'est pas un bogue, c'est le
+  comportement de Cloud Tasks pour toute réponse non 2xx.
+- Cloud Tasks réserve le nom d'une tâche pendant environ une heure après son exécution ou
+  sa suppression. Pour relancer à la main une exécution déjà passée, changer la
+  fenêtre (`window`) de la clé d'idempotence ; redéposer la même clé dans l'heure serait
+  refusé (nom de tâche déjà réservé).
+- Le bail (`JOBS_LEASE_SECONDS`, 900) est égal au délai de requête du worker et au
+  `dispatchDeadline` des tâches (voir §2) : ne jamais le réduire sous le délai de requête.
+
+### 15.2 Mise en place unique [PROPRIÉTAIRE]
+
+Exemple pour la production (préproduction : suffixe `-staging` sur les comptes, les
+files et le job). Remplacer `<NUM>` par le numéro du projet
+(`gcloud projects describe guiili --format='value(projectNumber)'`) ; l'URL du worker est
+alors `https://backend-guiili-worker-<NUM>.us-central1.run.app`. Rien de ceci n'est
+exécuté par l'outillage du dépôt.
+
+```bash
+# 1. API Google Cloud
+gcloud services enable cloudtasks.googleapis.com cloudscheduler.googleapis.com --project guiili
+
+# 2. Comptes de service
+gcloud iam service-accounts create backend-guiili-worker --project guiili --display-name "Guiili worker"
+gcloud iam service-accounts create guiili-tasks --project guiili --display-name "Guiili Cloud Tasks (OIDC)"
+gcloud iam service-accounts create guiili-scheduler --project guiili --display-name "Guiili Cloud Scheduler (OIDC)"
+
+# 3. Files (une par source ; la file heavy exécute une tâche à la fois)
+for spec in "ga4 2 5" "gsc 2 5" "cwv 1 2" "light 5 10" "heavy 1 1"; do
+  set -- $spec
+  gcloud tasks queues create "guiili-$1" --location us-central1 --project guiili \
+    --max-dispatches-per-second "$2" --max-concurrent-dispatches "$3" \
+    --max-attempts 5 --min-backoff 60s --max-backoff 3600s --max-doublings 4
+done
+
+# 4. Le worker dépose des tâches et les signe au nom de guiili-tasks
+gcloud projects add-iam-policy-binding guiili \
+  --member serviceAccount:backend-guiili-worker@guiili.iam.gserviceaccount.com \
+  --role roles/cloudtasks.enqueuer
+gcloud iam service-accounts add-iam-policy-binding guiili-tasks@guiili.iam.gserviceaccount.com \
+  --member serviceAccount:backend-guiili-worker@guiili.iam.gserviceaccount.com \
+  --role roles/iam.serviceAccountUser
+```
+
+5. Compléter `deploy/env.production.yaml` avec les variables du lot B (§1) :
+   `WORKER_BASE_URL` et `INTERNAL_OIDC_AUDIENCE` =
+   `https://backend-guiili-worker-<NUM>.us-central1.run.app`,
+   `TASKS_INVOKER_SERVICE_ACCOUNT` = `guiili-tasks@guiili.iam.gserviceaccount.com`,
+   `INTERNAL_ALLOWED_INVOKERS` = les e-mails de `guiili-tasks`, `guiili-scheduler` et du
+   compte d'exécution de l'API (par défaut `<NUM>-compute@developer.gserviceaccount.com`,
+   visible dans `gcloud run services describe backend-guiili --format='value(spec.template.spec.serviceAccountName)'`).
+   Le fichier reste en clair comme au §10 : Secret Manager n'est pas dans le périmètre du
+   lot B ([PROPRIÉTAIRE], §10).
+6. Déployer : `./scripts/deploy-backend.sh production --dry-run`, puis sans `--dry-run`
+   (le premier passage crée le service worker et applique les deux migrations du lot B
+   par le Job de migration). Les partitions futures de `metric_points` sont créées par la
+   tâche planifiée `partition_maintenance` : tant qu'elle n'a pas tourné, les lignes d'un
+   mois sans partition atterrissent dans la partition par défaut (toléré, la
+   maintenance les traite ensuite).
+
+```bash
+# 7. Qui peut appeler le worker (après sa création)
+for member in \
+  serviceAccount:guiili-tasks@guiili.iam.gserviceaccount.com \
+  serviceAccount:guiili-scheduler@guiili.iam.gserviceaccount.com \
+  serviceAccount:<COMPTE_DE_L_API>; do
+  gcloud run services add-iam-policy-binding backend-guiili-worker \
+    --region us-central1 --project guiili --member "$member" --role roles/run.invoker
+done
+
+# 8. Le passage du planificateur, toutes les 15 minutes
+gcloud scheduler jobs create http guiili-tick --location us-central1 --project guiili \
+  --schedule "*/15 * * * *" --http-method POST \
+  --uri "https://backend-guiili-worker-<NUM>.us-central1.run.app/internal/tick" \
+  --oidc-service-account-email guiili-scheduler@guiili.iam.gserviceaccount.com \
+  --oidc-token-audience "https://backend-guiili-worker-<NUM>.us-central1.run.app"
+
+# 9. Alerte : métrique basée sur les logs, puis règle d'alerte (console Monitoring)
+gcloud logging metrics create guiili-jobs-health-alert --project guiili \
+  --description "Tâches planifiées en échec ou en retard" \
+  --log-filter 'jsonPayload.message="jobs_health_alert" AND severity>=ERROR'
+```
+
+10. Dans la console Cloud Monitoring, créer une règle d'alerte sur la métrique
+    `logging/user/guiili-jobs-health-alert` (seuil > 0 sur 30 minutes) avec la
+    notification de l'équipe. Sentry reçoit en plus l'événement « Tâches planifiées en
+    échec ou en retard » si `SENTRY_DSN` est réglé (à renseigner en production, §7).
+
+Le compte de service d'exécution de l'API doit pouvoir invoquer le worker (étape 7) : sans
+cela, le bouton « Vérifier en conditions réelles » de `/audit` renvoie une erreur gérée
+côté interface. Le worker est **privé** : ne jamais lui donner `allUsers` ni
+`--allow-unauthenticated`.
+
+### 15.3 Vérifier que tout tourne
+
+```bash
+WORKER_URL=https://backend-guiili-worker-<NUM>.us-central1.run.app
+TOKEN=$(gcloud auth print-identity-token --audiences="$WORKER_URL")
+curl -fsS -H "Authorization: Bearer $TOKEN" "$WORKER_URL/internal/jobs/health"
+gcloud scheduler jobs run guiili-tick --location us-central1 --project guiili   # passage immédiat
+```
+
+Le compte utilisé pour `print-identity-token` doit figurer dans
+`INTERNAL_ALLOWED_INVOKERS` (sinon 403) et avoir `roles/run.invoker` sur le worker.
+
+### 15.4 En local
+
+Pas de Cloud Tasks ni d'OIDC : `TASK_QUEUE_BACKEND` reste `inline` (défaut). Un passage
+du planificateur, avec exécution immédiate des tâches dues dans le processus :
+
+```bash
+cd backend && .venv/Scripts/python.exe -m app.tools.jobs tick
+```
+
+(refusé hors `ENVIRONMENT=local` ; appelle réellement Google, PageSpeed et les sites.)
+
+### 15.5 Lire les logs des tâches
+
+```text
+# Alertes de santé (ERROR : à traiter par nous ; WARNING : seul le client peut agir)
+jsonPayload.message="jobs_health_alert"
+# Échecs typés d'exécution
+jsonPayload.event="job_failed"
+# Plantages inattendus (trace complète)
+jsonPayload.event="job_crashed"
+# Dépôts Cloud Tasks en échec
+jsonPayload.event="job_enqueue_failed"
+# Appels internes refusés (jeton absent, mauvaise audience, compte non autorisé)
+jsonPayload.event="internal_denied"
+# Plafond quotidien de tâches atteint pour un workspace
+jsonPayload.event="job_daily_cap_reached"
+# Bail perdu : l'exécution a été reprise ailleurs, l'ancienne est ignorée
+jsonPayload.event="job_lease_lost"
+# Passage du planificateur en échec (Cloud Scheduler retentera au passage suivant)
+jsonPayload.event="tick_failed"
+# Vérification headless trop longue (503, la file ou l'utilisateur réessaie)
+jsonPayload.event="headless_timeout"
+# Exécution de tâche en échec inattendu côté base (503, la file réessaie)
+jsonPayload.event="task_run_failed"
+```
+
+Codes d'erreur (`job_runs.error_code`) : `quota`, `network`, `api_error` (repris
+automatiquement) ; `token_unavailable`, `permission_or_api_disabled`, `not_found`,
+`site_unreachable` (le client doit agir : reconnecter Google, droits, site) ;
+`circuit_open` (disjoncteur de quota, 30 min) ; `not_dispatched`, `enqueue_failed`,
+`lease_expired` (exploitation) ; `internal_error` (bogue : voir `job_crashed`). Une
+source non reliée donne une exécution `skipped`, jamais une alerte.
+
+### 15.6 Données et rétention
+
+`metric_points` est partitionnée par mois (`metric_points_pAAAA_MM`, plus
+`metric_points_default`) ; la tâche quotidienne `partition_maintenance` crée les mois
+M-4 à M+3, supprime les partitions de plus de 25 mois et les `job_runs` terminés depuis
+plus de 90 jours. Les cumuls (`metric_rollups`) sont conservés sans limite. Supprimer
+un site (purge) supprime toutes ses lignes (cascade).

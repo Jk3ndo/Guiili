@@ -1,3 +1,4 @@
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -255,3 +256,91 @@ def test_main_non_string_error_never_prints_the_value(
 def test_validate_env_parses_the_internal_invokers_list_as_json() -> None:
     invokers = '["guiili-tasks@guiili.iam.gserviceaccount.com"]'
     assert validate_env({**_VALID, "INTERNAL_ALLOWED_INVOKERS": invokers}) == []
+
+
+# --- Lot B : deux images, deux services, service worker ---------------------------------
+
+_WORKER_ENV = {
+    "TASK_QUEUE_BACKEND": "cloud_tasks",
+    "GCP_PROJECT": "guiili",
+    "CLOUD_TASKS_LOCATION": "us-central1",
+    "CLOUD_TASKS_QUEUE_PREFIX": "guiili",
+    "TASKS_INVOKER_SERVICE_ACCOUNT": "guiili-tasks@guiili.iam.gserviceaccount.com",
+    "WORKER_BASE_URL": "https://backend-guiili-worker-1.us-central1.run.app",
+    "INTERNAL_OIDC_AUDIENCE": "https://backend-guiili-worker-1.us-central1.run.app",
+    "INTERNAL_ALLOWED_INVOKERS": '["guiili-tasks@guiili.iam.gserviceaccount.com"]',
+}
+
+
+def test_the_api_image_has_no_browser_and_the_worker_image_does() -> None:
+    api = (ROOT / "backend" / "Dockerfile").read_text(encoding="utf-8")
+    worker = (ROOT / "backend" / "Dockerfile.worker").read_text(encoding="utf-8")
+    assert "playwright install" not in api
+    assert "playwright install --with-deps chromium" in worker
+    worker_cmd = [line for line in worker.splitlines() if line.startswith("CMD")]
+    assert worker_cmd and "app.worker_main:app" in worker_cmd[0]
+    assert "alembic" not in worker_cmd[0]
+
+
+def test_the_worker_build_config_uses_the_worker_dockerfile() -> None:
+    config = yaml.safe_load((ROOT / "backend" / "cloudbuild.worker.yaml").read_text(encoding="utf-8"))
+    args = config["steps"][0]["args"]
+    assert args[:3] == ["build", "-f", "Dockerfile.worker"]
+    assert "$_IMAGE" in args and config["images"] == ["$_IMAGE"]
+
+
+def test_the_example_env_file_is_valid_for_the_worker() -> None:
+    example = yaml.safe_load((ROOT / "deploy" / "env.example.yaml").read_text(encoding="utf-8"))
+    assert validate_env({k: str(v) for k, v in example.items()}, service="worker") == []
+
+
+def test_validate_env_names_missing_worker_settings_without_values() -> None:
+    problems = validate_env({**_VALID}, service="worker")
+    text = " ".join(problems)
+    assert "WORKER_BASE_URL" in text and "INTERNAL_ALLOWED_INVOKERS" in text
+    assert validate_env({**_VALID, **_WORKER_ENV}, service="worker") == []
+    # Le contrôle par défaut (API) n'exige rien de nouveau.
+    assert validate_env({**_VALID}) == []
+
+
+def test_main_service_flag(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    path = _write_env(tmp_path, {**_VALID, **_WORKER_ENV})
+    assert main(["check_env", path, "--service", "worker", "--expect", "production"]) == 0
+    assert main(["check_env", path, "--expect", "production", "--service", "worker"]) == 0
+    assert main(["check_env", path, "--service", "cron"]) == 2
+    incomplete = _write_env(tmp_path, dict(_VALID))
+    assert main(["check_env", incomplete, "--service", "worker"]) == 1
+    assert "WORKER_BASE_URL" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(BASH is None, reason="bash indisponible")
+def test_the_dry_run_builds_and_deploys_both_services(tmp_path: Path) -> None:
+    env_file = tmp_path / "env.staging.yaml"
+    env_file.write_text(
+        yaml.safe_dump({**_VALID, **_WORKER_ENV, "ENVIRONMENT": "staging"}), encoding="utf-8"
+    )
+    result = subprocess.run(
+        [str(BASH), str(ROOT / "scripts" / "deploy-backend.sh"), "staging", "--dry-run"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "DEPLOY_ENV_FILE": env_file.as_posix()},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    out = result.stdout
+    for step in ("== 1/5", "== 2/5", "== 3/5", "== 4/5", "== 5/5"):
+        assert step in out
+    assert "cloudbuild.worker.yaml" in out and "_IMAGE=" in out
+    assert "gcloud run deploy backend-guiili-staging --image" in out
+    assert "gcloud run deploy backend-guiili-staging-worker --image" in out
+    worker_line = next(
+        line for line in out.splitlines() if "run deploy backend-guiili-staging-worker" in line
+    )
+    assert "--no-allow-unauthenticated" in worker_line and "--memory 2Gi" in worker_line
+    assert "(dry-run" in out
+
+
+def test_the_deploy_script_checks_the_worker_configuration() -> None:
+    script = (ROOT / "scripts" / "deploy-backend.sh").read_text(encoding="utf-8")
+    assert "--service worker" in script
+    assert "DEPLOY_ENV_FILE" in script
