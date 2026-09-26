@@ -15,7 +15,7 @@ from typing import Any
 from uuid import UUID
 
 import sentry_sdk
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.job_run import JobRun
@@ -27,12 +27,21 @@ logger = logging.getLogger(__name__)
 FAILING_AFTER = timedelta(hours=24)
 OVERDUE_AFTER = timedelta(hours=2)
 STUCK_QUEUED_AFTER = timedelta(hours=1)
-# Échecs que seul le client peut lever (reconnexion Google, droits, site injoignable).
-# Tout le reste (dont `api_key_rejected`, `db_transient`, `token_refresh_failed`,
-# `bad_request`, `truncated`, `unreachable`, l'exécuteur) relève de nous : alerte ERROR.
+# Marge après l'expiration d'un bail : le temps que la file redélivre la tâche.
+STUCK_RUNNING_GRACE = timedelta(minutes=5)
+# Échecs que seul le client peut lever (reconnexion Google, droits, site injoignable ou
+# hors ligne). Tout le reste (dont `api_key_rejected`, `db_transient`,
+# `token_refresh_failed`, `bad_request`, `truncated`, l'exécuteur) ainsi que tout code
+# inconnu ou absent relève de nous : alerte ERROR (fail-loud).
 # Les sources non reliées (`*_not_connected`) sont `skipped` : jamais dans `failing_since`.
 CLIENT_ACTION_CODES: frozenset[str] = frozenset(
-    {"token_unavailable", "permission_or_api_disabled", "not_found", "site_unreachable"}
+    {
+        "token_unavailable",
+        "permission_or_api_disabled",
+        "not_found",
+        "site_unreachable",
+        "unreachable",
+    }
 )
 _SENTRY_MESSAGE = "Tâches planifiées en échec ou en retard"
 
@@ -99,10 +108,19 @@ async def compute_jobs_health(session: AsyncSession, *, now: datetime) -> JobsHe
             _active_schedules().where(Schedule.next_due_at < now - OVERDUE_AFTER).subquery()
         )
     )
+    # Les comptages `stuck_*` portent sur TOUS les job_runs, sites archivés compris
+    # (contrairement à `failing` et `overdue`) : une tâche bloquée reste un défaut de
+    # l'exécuteur, quel que soit l'état du site. Un `running` sans bail est bloqué aussi.
     stuck_running = await session.scalar(
         select(func.count())
         .select_from(JobRun)
-        .where(JobRun.status == "running", JobRun.lease_expires_at < now)
+        .where(
+            JobRun.status == "running",
+            or_(
+                JobRun.lease_expires_at.is_(None),
+                JobRun.lease_expires_at < now - STUCK_RUNNING_GRACE,
+            ),
+        )
     )
     stuck_queued = await session.scalar(
         select(func.count())

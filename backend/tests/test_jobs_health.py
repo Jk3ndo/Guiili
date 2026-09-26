@@ -8,6 +8,10 @@ from app.models.job_run import JobRun
 from app.models.schedule import Schedule
 from app.services.jobs.health import (
     CLIENT_ACTION_CODES,
+    FAILING_AFTER,
+    OVERDUE_AFTER,
+    STUCK_QUEUED_AFTER,
+    STUCK_RUNNING_GRACE,
     FailingSchedule,
     JobsHealth,
     compute_jobs_health,
@@ -81,7 +85,7 @@ async def test_overdue_and_stuck_runs_are_counted(db_session: AsyncSession, make
     db_session.add_all(
         [
             _schedule(site, "collect_probes", next_due_at=NOW - timedelta(hours=3)),
-            _run(site, "a", status="running", lease_expires_at=NOW - timedelta(minutes=1)),
+            _run(site, "a", status="running", lease_expires_at=NOW - timedelta(minutes=6)),
             _run(site, "b", status="running", lease_expires_at=NOW + timedelta(minutes=10)),
             _run(site, "c", status="queued", enqueued_at=NOW - timedelta(hours=2)),
             _run(site, "d", status="queued", enqueued_at=NOW - timedelta(minutes=5)),
@@ -157,15 +161,98 @@ def test_every_error_code_the_code_can_produce_has_a_french_message() -> None:
     assert all(text.strip() for text in ERROR_MESSAGES.values())
 
 
-def test_operator_side_codes_never_ask_the_client_to_act() -> None:
-    for code in ("db_transient", "api_key_rejected", "token_refresh_failed", "truncated",
-                 "bad_request", "quota", "network", "api_error", "lease_expired",
-                 "job_lease_lost", "not_dispatched", "internal_error"):
-        assert code not in CLIENT_ACTION_CODES
-        text = error_message(code) or ""
-        assert "reconnecte" not in text and "Ton site" not in text and "ton site" not in text
-    assert {"token_unavailable", "permission_or_api_disabled", "not_found",
-            "site_unreachable"} == CLIENT_ACTION_CODES
+_CLIENT_WORDING = ("reconnecte", "ton site", "Ton site")
+
+
+def test_label_and_classification_agree_for_every_code() -> None:
+    """Un libellé qui s'adresse au client n'existe que pour un code côté client, et
+    inversement : sinon un site client hors ligne alerterait l'équipe en permanence."""
+    assert {
+        "token_unavailable",
+        "permission_or_api_disabled",
+        "not_found",
+        "site_unreachable",
+        "unreachable",
+    } == CLIENT_ACTION_CODES
+    assert set(ERROR_MESSAGES) >= CLIENT_ACTION_CODES
+    for code, text in ERROR_MESSAGES.items():
+        if code in CLIENT_ACTION_CODES:
+            # Le client peut agir : le libellé ne dit pas « nous sommes prévenus ».
+            assert "prévenus" not in text, code
+        else:
+            assert not any(word in text for word in _CLIENT_WORDING), code
+
+
+def test_unknown_or_missing_codes_fail_loud_on_the_operator_side() -> None:
+    assert "code-inconnu" not in CLIENT_ACTION_CODES
+    assert None not in CLIENT_ACTION_CODES
+    assert error_message("unknown_kind") == error_message("bad_params")
+    assert error_message("unknown_kind") == "Erreur inattendue : nous sommes prévenus."
+
+
+async def test_unknown_and_missing_error_codes_are_operator_failures(
+    db_session: AsyncSession, make_user
+) -> None:
+    site = await make_site(db_session, make_user, "health-unknown.test")
+    since = NOW - timedelta(days=2)
+    db_session.add_all(
+        [
+            _schedule(site, "collect_gsc", failing_since=since, last_error_code=None),
+            _schedule(site, "collect_ga4", failing_since=since, last_error_code="code-inconnu"),
+            _schedule(site, "collect_probes", failing_since=since, last_error_code="unreachable"),
+        ]
+    )
+    await db_session.flush()
+    health = await compute_jobs_health(db_session, now=NOW)
+    assert {f.kind: f.client_action for f in health.failing} == {
+        "collect_gsc": False,
+        "collect_ga4": False,
+        "collect_probes": True,
+    }
+    assert sorted(f.kind for f in health.internal_failures) == ["collect_ga4", "collect_gsc"]
+
+
+async def test_thresholds_are_exact_at_their_boundaries(
+    db_session: AsyncSession, make_user
+) -> None:
+    site = await make_site(db_session, make_user, "health-bounds.test")
+    other = await make_site(db_session, make_user, "health-bounds2.test")
+    db_session.add_all(
+        [
+            # Exactement 24 h : compté ; 24 h moins une seconde : pas encore.
+            _schedule(site, "collect_gsc", failing_since=NOW - FAILING_AFTER, last_error_code="quota"),
+            _schedule(
+                other, "collect_gsc",
+                failing_since=NOW - FAILING_AFTER + timedelta(seconds=1), last_error_code="quota",
+            ),
+            # Exactement 2 h de retard : pas compté ; 2 h et une seconde : compté.
+            _schedule(site, "collect_probes", next_due_at=NOW - OVERDUE_AFTER),
+            _schedule(other, "collect_probes", next_due_at=NOW - OVERDUE_AFTER - timedelta(seconds=1)),
+            _run(site, "q1", status="queued", enqueued_at=NOW - STUCK_QUEUED_AFTER),
+            _run(site, "q2", status="queued", enqueued_at=NOW - STUCK_QUEUED_AFTER - timedelta(seconds=1)),
+            _run(site, "r1", status="running", lease_expires_at=NOW - STUCK_RUNNING_GRACE),
+            _run(
+                site, "r2", status="running",
+                lease_expires_at=NOW - STUCK_RUNNING_GRACE - timedelta(seconds=1),
+            ),
+        ]
+    )
+    await db_session.flush()
+    health = await compute_jobs_health(db_session, now=NOW)
+    assert [f.website_id for f in health.failing] == [site.id]
+    assert (health.overdue, health.stuck_queued, health.stuck_running) == (1, 1, 1)
+
+
+async def test_a_running_job_without_a_lease_is_stuck_and_archived_sites_still_count(
+    db_session: AsyncSession, make_user
+) -> None:
+    site = await make_site(db_session, make_user, "health-nolease.test")
+    site.archived_at = NOW
+    db_session.add(_run(site, "n1", status="running", lease_expires_at=None))
+    await db_session.flush()
+    health = await compute_jobs_health(db_session, now=NOW)
+    # `stuck_*` inclut les job_runs de sites archivés (contrairement à failing/overdue).
+    assert health.stuck_running == 1 and not health.ok
 
 
 async def test_a_rejected_api_key_is_an_operator_error(
