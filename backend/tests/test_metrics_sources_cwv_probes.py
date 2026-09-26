@@ -16,7 +16,7 @@ SITE = Website(domain="exemple.fr", display_name="Exemple", allow_insecure_probe
 TODAY_ONLY = DayRange(TODAY, TODAY)
 
 
-def _payload(*, origin: dict | None = None, score: float | None = 0.72) -> dict:
+def _payload(*, origin: dict | None = None, score: object = 0.72) -> dict:
     payload: dict = {"lighthouseResult": {"categories": {"performance": {"score": score}}}}
     if origin is not None:
         payload["originLoadingExperience"] = {"metrics": origin}
@@ -69,18 +69,77 @@ def test_parse_cwv_rejects_a_non_object() -> None:
     assert excinfo.value.reason == "api_error" and excinfo.value.recoverable
 
 
-def test_parse_cwv_rejects_a_non_finite_percentile() -> None:
-    origin = {"LARGEST_CONTENTFUL_PAINT_MS": {"percentile": float("nan")}}
+def test_parse_cwv_requires_the_lighthouse_block() -> None:
+    # Un 200 sans bloc laboratoire est une réponse tronquée ou étrangère : jamais « [] ».
+    payloads: list[object] = [
+        {},
+        {"originLoadingExperience": {"metrics": _ORIGIN}},
+        {"lighthouseResult": None},
+        {"lighthouseResult": []},
+    ]
+    for payload in payloads:
+        with pytest.raises(SourceError) as excinfo:
+            parse_cwv(payload, day=TODAY)
+        assert excinfo.value.reason == "api_error" and excinfo.value.recoverable
+
+
+@pytest.mark.parametrize(
+    "percentile",
+    [-5, -0.1, True, False, "2300", None, float("inf"), float("nan"), [2300]],
+)
+def test_parse_cwv_rejects_an_invalid_present_percentile(percentile: object) -> None:
+    origin = {"LARGEST_CONTENTFUL_PAINT_MS": {"percentile": percentile}}
     with pytest.raises(SourceError) as excinfo:
         parse_cwv(_payload(origin=origin), day=TODAY)
     assert excinfo.value.reason == "api_error" and excinfo.value.recoverable
+
+
+@pytest.mark.parametrize("entry", [None, 2300, "x", [1]])
+def test_parse_cwv_rejects_a_metric_entry_that_is_not_an_object(entry: object) -> None:
+    with pytest.raises(SourceError) as excinfo:
+        parse_cwv(_payload(origin={"INTERACTION_TO_NEXT_PAINT": entry}), day=TODAY)
+    assert excinfo.value.reason == "api_error" and excinfo.value.recoverable
+
+
+@pytest.mark.parametrize("section", [None, "x", 3, []])
+def test_parse_cwv_rejects_a_present_section_of_the_wrong_type(section: object) -> None:
+    payloads: list[dict] = [
+        {**_payload(), "originLoadingExperience": section},
+        {**_payload(), "originLoadingExperience": {"metrics": section}},
+        {"lighthouseResult": {"categories": section}},
+        {"lighthouseResult": {"categories": {"performance": section}}},
+    ]
+    for payload in payloads:
+        with pytest.raises(SourceError) as excinfo:
+            parse_cwv(payload, day=TODAY)
+        assert excinfo.value.reason == "api_error" and excinfo.value.recoverable
+
+
+@pytest.mark.parametrize("score", [True, "0.7", -0.1, 1.5, float("nan"), float("inf"), [0.5]])
+def test_parse_cwv_rejects_a_present_invalid_score(score: object) -> None:
+    with pytest.raises(SourceError) as excinfo:
+        parse_cwv(_payload(origin=_ORIGIN, score=score), day=TODAY)
+    assert excinfo.value.reason == "api_error" and excinfo.value.recoverable
+
+
+def test_parse_cwv_absent_keys_are_legitimately_no_data() -> None:
+    # Origine trop petite : Google ne renvoie ni `metrics` ni, ici, de catégories.
+    assert parse_cwv({"lighthouseResult": {}}, day=TODAY) == []
+    payload = {"lighthouseResult": {}, "originLoadingExperience": {"initial_url": "x"}}
+    assert parse_cwv(payload, day=TODAY) == []
+    # Une seule métrique terrain présente : les autres sont simplement absentes.
+    payload = _payload(origin={"LARGEST_CONTENTFUL_PAINT_MS": {"percentile": 0}}, score=0.0)
+    assert {o.metric: o.value for o in parse_cwv(payload, day=TODAY)} == {
+        "lcp_p75_ms": 0.0,
+        "performance_score": 0.0,
+    }
 
 
 def _client(handler) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
-async def test_cwv_source_calls_pagespeed_for_the_origin_with_the_key() -> None:
+async def test_cwv_source_calls_pagespeed_for_the_origin_with_the_key_in_a_header() -> None:
     seen: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -92,7 +151,9 @@ async def test_cwv_source_calls_pagespeed_for_the_origin_with_the_key() -> None:
     assert len(seen) == 1
     params = seen[0].url.params
     assert params["url"] == "https://exemple.fr" and params["strategy"] == "mobile"
-    assert params["key"] == "cle"
+    # La clé voyage en en-tête, jamais dans l'URL.
+    assert "key" not in params and "cle" not in str(seen[0].url)
+    assert seen[0].headers["X-Goog-Api-Key"] == "cle"
     assert all(o.day == TODAY for o in observations) and len(observations) == 4
     assert "cle" not in repr(observations)
 
@@ -106,7 +167,7 @@ async def test_cwv_source_without_key_sends_none() -> None:
 
     source = CwvSource(api_key=None, client=_client(handler), today=lambda: TODAY)
     await source.collect(SITE, TODAY_ONLY)
-    assert "key" not in seen[0].url.params
+    assert "key" not in seen[0].url.params and "x-goog-api-key" not in seen[0].headers
 
 
 async def test_cwv_source_skips_a_window_without_today() -> None:
@@ -117,26 +178,160 @@ async def test_cwv_source_skips_a_window_without_today() -> None:
     assert await source.collect(SITE, DayRange(date(2026, 9, 1), date(2026, 9, 20))) == []
 
 
+async def test_cwv_window_bounds_are_inclusive_of_today_only() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=_payload(origin=_ORIGIN))
+
+    source = CwvSource(api_key="cle", client=_client(handler), today=lambda: TODAY)
+    # Fin = veille : aujourd'hui n'est pas dans la fenêtre, aucun appel.
+    assert await source.collect(SITE, DayRange(date(2026, 9, 20), date(2026, 9, 25))) == []
+    assert seen == []
+    # Début = aujourd'hui : dans la fenêtre.
+    assert len(await source.collect(SITE, DayRange(TODAY, date(2026, 9, 30)))) == 4
+    assert len(seen) == 1
+
+
+# Corps d'erreur réels de PageSpeed / Google APIs (messages raccourcis).
+_KEY_INVALID_BODY = {
+    "error": {
+        "code": 400,
+        "message": "API key not valid. Please pass a valid API key.",
+        "errors": [{"message": "API key not valid.", "domain": "global", "reason": "badRequest"}],
+        "status": "INVALID_ARGUMENT",
+        "details": [
+            {
+                "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                "reason": "API_KEY_INVALID",
+                "domain": "googleapis.com",
+            }
+        ],
+    }
+}
+_KEY_INVALID_LEGACY_BODY = {
+    "error": {
+        "code": 400,
+        "message": "Bad Request",
+        "errors": [{"message": "Bad Request", "domain": "usageLimits", "reason": "keyInvalid"}],
+    }
+}
+_SERVICE_DISABLED_BODY = {
+    "error": {
+        "code": 403,
+        "message": "PageSpeed Insights API has not been used in project 1 or it is disabled.",
+        "status": "PERMISSION_DENIED",
+        "details": [{"@type": "x", "reason": "SERVICE_DISABLED", "domain": "googleapis.com"}],
+    }
+}
+_FAILED_DOCUMENT_BODY = {
+    "error": {
+        "code": 400,
+        "message": "Lighthouse returned error: FAILED_DOCUMENT_REQUEST. Lighthouse was unable "
+        "to reliably load the page you requested.",
+        "errors": [
+            {
+                "message": "Lighthouse returned error: FAILED_DOCUMENT_REQUEST.",
+                "domain": "lighthouse",
+                "reason": "lighthouseError",
+            }
+        ],
+        "status": "INVALID_ARGUMENT",
+    }
+}
+_FAILED_DOCUMENT_REASON_BODY = {
+    "error": {
+        "code": 500,
+        "message": "Lighthouse error",
+        "status": "INTERNAL",
+        "details": [{"@type": "x", "reason": "FAILED_DOCUMENT_REQUEST"}],
+    }
+}
+_QUOTA_BODY = {
+    "error": {
+        "code": 429,
+        "message": "Quota exceeded for quota metric 'Queries'",
+        "status": "RESOURCE_EXHAUSTED",
+    }
+}
+_UNKNOWN_400_BODY = {"error": {"code": 400, "message": "Invalid value at 'strategy'"}}
+
+
 @pytest.mark.parametrize(
-    ("status", "reason", "recoverable"),
+    ("status", "body", "reason", "recoverable"),
     [
-        (429, "quota", True),
-        (400, "site_unreachable", False),
-        (401, "permission_or_api_disabled", False),
-        (403, "permission_or_api_disabled", False),
-        (500, "api_error", True),
-        (404, "api_error", False),
+        (429, {}, "quota", True),
+        (429, _QUOTA_BODY, "quota", True),
+        # Ex-test du brief (400 -> site_unreachable) : désormais avec un vrai corps
+        # FAILED_DOCUMENT_REQUEST, un 400 quelconque n'est plus « site injoignable ».
+        (400, _FAILED_DOCUMENT_BODY, "site_unreachable", False),
+        (500, _FAILED_DOCUMENT_REASON_BODY, "site_unreachable", False),
+        (400, _KEY_INVALID_BODY, "api_key_rejected", False),
+        (400, _KEY_INVALID_LEGACY_BODY, "api_key_rejected", False),
+        (403, _SERVICE_DISABLED_BODY, "api_key_rejected", False),
+        (401, {}, "api_key_rejected", False),
+        (403, {}, "api_key_rejected", False),
+        (400, _UNKNOWN_400_BODY, "bad_request", False),
+        (400, {}, "bad_request", False),
+        (408, {}, "api_error", True),
+        (425, {}, "api_error", True),
+        (500, {}, "api_error", True),
+        (503, {"error": {"code": 503, "status": "UNAVAILABLE"}}, "api_error", True),
+        (404, {}, "api_error", False),
     ],
 )
-async def test_cwv_http_errors_are_classified(status: int, reason: str, recoverable: bool) -> None:
+async def test_cwv_http_errors_are_classified(
+    status: int, body: dict, reason: str, recoverable: bool
+) -> None:
     source = CwvSource(
         api_key="cle",
-        client=_client(lambda request: httpx.Response(status, json={})),
+        client=_client(lambda request: httpx.Response(status, json=body)),
         today=lambda: TODAY,
     )
     with pytest.raises(SourceError) as excinfo:
         await source.collect(SITE, TODAY_ONLY)
     assert (excinfo.value.reason, excinfo.value.recoverable) == (reason, recoverable)
+
+
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [(400, _KEY_INVALID_BODY), (403, _SERVICE_DISABLED_BODY), (401, {})],
+)
+async def test_cwv_a_rejected_key_is_never_a_client_side_code(status: int, body: dict) -> None:
+    # `site_unreachable` et `permission_or_api_disabled` seront classés « le client peut
+    # agir » : une clé invalide (notre configuration) ne doit jamais y tomber.
+    source = CwvSource(
+        api_key="cle",
+        client=_client(lambda request: httpx.Response(status, json=body)),
+        today=lambda: TODAY,
+    )
+    with pytest.raises(SourceError) as excinfo:
+        await source.collect(SITE, TODAY_ONLY)
+    assert excinfo.value.reason not in {"site_unreachable", "permission_or_api_disabled"}
+
+
+async def test_cwv_error_never_copies_the_response_body() -> None:
+    body = {"error": {"code": 400, "message": "secret-message cle-secrete", "status": "X"}}
+    source = CwvSource(
+        api_key="cle-secrete",
+        client=_client(lambda request: httpx.Response(400, json=body)),
+        today=lambda: TODAY,
+    )
+    with pytest.raises(SourceError) as excinfo:
+        await source.collect(SITE, TODAY_ONLY)
+    assert "secret" not in str(excinfo.value) and "secret" not in repr(excinfo.value.__dict__)
+
+
+async def test_cwv_non_json_error_body_is_still_classified() -> None:
+    source = CwvSource(
+        api_key="cle",
+        client=_client(lambda request: httpx.Response(403, content=b"<html>Forbidden</html>")),
+        today=lambda: TODAY,
+    )
+    with pytest.raises(SourceError) as excinfo:
+        await source.collect(SITE, TODAY_ONLY)
+    assert excinfo.value.reason == "api_key_rejected"
 
 
 async def test_cwv_invalid_json_is_a_recoverable_api_error() -> None:
@@ -152,14 +347,41 @@ async def test_cwv_invalid_json_is_a_recoverable_api_error() -> None:
 
 async def test_cwv_network_error_never_carries_the_key() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("boom", request=request)
+        # Une vraie exception httpx porte la requête, donc ses en-têtes (clé comprise).
+        raise httpx.ConnectError(f"boom {request.headers['x-goog-api-key']}", request=request)
 
     source = CwvSource(api_key="cle-secrete", client=_client(handler), today=lambda: TODAY)
     with pytest.raises(SourceError) as excinfo:
         await source.collect(SITE, TODAY_ONLY)
-    assert excinfo.value.reason == "network"
-    assert excinfo.value.__cause__ is None and excinfo.value.__suppress_context__
-    assert "cle-secrete" not in str(excinfo.value)
+    error = excinfo.value
+    assert error.reason == "network" and error.recoverable
+    assert error.__cause__ is None and error.__suppress_context__
+    assert "cle-secrete" not in str(error) and "cle-secrete" not in repr(error.__dict__)
+    assert "cle-secrete" not in repr(error.args)
+
+
+async def test_cwv_invalid_url_is_a_definitive_bad_request() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.InvalidURL("URL invalide cle-secrete")
+
+    source = CwvSource(api_key="cle-secrete", client=_client(handler), today=lambda: TODAY)
+    with pytest.raises(SourceError) as excinfo:
+        await source.collect(SITE, TODAY_ONLY)
+    assert (excinfo.value.reason, excinfo.value.recoverable) == ("bad_request", False)
+    assert excinfo.value.__cause__ is None and "cle-secrete" not in str(excinfo.value)
+
+
+async def test_cwv_observations_and_logs_never_contain_the_key(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("DEBUG")
+    source = CwvSource(
+        api_key="cle-secrete",
+        client=_client(lambda request: httpx.Response(200, json=_payload(origin=_ORIGIN))),
+        today=lambda: TODAY,
+    )
+    observations = await source.collect(SITE, TODAY_ONLY)
+    assert "cle-secrete" not in repr(observations) and "cle-secrete" not in caplog.text
 
 
 def _tls(status: str, days: int | None) -> TlsStatus:
@@ -214,12 +436,45 @@ async def test_probes_skip_a_window_without_today() -> None:
     assert calls == []
 
 
+async def test_probes_window_bounds_are_inclusive_of_today_only() -> None:
+    calls: list = []
+    probe = _probe(_tls("valid", 45), _page(200), calls)
+    # Fin = veille : aucune sonde.
+    assert await probe.collect(SITE, DayRange(date(2026, 9, 20), date(2026, 9, 25))) == []
+    assert calls == []
+    # Début = aujourd'hui : dans la fenêtre.
+    assert len(await probe.collect(SITE, DayRange(TODAY, date(2026, 9, 30)))) == 2
+    assert len(calls) == 1
+
+
 async def test_an_expired_certificate_and_a_server_error_are_real_observations() -> None:
     observations = await _probe(_tls("expired", -3), _page(503)).collect(SITE, TODAY_ONLY)
     assert {o.metric: o.value for o in observations} == {
         "tls_days_remaining": -3.0,
         "page_up": 0.0,
     }
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [(200, 1.0), (301, 1.0), (404, 0.0), (410, 0.0), (500, 0.0), (503, 0.0)],
+)
+async def test_page_up_statuses(status: int, expected: float) -> None:
+    observations = await _probe(_tls("valid", 45), _page(status)).collect(SITE, TODAY_ONLY)
+    assert Observation("page_up", TODAY, expected) in observations
+
+
+@pytest.mark.parametrize("status", [401, 403, 429, 400])
+async def test_a_blocked_or_inconclusive_answer_omits_page_up(status: int) -> None:
+    # Un pare-feu ou un anti-bot ne doit pas passer pour une panne.
+    observations = await _probe(_tls("valid", 45), _page(status)).collect(SITE, TODAY_ONLY)
+    assert observations == [Observation("tls_days_remaining", TODAY, 45.0)]
+
+
+async def test_a_blocked_answer_with_no_tls_is_a_recoverable_error() -> None:
+    with pytest.raises(SourceError) as excinfo:
+        await _probe(_tls("unreachable", None), _page(403)).collect(SITE, TODAY_ONLY)
+    assert excinfo.value.reason == "unreachable" and excinfo.value.recoverable
 
 
 async def test_nothing_observable_is_a_recoverable_error() -> None:
@@ -231,3 +486,42 @@ async def test_nothing_observable_is_a_recoverable_error() -> None:
 async def test_a_partial_probe_keeps_what_was_observed() -> None:
     observations = await _probe(_tls("unreachable", None), _page(200)).collect(SITE, TODAY_ONLY)
     assert observations == [Observation("page_up", TODAY, 1.0)]
+
+
+async def test_a_page_fetcher_exception_keeps_the_tls_observation(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def tls_checker(domain: str) -> TlsStatus:
+        return _tls("valid", 45)
+
+    async def page_fetcher(url: str, *, allow_insecure: bool = False) -> PageSnapshot | None:
+        raise httpx.InvalidURL("https://exemple.fr/?key=cle-secrete")
+
+    probe = ProbeSource(tls_checker=tls_checker, page_fetcher=page_fetcher, today=lambda: TODAY)
+    observations = await probe.collect(SITE, TODAY_ONLY)
+    assert observations == [Observation("tls_days_remaining", TODAY, 45.0)]
+    assert "cle-secrete" not in caplog.text
+
+
+async def test_a_tls_checker_exception_keeps_the_page_observation() -> None:
+    async def tls_checker(domain: str) -> TlsStatus:
+        raise RuntimeError("boom")
+
+    async def page_fetcher(url: str, *, allow_insecure: bool = False) -> PageSnapshot | None:
+        return _page(200)
+
+    probe = ProbeSource(tls_checker=tls_checker, page_fetcher=page_fetcher, today=lambda: TODAY)
+    assert await probe.collect(SITE, TODAY_ONLY) == [Observation("page_up", TODAY, 1.0)]
+
+
+async def test_both_probes_raising_is_a_typed_recoverable_error() -> None:
+    async def tls_checker(domain: str) -> TlsStatus:
+        raise RuntimeError("boom")
+
+    async def page_fetcher(url: str, *, allow_insecure: bool = False) -> PageSnapshot | None:
+        raise OSError("boom")
+
+    probe = ProbeSource(tls_checker=tls_checker, page_fetcher=page_fetcher, today=lambda: TODAY)
+    with pytest.raises(SourceError) as excinfo:
+        await probe.collect(SITE, TODAY_ONLY)
+    assert excinfo.value.reason == "unreachable" and excinfo.value.recoverable

@@ -3,10 +3,16 @@
 Valeur terrain = 75e centile de l'ORIGINE (`originLoadingExperience`, fenêtre glissante
 de 28 jours calculée par Google), datée du jour de collecte. Sans donnée terrain,
 aucune observation terrain : jamais le laboratoire à la place, jamais zéro. Le score
-Lighthouse (laboratoire) est stocké à part (`performance_score`)."""
+Lighthouse (laboratoire) est stocké à part (`performance_score`).
+
+Validation de forme : une clé ABSENTE est « pas de donnée » (légitime : origine trop
+petite), une valeur PRÉSENTE mais invalide (mauvais type, négative, booléenne, NaN, hors
+bornes) est une réponse inattendue (`api_error`, récupérable), jamais stockée ni ignorée
+en silence."""
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from datetime import date
 from typing import Any
@@ -22,7 +28,7 @@ from app.services.metrics.types import (
     SourceSpec,
     utc_today,
 )
-from app.services.pagespeed import PAGESPEED_URL, _field_percentile
+from app.services.pagespeed import PAGESPEED_URL
 
 _TIMEOUT = httpx.Timeout(60.0)
 _FIELD_METRICS: dict[str, tuple[str, ...]] = {
@@ -32,47 +38,143 @@ _FIELD_METRICS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _section(value: Any, key: str) -> dict[str, Any]:
-    inner = value.get(key) if isinstance(value, dict) else None
-    return inner if isinstance(inner, dict) else {}
+def _bad_shape() -> SourceError:
+    return SourceError("api_error", recoverable=True)
+
+
+def _section(value: dict[str, Any], key: str) -> dict[str, Any]:
+    """Sous-objet d'une réponse : `{}` si la clé est absente, erreur si elle est présente
+    mais n'est pas un objet."""
+    if key not in value:
+        return {}
+    inner = value[key]
+    if not isinstance(inner, dict):
+        raise _bad_shape()
+    return inner
+
+
+def _percentile(metrics: dict[str, Any], *keys: str) -> float | None:
+    """Premier percentile présent parmi `keys` ; `None` si aucune clé n'est présente."""
+    for key in keys:
+        if key not in metrics:
+            continue
+        entry = metrics[key]
+        if not isinstance(entry, dict):
+            raise _bad_shape()
+        value = entry.get("percentile")
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int | float)
+            or not math.isfinite(value)
+            or value < 0
+        ):
+            raise _bad_shape()
+        return float(value)
+    return None
 
 
 def parse_cwv(payload: Any, *, day: date) -> list[Observation]:
     if not isinstance(payload, dict):
-        raise SourceError("api_error", recoverable=True)
+        raise _bad_shape()
+    # Le bloc laboratoire est toujours renvoyé : son absence, c'est une réponse tronquée
+    # ou étrangère, pas « un site sans données ».
+    lighthouse = payload.get("lighthouseResult")
+    if not isinstance(lighthouse, dict):
+        raise _bad_shape()
     metrics = _section(_section(payload, "originLoadingExperience"), "metrics")
     observations: list[Observation] = []
     for name, keys in _FIELD_METRICS.items():
-        try:
-            percentile = _field_percentile(metrics, *keys)
-        except (ValueError, OverflowError):
-            # Percentile NaN ou infini : réponse de forme inattendue, jamais une mesure.
-            raise SourceError("api_error", recoverable=True) from None
+        percentile = _percentile(metrics, *keys)
         if percentile is None:
             continue
         # CrUX donne le CLS multiplié par 100.
-        value = percentile / 100 if name == "cls_p75" else float(percentile)
+        value = percentile / 100 if name == "cls_p75" else percentile
         observations.append(Observation(name, day, value))
-    performance = _section(
-        _section(_section(payload, "lighthouseResult"), "categories"), "performance"
-    )
+    performance = _section(_section(lighthouse, "categories"), "performance")
+    # `score: null` est la réponse de Lighthouse quand la mesure a échoué : pas de donnée.
     score = performance.get("score")
-    if isinstance(score, int | float) and not isinstance(score, bool) and 0 <= score <= 1:
+    if score is not None:
+        if (
+            isinstance(score, bool)
+            or not isinstance(score, int | float)
+            or not math.isfinite(score)
+            or not 0 <= score <= 1
+        ):
+            raise _bad_shape()
         observations.append(Observation("performance_score", day, round(score * 100, 1)))
     return observations
 
 
-def _raise_for_pagespeed(status: int) -> None:
+# Raisons Google (`error.details[].reason`, `error.errors[].reason`, `error.status`) qui
+# désignent NOTRE configuration serveur (clé invalide, API désactivée, clé restreinte) :
+# jamais une panne du site du client.
+_KEY_REJECTED_REASONS = frozenset(
+    {
+        "API_KEY_INVALID",
+        "keyInvalid",
+        "SERVICE_DISABLED",
+        "accessNotConfigured",
+        "API_KEY_SERVICE_BLOCKED",
+        "API_KEY_HTTP_REFERRER_BLOCKED",
+        "API_KEY_IP_ADDRESS_BLOCKED",
+        "API_KEY_ANDROID_APP_BLOCKED",
+        "API_KEY_IOS_APP_BLOCKED",
+        "PERMISSION_DENIED",
+        "UNAUTHENTICATED",
+    }
+)
+_QUOTA_REASONS = frozenset(
+    {"RESOURCE_EXHAUSTED", "rateLimitExceeded", "dailyLimitExceeded", "quotaExceeded"}
+)
+# Erreurs Lighthouse qui disent que la page du site n'a pas pu être chargée.
+_SITE_UNREACHABLE_MARKERS = ("FAILED_DOCUMENT_REQUEST", "ERRORED_DOCUMENT_REQUEST", "DNS_FAILURE")
+
+
+def _error_facts(response: httpx.Response) -> tuple[set[str], bool]:
+    """(codes de raison, page injoignable ?) lus dans le corps d'erreur Google.
+
+    Rien du corps n'est recopié : seuls des codes connus sont comparés, le message
+    (qui peut citer l'URL ou la clé) n'est jamais conservé ni renvoyé."""
+    try:
+        body = response.json()
+    except ValueError:
+        return set(), False
+    error = body.get("error") if isinstance(body, dict) else None
+    if not isinstance(error, dict):
+        return set(), False
+    reasons: set[str] = set()
+    status = error.get("status")
+    if isinstance(status, str):
+        reasons.add(status)
+    for list_key in ("details", "errors"):
+        items = error.get(list_key)
+        for item in items if isinstance(items, list) else []:
+            reason = item.get("reason") if isinstance(item, dict) else None
+            if isinstance(reason, str):
+                reasons.add(reason)
+    message = error.get("message")
+    unreachable = isinstance(message, str) and any(
+        marker in message for marker in _SITE_UNREACHABLE_MARKERS
+    )
+    return reasons, unreachable or "FAILED_DOCUMENT_REQUEST" in reasons
+
+
+def _raise_for_pagespeed(response: httpx.Response) -> None:
+    status = response.status_code
     if status < 400:
         return
-    if status == 429:
+    reasons, page_unreachable = _error_facts(response)
+    if status == 429 or reasons & _QUOTA_REASONS:
         raise SourceError("quota", recoverable=True)
-    if status == 400:
-        # PageSpeed n'a pas pu charger la page (DNS, TLS, 4xx du site...).
+    if status in (401, 403) or reasons & _KEY_REJECTED_REASONS:
+        # Notre clé est refusée, l'API est désactivée ou la clé restreinte : problème de
+        # configuration serveur, pas une action à demander au client.
+        raise SourceError("api_key_rejected", recoverable=False)
+    if page_unreachable:
         raise SourceError("site_unreachable", recoverable=False)
-    if status in (401, 403):
-        raise SourceError("permission_or_api_disabled", recoverable=False)
-    if status >= 500:
+    if status == 400:
+        raise SourceError("bad_request", recoverable=False)
+    if status in (408, 425) or status >= 500:
         raise SourceError("api_error", recoverable=True)
     raise SourceError("api_error", recoverable=False)
 
@@ -100,22 +202,24 @@ class CwvSource:
             "strategy": "mobile",
             "category": "performance",
         }
-        if self._api_key:
-            params["key"] = self._api_key
+        # La clé voyage dans un en-tête : une URL peut finir dans un log ou une exception.
+        headers = {"X-Goog-Api-Key": self._api_key} if self._api_key else {}
         owns = self._client is None
         http = self._client or httpx.AsyncClient(timeout=_TIMEOUT)
         try:
             try:
-                response = await http.get(PAGESPEED_URL, params=params)
+                response = await http.get(PAGESPEED_URL, params=params, headers=headers)
+            except httpx.InvalidURL:
+                raise SourceError("bad_request", recoverable=False) from None
             except httpx.HTTPError:
-                # L'exception httpx porte l'URL, donc la clé : jamais chaînée.
+                # L'exception httpx porte la requête : jamais chaînée.
                 raise SourceError("network", recoverable=True) from None
         finally:
             if owns:
                 await http.aclose()
-        _raise_for_pagespeed(response.status_code)
+        _raise_for_pagespeed(response)
         try:
             payload = response.json()
         except ValueError:
-            raise SourceError("api_error", recoverable=True) from None
+            raise _bad_shape() from None
         return parse_cwv(payload, day=day)
