@@ -168,7 +168,9 @@ export function AutoTrackingCard({ websiteId }: { websiteId: string }) {
       {data === null && error !== null && (
         <div className="flex flex-wrap items-center gap-3 px-5 pb-5">
           <p className="text-xs text-ink-muted">Impossible de charger le suivi automatique : {error}</p>
-          <button type="button" onClick={() => {
+          <button
+            type="button"
+            onClick={() => {
               setError(null);
               setAttempt((value) => value + 1);
             }}
