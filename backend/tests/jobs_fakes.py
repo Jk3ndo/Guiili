@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import base64
+import time
 from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 
+import jwt
+from cryptography.hazmat.primitives.asymmetric import rsa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.website import Website
@@ -112,3 +116,25 @@ def fake_services(sources: dict[str, FakeSource], calls: list[str] | None = None
         reader_factory=unlinked_reader_factory,
         clock=lambda: NOW,
     )
+
+
+SIGNING_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+
+def _b64(number: int) -> str:
+    raw = number.to_bytes((number.bit_length() + 7) // 8, "big")
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
+def jwks_for(key, kid: str = "k1") -> dict:
+    numbers = key.public_key().public_numbers()
+    return {"keys": [{"kty": "RSA", "kid": kid, "use": "sig", "alg": "RS256",
+                      "n": _b64(numbers.n), "e": _b64(numbers.e)}]}
+
+
+def google_id_token(*, audience: str, email: str, key=SIGNING_KEY, **claims) -> str:
+    now = int(time.time())
+    payload = {"iss": "https://accounts.google.com", "aud": audience, "email": email,
+               "email_verified": True, "sub": "sa-1", "iat": now, "exp": now + 600}
+    payload.update(claims)
+    return jwt.encode(payload, key, algorithm="RS256", headers={"kid": "k1"})

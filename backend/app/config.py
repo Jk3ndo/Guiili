@@ -145,3 +145,27 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def worker_problems(settings: Settings) -> list[str]:
+    """Réglages exigés par le service worker hors `local` : vérifiés au démarrage du
+    worker (`app.worker_main`) et avant déploiement (`check_env --service worker`). Les
+    messages ne citent que des noms de variables, jamais de valeur."""
+    if settings.environment == "local":
+        return []
+    problems: list[str] = []
+    if settings.task_queue_backend != "cloud_tasks":
+        problems.append("TASK_QUEUE_BACKEND doit valoir cloud_tasks")
+    for name in (
+        "gcp_project",
+        "cloud_tasks_location",
+        "tasks_invoker_service_account",
+        "internal_oidc_audience",
+    ):
+        if not getattr(settings, name):
+            problems.append(f"{name.upper()} est obligatoire")
+    if not settings.worker_base_url.startswith("https://"):
+        problems.append("WORKER_BASE_URL doit commencer par https://")
+    if not settings.internal_allowed_invokers:
+        problems.append("INTERNAL_ALLOWED_INVOKERS doit lister au moins un compte de service")
+    return problems

@@ -17,16 +17,20 @@ from uuid import UUID
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import Settings
 from app.models.job_run import JobRun
 from app.models.source_quota_event import SourceQuotaEvent
 from app.models.website import Website
+from app.security.token_crypto import load_token_cipher
+from app.services.google_oauth import get_google_oauth_client
 from app.services.gtm_headless import GtmHeadlessResult
 from app.services.jobs.kinds import BACKFILL_SOURCES, COLLECT_KIND_BY_SOURCE
 from app.services.jobs.runner import Handler, HandlerOutcome, lock_key
-from app.services.measurement.fetch import PageFetcher
+from app.services.measurement.fetch import PageFetcher, fetch_page_safe
+from app.services.measurement.google_access import build_reader
 from app.services.measurement.service import ReaderFactory, refresh_plan
 from app.services.metrics.partitions import ensure_partitions, purge_expired
-from app.services.metrics.sources.factory import SourceFactory
+from app.services.metrics.sources.factory import SourceFactory, default_source_factory
 from app.services.metrics.store import store_observations
 from app.services.metrics.types import (
     DayRange,
@@ -35,6 +39,7 @@ from app.services.metrics.types import (
     SourceError,
     utc_now,
 )
+from app.services.tls_check import check_certificate
 
 logger = logging.getLogger(__name__)
 
@@ -314,3 +319,33 @@ def build_handlers(services: JobServices) -> dict[str, Handler]:
     for source, kind in COLLECT_KIND_BY_SOURCE.items():
         handlers[kind] = partial(collect, services, source)
     return handlers
+
+
+def default_job_services(settings: Settings) -> JobServices:
+    """Services réels (réseau) : utilisés par le worker et l'outil local, jamais en test.
+
+    Une seule horloge (`utc_now`) alimente les dates des sources, la sonde TLS et
+    `JobServices` : jamais deux horloges qui divergent."""
+    oauth = get_google_oauth_client(settings)
+    cipher = load_token_cipher(settings)
+    clock = utc_now
+
+    async def reader_factory(session: AsyncSession, website: Website):
+        return await build_reader(session, website, oauth=oauth, cipher=cipher)
+
+    async def tls_checker(domain: str):
+        return await check_certificate(domain, now=clock())
+
+    return JobServices.from_clock(
+        source_factory=default_source_factory(
+            pagespeed_api_key=settings.pagespeed_api_key.get_secret_value() or None,
+            oauth=oauth,
+            cipher=cipher,
+            tls_checker=tls_checker,
+            page_fetcher=fetch_page_safe,
+            clock=clock,
+        ),
+        page_fetcher=fetch_page_safe,
+        reader_factory=reader_factory,
+        clock=clock,
+    )
