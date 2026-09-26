@@ -65,7 +65,6 @@ async def build_reader(
                 )
             )
         )
-        .tuples()
         .all()
     )
 
