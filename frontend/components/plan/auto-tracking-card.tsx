@@ -27,7 +27,7 @@ interface SchedulePatch {
 }
 
 function statusOf(schedule: ScheduleDto): { label: string; tone: string } {
-  if (!schedule.enabled) return { label: "En pause", tone: "text-ink-faint" };
+  if (!schedule.enabled) return { label: "Désactivé", tone: "text-ink-faint" };
   switch (schedule.last_status) {
     case "succeeded":
       return { label: "À jour", tone: "text-ok" };
@@ -48,12 +48,16 @@ function ScheduleRow({
   labels,
   canEdit,
   saving,
+  locked,
   onPatch,
 }: {
   schedule: ScheduleDto;
   labels: Record<ScheduleFrequency, string>;
   canEdit: boolean;
+  /** Cette ligne est en cours de sauvegarde (spinner). */
   saving: boolean;
+  /** Une sauvegarde est en vol sur une ligne quelconque : toutes les lignes sont verrouillées. */
+  locked: boolean;
   onPatch: (patch: SchedulePatch) => void;
 }) {
   const status = statusOf(schedule);
@@ -71,7 +75,11 @@ function ScheduleRow({
           {lastRun ? ` · dernier passage le ${lastRun}` : ""}
           {nextRun ? ` · prochain vers le ${nextRun}` : ""}
         </p>
-        {showError && <p className="text-2xs text-ink-muted">{schedule.last_error}</p>}
+        {showError && (
+          <p className="text-2xs text-ink-muted" role="alert">
+            {schedule.last_error}
+          </p>
+        )}
       </div>
       <div className="flex items-center gap-3">
         {saving && <Loader2 className="size-3.5 animate-spin text-ink-muted" aria-hidden />}
@@ -79,7 +87,7 @@ function ScheduleRow({
           aria-label={`Fréquence : ${schedule.label}`}
           className={SELECT}
           value={schedule.frequency}
-          disabled={!canEdit || saving}
+          disabled={!canEdit || locked}
           onChange={(event) =>
             onPatch({
               frequency: event.target.value as ScheduleFrequency,
@@ -97,8 +105,9 @@ function ScheduleRow({
           <input
             type="checkbox"
             className="size-3.5 accent-zinc-200"
+            aria-label={`Actif : ${schedule.label}`}
             checked={schedule.enabled}
-            disabled={!canEdit || saving}
+            disabled={!canEdit || locked}
             onChange={(event) =>
               onPatch({ frequency: schedule.frequency, enabled: event.target.checked })
             }
@@ -136,12 +145,15 @@ export function AutoTrackingCard({ websiteId }: { websiteId: string }) {
   }, [websiteId, attempt]);
 
   async function change(schedule: ScheduleDto, patch: SchedulePatch) {
+    // Une seule sauvegarde à la fois : les contrôles sont verrouillés pendant le PUT, ce qui
+    // évite des réponses dans le désordre qui réafficheraient une ancienne valeur.
+    if (savingKind !== null) return;
     setSavingKind(schedule.kind);
     try {
       setData(await updateSchedule(websiteId, { kind: schedule.kind, ...patch }));
       toast("Suivi automatique mis à jour");
     } catch (err) {
-      toast.error(describeScheduleError(err));
+      toast.error(describeScheduleError(err, schedule.floor_hours));
     } finally {
       setSavingKind(null);
     }
@@ -160,7 +172,7 @@ export function AutoTrackingCard({ websiteId }: { websiteId: string }) {
 
       {data === null && error === null && (
         <p className="flex items-center gap-2 px-5 pb-5 text-xs text-ink-muted" role="status">
-          <Loader2 className="size-3.5 animate-spin" />
+          <Loader2 className="size-3.5 animate-spin" aria-hidden />
           Chargement du suivi automatique…
         </p>
       )}
@@ -191,6 +203,7 @@ export function AutoTrackingCard({ websiteId }: { websiteId: string }) {
                 labels={data.frequency_labels}
                 canEdit={data.can_edit}
                 saving={savingKind === schedule.kind}
+                locked={savingKind !== null}
                 onPatch={(patch) => void change(schedule, patch)}
               />
             ))}

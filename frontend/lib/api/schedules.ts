@@ -64,7 +64,7 @@ export function updateSchedule(websiteId: string, body: ScheduleUpdate): Promise
  * Message français pour une erreur du suivi automatique : une limite de débit (429), un
  * refus de droits (403) ou une panne (5xx) ne sont jamais présentés comme « API hors ligne ».
  */
-export function describeScheduleError(error: unknown): string {
+export function describeScheduleError(error: unknown, floorHours?: number): string {
   if (error instanceof ApiError) {
     if (error.status === 429) return "Trop de demandes, réessaie dans un instant.";
     if (error.status === 403) {
@@ -72,7 +72,9 @@ export function describeScheduleError(error: unknown): string {
     }
     if (error.status === 0) return "Le service est injoignable ou trop lent, réessaie.";
     if (error.status === 422) {
-      return "Fréquence refusée : elle est plus rapide que ce que permet cette source.";
+      return floorHours === undefined
+        ? "Fréquence refusée : elle est plus rapide que ce que permet cette source."
+        : `Fréquence refusée : cette source est relevée au plus ${floorHours <= 1 ? "toutes les heures" : `toutes les ${floorHours} heures`}.`;
     }
     if (error.status >= 500) {
       return "Le service a rencontré une erreur, réessaie dans un instant.";
