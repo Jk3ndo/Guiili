@@ -337,6 +337,29 @@ def test_the_dry_run_builds_and_deploys_both_services(tmp_path: Path) -> None:
         line for line in out.splitlines() if "run deploy backend-guiili-staging-worker" in line
     )
     assert "--no-allow-unauthenticated" in worker_line and "--memory 2Gi" in worker_line
+    for option in (
+        "--max-instances 2",
+        "--concurrency 10",
+        "--timeout 900",
+        "--service-account backend-guiili-staging-worker@guiili.iam.gserviceaccount.com",
+    ):
+        assert option in worker_line, option
+    api_line = next(
+        line
+        for line in out.splitlines()
+        if "run deploy backend-guiili-staging --image" in line
+    )
+    assert "--allow-unauthenticated" in api_line and "--no-allow-unauthenticated" not in api_line
+    # Ordre : images -> migration -> worker -> API (l'API ne doit jamais etre en ligne
+    # avant le worker auquel elle delegue la verification headless).
+    order = [
+        out.index("builds submit"),
+        out.index("cloudbuild.worker.yaml"),
+        out.index("run jobs deploy backend-guiili-staging-migrate"),
+        out.index("run deploy backend-guiili-staging-worker"),
+        out.index("run deploy backend-guiili-staging --image"),
+    ]
+    assert order == sorted(order) and len(set(order)) == len(order)
     assert "(dry-run" in out
 
 
@@ -344,3 +367,6 @@ def test_the_deploy_script_checks_the_worker_configuration() -> None:
     script = (ROOT / "scripts" / "deploy-backend.sh").read_text(encoding="utf-8")
     assert "--service worker" in script
     assert "DEPLOY_ENV_FILE" in script
+    # Jeton lu une fois avant la boucle de verification, jamais de Bearer vide.
+    assert 'TOKEN="$(gcloud auth print-identity-token)" ||' in script
+    assert "Bearer $(gcloud" not in script

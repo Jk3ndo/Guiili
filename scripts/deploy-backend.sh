@@ -70,13 +70,16 @@ run gcloud run jobs deploy "$JOB" --image "$IMAGE" --project "$PROJECT" --region
   --command alembic --args upgrade,head --env-vars-file "$ENV_FILE" \
   --max-retries 0 --task-timeout 600 --execute-now --wait
 
-echo "== 4/5 Deploiement des services $SERVICE (public) et $WORKER (prive)"
-run gcloud run deploy "$SERVICE" --image "$IMAGE" --project "$PROJECT" --region "$REGION" \
-  --env-vars-file "$ENV_FILE" --allow-unauthenticated \
-  --memory 512Mi --cpu 1 --cpu-boost --max-instances 3
+# Le worker AVANT l'API : l'API (sans Chromium) lui delegue la verification headless, elle
+# ne doit jamais etre en ligne sans lui. Son URL est deterministe (WORKER_BASE_URL, deja
+# dans le fichier d'environnement) : l'API n'a besoin d'aucune sortie de ce deploiement.
+echo "== 4/5 Deploiement des services $WORKER (prive) puis $SERVICE (public)"
 run gcloud run deploy "$WORKER" --image "$WORKER_IMAGE" --project "$PROJECT" --region "$REGION" \
   --env-vars-file "$ENV_FILE" --no-allow-unauthenticated --service-account "$WORKER_SA" \
   --memory 2Gi --cpu 1 --max-instances 2 --concurrency 10 --timeout 900
+run gcloud run deploy "$SERVICE" --image "$IMAGE" --project "$PROJECT" --region "$REGION" \
+  --env-vars-file "$ENV_FILE" --allow-unauthenticated \
+  --memory 512Mi --cpu 1 --cpu-boost --max-instances 3
 
 echo "== 5/5 Verification"
 if [ -n "$DRY_RUN" ]; then
@@ -84,9 +87,13 @@ if [ -n "$DRY_RUN" ]; then
 fi
 URL="$(gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" --format='value(status.url)')"
 WORKER_URL="$(gcloud run services describe "$WORKER" --project "$PROJECT" --region "$REGION" --format='value(status.url)')"
+# Jeton lu UNE fois, avant la boucle : jamais de "Bearer " vide, et un echec de gcloud est
+# signale comme tel (pas comme un service qui ne repond pas).
+TOKEN="$(gcloud auth print-identity-token)" || { echo "impossible d'obtenir un jeton d'identite (gcloud auth print-identity-token)" >&2; exit 1; }
+[ -n "$TOKEN" ] || { echo "jeton d'identite vide (gcloud auth print-identity-token)" >&2; exit 1; }
 for attempt in 1 2 3 4 5; do
   if curl -fsS "$URL/health/db" >/dev/null \
-    && curl -fsS -H "Authorization: Bearer $(gcloud auth print-identity-token)" "$WORKER_URL/health/db" >/dev/null; then
+    && curl -fsS -H "Authorization: Bearer $TOKEN" "$WORKER_URL/health/db" >/dev/null; then
     echo "OK : $URL/health/db et $WORKER_URL/health/db repondent (images $TAG)."
     exit 0
   fi

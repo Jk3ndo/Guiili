@@ -19,7 +19,7 @@ COPY . .
 RUN uv sync --frozen --no-dev
 
 # Chromium + dependances systeme (fonts, libgtk, libnss...) du rendu headless reel.
-RUN uv run playwright install --with-deps chromium
+RUN uv run --frozen --no-dev playwright install --with-deps chromium
 
 ENV PATH="/app/.venv/bin:${PATH}"
 

@@ -99,12 +99,20 @@ Le script fait cinq étapes, dans l'ordre, et s'arrête à la première erreur (
    migrent jamais au démarrage. Le lot B ajoute deux migrations additives
    (`c3a9e5f1b8d2` : tables du lot B dont `metric_points` partitionnée ;
    `a7d41c9e2b56` : `source_quota_events`), appliquées par ce Job.
-4. **Déploiement des services** : `<service>` comme avant (public, 512 Mi, 3 instances) ;
-   puis `<service>-worker`, **privé** (`--no-allow-unauthenticated`), compte de service
+4. **Déploiement des services, le worker d'abord** : `<service>-worker`, **privé**
+   (`--no-allow-unauthenticated`), compte de service
    `<service>-worker@<projet>.iam.gserviceaccount.com` (ou `WORKER_SERVICE_ACCOUNT`),
-   2 Gi, 1 CPU, 2 instances au plus, concurrence 10, délai de 900 s.
-5. **Vérification** : `/health/db` de l'API, puis celui du worker avec
-   `gcloud auth print-identity-token` (le worker refuse les appels anonymes). Jusqu'à 5
+   2 Gi, 1 CPU, 2 instances au plus, concurrence 10, délai de 900 s ; puis `<service>`
+   comme avant (public, 512 Mi, 3 instances). L'ordre est voulu : l'API sans Chromium
+   délègue la vérification headless au worker, elle ne doit donc jamais être en ligne
+   avant lui (au premier déploiement le worker n'existe pas, et son déploiement peut
+   échouer, par exemple faute du rôle Service Account User, §11). Si le worker échoue,
+   le script s'arrête et l'API n'est pas touchée. L'URL du worker est déterministe et
+   déjà dans le fichier d'environnement, aucune donnée du déploiement du worker n'est
+   nécessaire à celui de l'API.
+5. **Vérification** : lit d'abord un jeton d'identité (`gcloud auth print-identity-token`,
+   le script échoue clairement s'il n'en obtient pas), puis appelle `/health/db` de l'API
+   et celui du worker avec ce jeton (le worker refuse les appels anonymes). Jusqu'à 5
    essais (5 secondes d'écart). En cas d'échec, le script sort en erreur et affiche les
    commandes de retour arrière des deux services (voir §5). Non exécutée avec `--dry-run`.
 
@@ -116,8 +124,8 @@ Variable `DEPLOY_ENV_FILE` : remplace le chemin du fichier d'environnement (par 
 fois » est propre au processus, plusieurs processus multiplieraient les Chromium et
 dépasseraient 2 Gi. Concurrence Cloud Run 10 (les tâches de collecte sont surtout des
 attentes réseau ; la vérification headless, elle, est limitée à une à la fois par
-processus et renvoie 503 « occupée » au-delà de 5 secondes d'attente, ce qui déclenche une
-nouvelle tentative de la file). 2 instances au plus : au pire deux navigateurs en
+processus et renvoie 503 « occupée » au-delà de 5 secondes d'attente ; l'API l'appelle
+directement, sans Cloud Tasks : c'est l'utilisateur qui relance la vérification). 2 instances au plus : au pire deux navigateurs en
 parallèle. Délai de requête 900 s = `dispatchDeadline` des tâches Cloud Tasks (900 s) =
 `JOBS_LEASE_SECONDS` (900 s) : un gestionnaire ne peut pas durer plus que le bail ; si
 Cloud Run coupe une requête à 900 s, le bail expire au même instant et l'exécution est
@@ -237,6 +245,24 @@ gcloud run services update-traffic backend-guiili --to-latest --region us-centra
 ```
 
 Le retour arrière et cette commande sont des actions réservées au propriétaire.
+
+**Worker (lot B)** : la même commande s'applique à `backend-guiili-worker` (préproduction :
+`backend-guiili-staging-worker`), mais **au premier déploiement il n'existe aucune
+révision précédente du worker** : il n'y a alors rien vers quoi revenir. Le déploiement
+étant fait worker d'abord, un échec du worker laisse l'API intacte ; seul un échec de
+l'API après un worker réussi impose un retour arrière de l'API seule (le worker déjà
+déployé reste compatible : il n'ajoute que des routes internes).
+
+**Arrêt d'urgence du planificateur** : pour arrêter toute nouvelle collecte automatique
+(boucle d'erreurs, quota, worker défaillant), mettre le job Cloud Scheduler en pause ; les
+tâches déjà déposées dans les files continuent, les vider au besoin (`gcloud tasks queues
+purge <file>`) :
+
+```bash
+gcloud scheduler jobs pause guiili-tick --location us-central1 --project guiili
+gcloud scheduler jobs pause guiili-tick-staging --location us-central1 --project guiili   # préproduction
+gcloud scheduler jobs resume guiili-tick --location us-central1 --project guiili          # reprise
+```
 
 **Retour arrière = trafic uniquement.** On redirige le trafic vers une révision existante ;
 on ne redéploie pas un commit antérieur à ce lot avec le nouveau fichier d'environnement.
@@ -458,11 +484,12 @@ Liste de contrôle, dans l'ordre :
    propriétaire du projet Neon ; noter l'heure, le `x-request-id` d'une requête en échec
    et la révision Cloud Run en cours.
 10. **Collectes en échec ou en retard** : `GET <WORKER_URL>/internal/jobs/health` avec
-    `-H "Authorization: Bearer $(gcloud auth print-identity-token --audiences=<WORKER_URL>)"`
-    (le compte doit figurer dans `INTERNAL_ALLOWED_INVOKERS`), puis §15.5.
+    `-H "Authorization: Bearer $TOKEN"`, le jeton s'obtenant comme au §15.3 (emprunt
+    d'identité du compte de service `guiili-scheduler`, qui figure dans
+    `INTERNAL_ALLOWED_INVOKERS`), puis §15.5.
 11. **Quota Google atteint en boucle** : le disjoncteur suspend 30 minutes la source d'un
     workspace après 3 échecs `quota` ; vérifier le débit de la file (`gcloud tasks queues
-    describe guiili-ga4 ...`) avant de l'augmenter.
+    describe guiili-ga4 ...`, `guiili-staging-ga4` en préproduction) avant de l'augmenter.
 
 ## 13. Hors périmètre du lot 0
 
@@ -518,15 +545,33 @@ Comportement des tentatives (à connaître avant de modifier une file) :
 
 ### 15.2 Mise en place unique [PROPRIÉTAIRE]
 
-Exemple pour la production (préproduction : suffixe `-staging` sur les comptes, les
-files et le job). Remplacer `<NUM>` par le numéro du projet
-(`gcloud projects describe guiili --format='value(projectNumber)'`) ; l'URL du worker est
-alors `https://backend-guiili-worker-<NUM>.us-central1.run.app`. Rien de ceci n'est
-exécuté par l'outillage du dépôt.
+Exemple pour la production ; les noms de préproduction sont donnés ci-dessous et ne suivent
+PAS une règle de suffixe uniforme (le code construit `{CLOUD_TASKS_QUEUE_PREFIX}-{file}` et
+le script déploie `backend-guiili-staging-worker`) :
+
+| Objet | Production | Préproduction |
+|---|---|---|
+| Service worker | `backend-guiili-worker` | `backend-guiili-staging-worker` |
+| Compte du worker | `backend-guiili-worker` | `backend-guiili-staging-worker` |
+| Compte Cloud Tasks | `guiili-tasks` | `guiili-tasks-staging` |
+| Compte Cloud Scheduler | `guiili-scheduler` | `guiili-scheduler-staging` |
+| Préfixe des files (`CLOUD_TASKS_QUEUE_PREFIX`) | `guiili` | `guiili-staging` |
+| Files | `guiili-{ga4,gsc,cwv,light,heavy}` | `guiili-staging-{ga4,gsc,cwv,light,heavy}` |
+| Job Cloud Scheduler | `guiili-tick` | `guiili-tick-staging` |
+
+Remplacer `<NUM>` par le numéro du projet
+(`gcloud projects describe guiili --format='value(projectNumber)'`) : l'URL du worker est
+alors `https://backend-guiili-worker-<NUM>.us-central1.run.app` (préproduction :
+`https://backend-guiili-staging-worker-<NUM>.us-central1.run.app`, à utiliser aussi comme
+URI et audience du job `guiili-tick-staging`). **Les `<NUM>` et `<COMPTE_DE_L_API>` des
+commandes ci-dessous sont à remplacer AVANT de les exécuter** (sinon l'URL est invalide).
+Les boucles supposent bash (`set -- $spec` ne découpe pas la chaîne sous zsh). Rien de ceci
+n'est exécuté par l'outillage du dépôt.
 
 ```bash
 # 1. API Google Cloud
-gcloud services enable cloudtasks.googleapis.com cloudscheduler.googleapis.com --project guiili
+gcloud services enable cloudtasks.googleapis.com cloudscheduler.googleapis.com \
+  iamcredentials.googleapis.com --project guiili
 
 # 2. Comptes de service
 gcloud iam service-accounts create backend-guiili-worker --project guiili --display-name "Guiili worker"
@@ -541,13 +586,22 @@ for spec in "ga4 2 5" "gsc 2 5" "cwv 1 2" "light 5 10" "heavy 1 1"; do
     --max-attempts 5 --min-backoff 60s --max-backoff 3600s --max-doublings 4
 done
 
-# 4. Le worker dépose des tâches et les signe au nom de guiili-tasks
-gcloud projects add-iam-policy-binding guiili \
-  --member serviceAccount:backend-guiili-worker@guiili.iam.gserviceaccount.com \
-  --role roles/cloudtasks.enqueuer
+# 4. Le worker dépose des tâches et les signe au nom de guiili-tasks. Le rôle
+#    enqueuer est donné PAR FILE, jamais au niveau du projet (sinon les workers de
+#    préproduction et de production pourraient déposer dans les files l'un de l'autre).
+for queue in ga4 gsc cwv light heavy; do
+  gcloud tasks queues add-iam-policy-binding "guiili-$queue" \
+    --location us-central1 --project guiili \
+    --member serviceAccount:backend-guiili-worker@guiili.iam.gserviceaccount.com \
+    --role roles/cloudtasks.enqueuer
+done
 gcloud iam service-accounts add-iam-policy-binding guiili-tasks@guiili.iam.gserviceaccount.com \
   --member serviceAccount:backend-guiili-worker@guiili.iam.gserviceaccount.com \
   --role roles/iam.serviceAccountUser
+
+# 4bis. Le propriétaire peut émettre un jeton au nom de guiili-scheduler (contrôles du §15.3)
+gcloud iam service-accounts add-iam-policy-binding guiili-scheduler@guiili.iam.gserviceaccount.com \
+  --member user:<EMAIL_DU_PROPRIETAIRE> --role roles/iam.serviceAccountTokenCreator
 ```
 
 5. Compléter `deploy/env.production.yaml` avec les variables du lot B (§1) :
@@ -555,8 +609,9 @@ gcloud iam service-accounts add-iam-policy-binding guiili-tasks@guiili.iam.gserv
    `https://backend-guiili-worker-<NUM>.us-central1.run.app`,
    `TASKS_INVOKER_SERVICE_ACCOUNT` = `guiili-tasks@guiili.iam.gserviceaccount.com`,
    `INTERNAL_ALLOWED_INVOKERS` = les e-mails de `guiili-tasks`, `guiili-scheduler` et du
-   compte d'exécution de l'API (par défaut `<NUM>-compute@developer.gserviceaccount.com`,
-   visible dans `gcloud run services describe backend-guiili --format='value(spec.template.spec.serviceAccountName)'`).
+   compte d'exécution de l'API : le script déploie l'API sans `--service-account`, c'est
+   donc le compte par défaut de Compute Engine, `<NUM>-compute@developer.gserviceaccount.com`
+   (à confirmer par `gcloud run services describe backend-guiili --format='value(spec.template.spec.serviceAccountName)'`).
    Le fichier reste en clair comme au §10 : Secret Manager n'est pas dans le périmètre du
    lot B ([PROPRIÉTAIRE], §10).
 6. Déployer : `./scripts/deploy-backend.sh production --dry-run`, puis sans `--dry-run`
@@ -603,13 +658,23 @@ côté interface. Le worker est **privé** : ne jamais lui donner `allUsers` ni
 
 ```bash
 WORKER_URL=https://backend-guiili-worker-<NUM>.us-central1.run.app
-TOKEN=$(gcloud auth print-identity-token --audiences="$WORKER_URL")
+# Jeton d'identité au nom de guiili-scheduler (--audiences est refusé pour un compte
+# utilisateur, --include-email est nécessaire pour que le jeton porte l'e-mail vérifié)
+TOKEN=$(gcloud auth print-identity-token \
+  --impersonate-service-account=guiili-scheduler@guiili.iam.gserviceaccount.com \
+  --audiences="$WORKER_URL" --include-email)
 curl -fsS -H "Authorization: Bearer $TOKEN" "$WORKER_URL/internal/jobs/health"
 gcloud scheduler jobs run guiili-tick --location us-central1 --project guiili   # passage immédiat
 ```
 
-Le compte utilisé pour `print-identity-token` doit figurer dans
-`INTERNAL_ALLOWED_INVOKERS` (sinon 403) et avoir `roles/run.invoker` sur le worker.
+Prérequis : le propriétaire a `roles/iam.serviceAccountTokenCreator` sur
+`guiili-scheduler` (étape 4bis) et l'API `iamcredentials.googleapis.com` est activée
+(étape 1). Le compte dont on emprunte l'identité (`guiili-scheduler`) figure dans
+`INTERNAL_ALLOWED_INVOKERS` (sinon 403) et a `roles/run.invoker` sur le worker (étape 7) ;
+l'e-mail personnel du propriétaire, lui, n'y figure pas. Sans `--audiences`, l'audience du
+jeton serait fausse (403) ; sans `--include-email`, le jeton n'a ni `email` ni
+`email_verified`. En préproduction : compte `guiili-scheduler-staging`, URL du worker de
+préproduction et job `guiili-tick-staging`.
 
 ### 15.4 En local
 
