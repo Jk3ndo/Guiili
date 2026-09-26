@@ -19,10 +19,13 @@ from app.models.website import Website
 from app.services.gsc import _QUERY_URL
 from app.services.metrics.dimensions import CLEANERS
 from app.services.metrics.registry import metric_def
-from app.services.metrics.sources.google_http import google_json
+from app.services.metrics.sources.google_http import RECOVERABLE_REASONS, google_json
 from app.services.metrics.types import SOURCE_SPECS, DayRange, Observation, SourceError, SourceSpec
 
 _ROW_LIMIT = 25000
+# Plafond de pages par requête : au-delà, la collecte échoue (`truncated`) plutôt que de
+# renvoyer des données partielles (Google trie par clics et coupe la queue sans le dire).
+_MAX_PAGES = 20
 DIMENSION_TOP_N = metric_def("gsc", "clicks").top_n  # type: ignore[union-attr]
 _TOTAL_FIELDS = ("clicks", "impressions", "ctr", "position")
 
@@ -66,25 +69,28 @@ def _number(row: dict[str, Any], field: str) -> float:
 
 
 def parse_totals(payload: Any) -> list[Observation]:
-    # Dernière lecture d'un jour l'emporte : une ligne répétée n'est pas comptée deux fois.
+    # Une ligne identique répétée n'est pas comptée deux fois ; deux lignes de valeurs
+    # différentes pour le même jour sont une réponse incohérente.
     by_day: dict[date, list[Observation]] = {}
     for row in _rows(payload):
         day = _day(_keys(row, 1)[0])
-        by_day[day] = [Observation(name, day, _number(row, name)) for name in _TOTAL_FIELDS]
+        values = [Observation(name, day, _number(row, name)) for name in _TOTAL_FIELDS]
+        if by_day.setdefault(day, values) != values:
+            raise _api_error()
     return [obs for day in sorted(by_day) for obs in by_day[day]]
 
 
 def parse_dimension(payload: Any, dimension: str, *, top_n: int) -> list[Observation]:
     cleaner = CLEANERS[dimension]
-    # Dédoublonnage sur les dimensions BRUTES (jour, valeur reçue) : une ligne répétée par
-    # Google n'est pas additionnée. Seules les collisions dues au nettoyage le sont.
+    # Dédoublonnage sur les dimensions BRUTES (jour, valeur reçue) : une ligne identique
+    # répétée par Google n'est pas additionnée (des valeurs différentes pour la même clé
+    # sont une réponse incohérente). Seules les collisions dues au nettoyage sont sommées.
     raw_rows: dict[tuple[date, str], tuple[float, float]] = {}
     for row in _rows(payload):
         raw_day, raw_value = _keys(row, 2)[:2]
-        raw_rows[(_day(raw_day), raw_value)] = (
-            _number(row, "clicks"),
-            _number(row, "impressions"),
-        )
+        values = (_number(row, "clicks"), _number(row, "impressions"))
+        if raw_rows.setdefault((_day(raw_day), raw_value), values) != values:
+            raise _api_error()
     merged: dict[date, dict[str, list[float]]] = defaultdict(dict)
     for (day, raw_value), (clicks, impressions) in raw_rows.items():
         value = cleaner(raw_value)
@@ -112,33 +118,49 @@ class GscSource:
         *,
         site_url: str | None,
         token: str | None,
+        token_problem: str | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._site_url = site_url
         self._token = token
+        # Raison de l'absence de jeton (`resolve_google_credentials`) : récupérable ou non.
+        self._token_problem = token_problem or "token_unavailable"
         self._client = client
 
-    async def _query(self, chunk: DayRange, dimensions: list[str]) -> Any:
-        return await google_json(
-            "POST",
-            _QUERY_URL.format(site=quote(self._site_url or "", safe="")),
-            self._token or "",
-            json={
-                "startDate": chunk.start.isoformat(),
-                "endDate": chunk.end.isoformat(),
-                "dimensions": dimensions,
-                "rowLimit": _ROW_LIMIT,
-                "dataState": "final",
-            },
-            client=self._client,
-        )
+    async def _query(self, chunk: DayRange, dimensions: list[str]) -> dict[str, Any]:
+        """Lit toutes les pages (`startRow`) : une page pleine appelle la suivante."""
+        url = _QUERY_URL.format(site=quote(self._site_url or "", safe=""))
+        rows: list[dict[str, Any]] = []
+        for _ in range(_MAX_PAGES):
+            payload = await google_json(
+                "POST",
+                url,
+                self._token or "",
+                json={
+                    "startDate": chunk.start.isoformat(),
+                    "endDate": chunk.end.isoformat(),
+                    "dimensions": dimensions,
+                    "rowLimit": _ROW_LIMIT,
+                    "startRow": len(rows),
+                    "dataState": "final",
+                },
+                client=self._client,
+            )
+            page = _rows(payload)
+            rows.extend(page)
+            if len(page) < _ROW_LIMIT:
+                return {"rows": rows}
+        raise SourceError("truncated", recoverable=True)
 
     async def collect(self, website: Website, day_range: DayRange) -> list[Observation]:
         _ = website
         if not self._site_url:
             raise SourceError("gsc_not_connected", recoverable=False, not_applicable=True)
         if not self._token:
-            raise SourceError("token_unavailable", recoverable=False)
+            raise SourceError(
+                self._token_problem,
+                recoverable=RECOVERABLE_REASONS.get(self._token_problem, False),
+            )
         observations: list[Observation] = []
         for chunk in day_range.chunks(self.spec.max_days_per_call):
             parsed = parse_totals(await self._query(chunk, ["date"]))

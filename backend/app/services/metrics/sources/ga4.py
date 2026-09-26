@@ -17,7 +17,7 @@ from app.models.website import Website
 from app.services.ga4 import _RUN_REPORT_URL, _property_number
 from app.services.metrics.dimensions import clean_event
 from app.services.metrics.registry import metric_def
-from app.services.metrics.sources.google_http import google_json
+from app.services.metrics.sources.google_http import RECOVERABLE_REASONS, google_json
 from app.services.metrics.types import SOURCE_SPECS, DayRange, Observation, SourceError, SourceSpec
 
 # Nom court (registre) -> nom de la métrique GA4.
@@ -28,6 +28,11 @@ TOTALS: dict[str, str] = {
     "key_events": "keyEvents",
     "total_revenue": "totalRevenue",
 }
+_TOTALS_LIMIT = 1000
+_EVENTS_LIMIT = 25000
+# Plafond de pages par requête : au-delà, la collecte échoue (`truncated`) plutôt que de
+# renvoyer des données partielles.
+_MAX_PAGES = 20
 EVENT_TOP_N = metric_def("ga4", "event_count").top_n  # type: ignore[union-attr]
 
 
@@ -87,40 +92,43 @@ def _number(raw: str) -> float:
 
 def parse_totals(payload: Any) -> list[Observation]:
     rows = _rows(payload)
+    index = _metric_index(payload)  # une réponse sans en-têtes n'est pas « aucune donnée »
     if not rows:
         return []
-    index = _metric_index(payload)
     if any(api_name not in index for api_name in TOTALS.values()):
         raise _api_error()
-    # Une ligne répétée pour un même jour ne doit pas être comptée deux fois : la
-    # dernière lecture d'un jour l'emporte (unicité de (métrique, jour) par collecte).
+    # Une ligne identique répétée pour un même jour n'est pas comptée deux fois ; deux
+    # lignes de valeurs différentes pour la même clé sont une réponse incohérente.
     by_day: dict[date, list[Observation]] = {}
     for row in rows:
         day = _day(_cells(row, "dimensionValues", 1)[0])
         metrics = _cells(row, "metricValues", len(index))
-        by_day[day] = [
+        values = [
             Observation(name, day, _number(metrics[index[api_name]]))
             for name, api_name in TOTALS.items()
         ]
+        if by_day.setdefault(day, values) != values:
+            raise _api_error()
     return [obs for day in sorted(by_day) for obs in by_day[day]]
 
 
 def parse_events(payload: Any, *, top_n: int) -> list[Observation]:
     rows = _rows(payload)
+    index = _metric_index(payload)
     if not rows:
         return []
-    index = _metric_index(payload)
     if "eventCount" not in index:
         raise _api_error()
-    # Dédoublonnage sur les dimensions BRUTES (jour, nom reçu) : une ligne répétée par
-    # Google n'est pas additionnée. Seules les collisions dues au nettoyage le sont.
+    # Dédoublonnage sur les dimensions BRUTES (jour, nom reçu) : une ligne identique
+    # répétée par Google n'est pas additionnée (des valeurs différentes pour la même clé
+    # sont une réponse incohérente). Seules les collisions dues au nettoyage sont sommées.
     raw_counts: dict[tuple[date, str], float] = {}
     for row in rows:
         raw_day, raw_name = _cells(row, "dimensionValues", 2)[:2]
         day = _day(raw_day)
-        raw_counts[(day, raw_name)] = _number(
-            _cells(row, "metricValues", len(index))[index["eventCount"]]
-        )
+        count = _number(_cells(row, "metricValues", len(index))[index["eventCount"]])
+        if raw_counts.setdefault((day, raw_name), count) != count:
+            raise _api_error()
     per_day: dict[date, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     for (day, raw_name), count in raw_counts.items():
         name = clean_event(raw_name)
@@ -135,6 +143,38 @@ def parse_events(payload: Any, *, top_n: int) -> list[Observation]:
     return observations
 
 
+async def _report(
+    url: str, token: str, body: dict[str, Any], *, limit: int, client: httpx.AsyncClient | None
+) -> dict[str, Any]:
+    """Lit toutes les pages d'un rapport (`offset`/`limit`) et renvoie une réponse unique.
+
+    S'arrête quand `rowCount` est atteint, ou (à défaut) quand une page est incomplète.
+    Le plafond de pages atteint lève `truncated` : jamais une collecte silencieusement
+    partielle."""
+    first: dict[str, Any] | None = None
+    rows: list[dict[str, Any]] = []
+    for _ in range(_MAX_PAGES):
+        payload = await google_json(
+            "POST", url, token, json={**body, "limit": limit, "offset": len(rows)}, client=client
+        )
+        page = _rows(payload)
+        first = first if first is not None else payload
+        rows.extend(page)
+        total = payload.get("rowCount")
+        if isinstance(total, int) and not isinstance(total, bool):
+            if len(rows) >= total:
+                break
+            if not page:  # Google annonce plus de lignes qu'il n'en sert : incohérent
+                raise SourceError("truncated", recoverable=True)
+        elif len(page) < limit:
+            break
+    else:
+        raise SourceError("truncated", recoverable=True)
+    if first is None:  # inatteignable : _MAX_PAGES >= 1
+        raise _api_error()
+    return {**first, "rows": rows}
+
+
 class Ga4Source:
     spec: SourceSpec = SOURCE_SPECS["ga4"]
 
@@ -143,10 +183,13 @@ class Ga4Source:
         *,
         property_id: str | None,
         token: str | None,
+        token_problem: str | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._property_id = property_id
         self._token = token
+        # Raison de l'absence de jeton (`resolve_google_credentials`) : récupérable ou non.
+        self._token_problem = token_problem or "token_unavailable"
         self._client = client
 
     async def collect(self, website: Website, day_range: DayRange) -> list[Observation]:
@@ -154,34 +197,35 @@ class Ga4Source:
         if not self._property_id:
             raise SourceError("ga4_not_connected", recoverable=False, not_applicable=True)
         if not self._token:
-            raise SourceError("token_unavailable", recoverable=False)
+            raise SourceError(
+                self._token_problem,
+                recoverable=RECOVERABLE_REASONS.get(self._token_problem, False),
+            )
         url = _RUN_REPORT_URL.format(pid=_property_number(self._property_id))
         observations: list[Observation] = []
         for chunk in day_range.chunks(self.spec.max_days_per_call):
             date_ranges = [{"startDate": chunk.start.isoformat(), "endDate": chunk.end.isoformat()}]
-            totals = await google_json(
-                "POST",
+            totals = await _report(
                 url,
                 self._token,
-                json={
+                {
                     "dateRanges": date_ranges,
                     "dimensions": [{"name": "date"}],
                     "metrics": [{"name": api_name} for api_name in TOTALS.values()],
-                    "limit": 1000,
                 },
+                limit=_TOTALS_LIMIT,
                 client=self._client,
             )
             observations.extend(o for o in parse_totals(totals) if chunk.contains(o.day))
-            events = await google_json(
-                "POST",
+            events = await _report(
                 url,
                 self._token,
-                json={
+                {
                     "dateRanges": date_ranges,
                     "dimensions": [{"name": "date"}, {"name": "eventName"}],
                     "metrics": [{"name": "eventCount"}],
-                    "limit": 25000,
                 },
+                limit=_EVENTS_LIMIT,
                 client=self._client,
             )
             observations.extend(

@@ -7,16 +7,20 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.models.enums import ResourceType
+from app.models.enums import ConnectionStatus, ResourceType
 from app.models.website import Website
 from app.models.website_google_link import WebsiteGoogleLink
 from app.security.token_crypto import load_token_cipher
 from app.services.connections import upsert_google_connection
 from app.services.google_oauth.base import (
     DiscoveredResources,
+    GoogleOAuthError,
     GoogleTokenResponse,
     GoogleUserInfo,
+    InvalidGrantError,
 )
+from app.services.metrics.sources import ga4 as ga4_module
+from app.services.metrics.sources import gsc as gsc_module
 from app.services.metrics.sources.credentials import resolve_google_credentials
 from app.services.metrics.sources.ga4 import Ga4Source, parse_events, parse_totals
 from app.services.metrics.sources.gsc import GscSource, parse_dimension
@@ -169,6 +173,7 @@ async def test_ga4_network_error_is_recoverable_and_hides_the_token() -> None:
     with pytest.raises(SourceError) as excinfo:
         await source.collect(SITE, WINDOW)
     assert excinfo.value.reason == "network" and excinfo.value.recoverable
+    assert excinfo.value.__cause__ is None and excinfo.value.__suppress_context__
     assert "jeton-secret" not in repr(excinfo.value)
 
 
@@ -320,6 +325,7 @@ def test_ga4_repeated_event_row_is_not_doubled_but_cleaning_collisions_are_summe
 def test_gsc_repeated_rows_are_not_doubled() -> None:
     total = {"keys": ["2026-09-20"], "clicks": 4, "impressions": 40, "ctr": 0.1, "position": 7.5}
     totals = parse_gsc_totals(_gsc(total, total))
+    assert len(totals) == 4
     assert {o.metric: o.value for o in totals} == {
         "clicks": 4.0, "impressions": 40.0, "ctr": 0.1, "position": 7.5,
     }
@@ -344,3 +350,316 @@ async def test_ga4_source_does_not_double_a_day_returned_by_two_chunks() -> None
     observations = await source.collect(SITE, DayRange(date(2026, 8, 1), date(2026, 9, 20)))
     sessions = [o for o in observations if o.metric == "sessions"]
     assert len(sessions) == 1 and sessions[0].value == 5.0
+
+
+# -- Pagination : jamais de collecte silencieusement partielle ----------------------------
+
+
+def _ga4_page(rows: list[tuple[str, str, str]], *, row_count: int | None) -> dict:
+    payload = _ga4_events(*rows)
+    if row_count is not None:
+        payload["rowCount"] = row_count
+    return payload
+
+
+async def test_ga4_events_follow_row_count_with_offset(monkeypatch) -> None:
+    monkeypatch.setattr(ga4_module, "_EVENTS_LIMIT", 2)
+    offsets: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if len(body["dimensions"]) == 1:
+            return httpx.Response(200, json=_ga4_totals(("20260920", ["5"] * 5)))
+        offsets.append(body["offset"])
+        assert body["limit"] == 2
+        pages = {
+            0: [("20260920", "purchase", "3"), ("20260920", "scroll", "4")],
+            2: [("20260920", "click", "1"), ("20260920", "scroll", "4")],  # doublon identique
+            4: [("20260920", "search", "2")],
+        }
+        return httpx.Response(200, json=_ga4_page(pages[body["offset"]], row_count=5))
+
+    source = Ga4Source(property_id="42", token="jeton", client=_client(handler))
+    observations = await source.collect(SITE, DayRange(date(2026, 9, 20), date(2026, 9, 20)))
+    assert offsets == [0, 2, 4]
+    events = {o.dims["event_name"]: o.value for o in observations if o.metric == "event_count"}
+    assert events == {"purchase": 3.0, "scroll": 4.0, "click": 1.0, "search": 2.0}
+
+
+async def test_ga4_full_page_without_row_count_requests_the_next_page(monkeypatch) -> None:
+    monkeypatch.setattr(ga4_module, "_EVENTS_LIMIT", 2)
+    offsets: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if len(body["dimensions"]) == 1:
+            return httpx.Response(200, json=_ga4_totals(("20260920", ["5"] * 5)))
+        offsets.append(body["offset"])
+        if body["offset"] == 0:
+            rows = [("20260920", "a", "1"), ("20260920", "b", "2")]
+        else:
+            rows = [("20260920", "c", "3")]
+        return httpx.Response(200, json=_ga4_page(rows, row_count=None))
+
+    source = Ga4Source(property_id="42", token="jeton", client=_client(handler))
+    observations = await source.collect(SITE, DayRange(date(2026, 9, 20), date(2026, 9, 20)))
+    assert offsets == [0, 2]
+    names = {o.dims["event_name"] for o in observations if o.metric == "event_count"}
+    assert names == {"a", "b", "c"}
+
+
+async def test_ga4_page_cap_raises_instead_of_returning_partial_data(monkeypatch) -> None:
+    monkeypatch.setattr(ga4_module, "_EVENTS_LIMIT", 1)
+    monkeypatch.setattr(ga4_module, "_MAX_PAGES", 3)
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        body = json.loads(request.content)
+        if len(body["dimensions"]) == 1:
+            return httpx.Response(200, json=_ga4_totals(("20260920", ["5"] * 5)))
+        calls += 1
+        return httpx.Response(
+            200, json=_ga4_page([("20260920", f"e{body['offset']}", "1")], row_count=100)
+        )
+
+    source = Ga4Source(property_id="42", token="jeton", client=_client(handler))
+    with pytest.raises(SourceError) as excinfo:
+        await source.collect(SITE, DayRange(date(2026, 9, 20), date(2026, 9, 20)))
+    assert calls == 3
+    assert excinfo.value.reason == "truncated" and excinfo.value.recoverable
+
+
+def _gsc_row(day: str, key: str, clicks: int) -> dict:
+    return {"keys": [day, key], "clicks": clicks, "impressions": 10, "ctr": 0.1, "position": 2}
+
+
+async def test_gsc_full_page_requests_the_next_page_without_double_counting(monkeypatch) -> None:
+    monkeypatch.setattr(gsc_module, "_ROW_LIMIT", 2)
+    starts: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body["dimensions"] != ["date", "page"]:
+            return httpx.Response(200, json=_gsc())
+        starts.append(body["startRow"])
+        pages = {
+            0: [
+                _gsc_row("2026-09-20", "https://exemple.fr/a", 5),
+                _gsc_row("2026-09-20", "https://exemple.fr/b", 4),
+            ],
+            2: [
+                _gsc_row("2026-09-20", "https://exemple.fr/c", 3),
+                _gsc_row("2026-09-20", "https://exemple.fr/b", 4),  # doublon identique
+            ],
+            4: [_gsc_row("2026-09-20", "https://exemple.fr/d", 1)],
+        }
+        return httpx.Response(200, json=_gsc(*pages[body["startRow"]]))
+
+    source = GscSource(site_url="sc-domain:exemple.fr", token="jeton", client=_client(handler))
+    observations = await source.collect(SITE, DayRange(date(2026, 9, 20), date(2026, 9, 20)))
+    assert starts == [0, 2, 4]
+    clicks = {o.dims["page"]: o.value for o in observations if o.metric == "clicks" and o.dims}
+    assert clicks == {"/a": 5.0, "/b": 4.0, "/c": 3.0, "/d": 1.0}
+
+
+async def test_gsc_page_cap_raises_instead_of_returning_partial_data(monkeypatch) -> None:
+    monkeypatch.setattr(gsc_module, "_ROW_LIMIT", 1)
+    monkeypatch.setattr(gsc_module, "_MAX_PAGES", 3)
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        body = json.loads(request.content)
+        if body["dimensions"] == ["date"]:
+            return httpx.Response(200, json=_gsc())
+        calls += 1
+        return httpx.Response(
+            200, json=_gsc(_gsc_row("2026-09-20", f"https://exemple.fr/p{calls}", 1))
+        )
+
+    source = GscSource(site_url="sc-domain:exemple.fr", token="jeton", client=_client(handler))
+    with pytest.raises(SourceError) as excinfo:
+        await source.collect(SITE, DayRange(date(2026, 9, 20), date(2026, 9, 20)))
+    assert calls == 3
+    assert excinfo.value.reason == "truncated" and excinfo.value.recoverable
+
+
+async def test_gsc_source_does_not_double_a_day_returned_by_two_chunks() -> None:
+    total = {"keys": ["2026-09-20"], "clicks": 4, "impressions": 40, "ctr": 0.1, "position": 7}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body["dimensions"] == ["date"]:
+            return httpx.Response(200, json=_gsc(total))
+        return httpx.Response(200, json=_gsc(_gsc_row("2026-09-20", "https://exemple.fr/a", 2)))
+
+    source = GscSource(site_url="sc-domain:exemple.fr", token="jeton", client=_client(handler))
+    observations = await source.collect(SITE, DayRange(date(2026, 8, 1), date(2026, 9, 20)))
+    assert len([o for o in observations if o.metric == "clicks" and not o.dims]) == 1
+    assert len([o for o in observations if o.metric == "clicks" and "page" in o.dims]) == 1
+
+
+# -- Erreurs HTTP 400, formes de réponse, doublons conflictuels ---------------------------
+
+
+async def test_http_400_is_a_definitive_error() -> None:
+    source = Ga4Source(
+        property_id="properties/42",
+        token="jeton",
+        client=_client(lambda request: httpx.Response(400, json={"error": {}})),
+    )
+    with pytest.raises(SourceError) as excinfo:
+        await source.collect(SITE, WINDOW)
+    assert (excinfo.value.reason, excinfo.value.recoverable) == ("bad_request", False)
+
+
+@pytest.mark.parametrize("payload", [{}, {"x": 1}])
+def test_ga4_response_without_metric_headers_is_not_read_as_no_data(payload) -> None:
+    for parser in (parse_totals, lambda p: parse_events(p, top_n=25)):
+        with pytest.raises(SourceError) as excinfo:
+            parser(payload)
+        assert excinfo.value.reason == "api_error" and excinfo.value.recoverable
+
+
+def test_gsc_response_shapes() -> None:
+    assert parse_gsc_totals({"x": 1}) == []
+    assert parse_dimension({"x": 1}, "page", top_n=25) == []
+    for payload in ([], "texte"):
+        for parser in (parse_gsc_totals, lambda p: parse_dimension(p, "page", top_n=25)):
+            with pytest.raises(SourceError) as excinfo:
+                parser(payload)
+            assert excinfo.value.reason == "api_error" and excinfo.value.recoverable
+
+
+def test_conflicting_duplicate_rows_are_an_api_error() -> None:
+    parsers = [
+        lambda: parse_totals(_ga4_totals(("20260920", ["1"] * 5), ("20260920", ["2"] * 5))),
+        lambda: parse_events(
+            _ga4_events(("20260920", "purchase", "3"), ("20260920", "purchase", "4")), top_n=25
+        ),
+        lambda: parse_gsc_totals(
+            _gsc(
+                {"keys": ["2026-09-20"], "clicks": 1, "impressions": 2, "ctr": 0.5, "position": 1},
+                {"keys": ["2026-09-20"], "clicks": 9, "impressions": 2, "ctr": 0.5, "position": 1},
+            )
+        ),
+        lambda: parse_dimension(
+            _gsc(
+                _gsc_row("2026-09-20", "https://exemple.fr/a", 1),
+                _gsc_row("2026-09-20", "https://exemple.fr/a", 2),
+            ),
+            "page",
+            top_n=25,
+        ),
+    ]
+    for parse in parsers:
+        with pytest.raises(SourceError) as excinfo:
+            parse()
+        assert excinfo.value.reason == "api_error" and excinfo.value.recoverable
+
+
+# -- Jetons : échec temporaire ou connexion à reconnecter ---------------------------------
+
+
+class _FailingOAuth(FakeOAuth):
+    def __init__(self, error: Exception) -> None:
+        super().__init__(DiscoveredResources(ga4_properties=(), gsc_sites=()))
+        self._error = error
+
+    async def refresh_access_token(self, *, refresh_token: str):
+        raise self._error
+
+
+async def _linked_site(db_session: AsyncSession, make_user, sub: str):
+    user = await make_user(sub=sub)
+    workspace_id = await owner_workspace_id(db_session, user)
+    site = Website(workspace_id=workspace_id, domain=f"{sub}.test", display_name=sub)
+    db_session.add(site)
+    await db_session.flush()
+    cipher = load_token_cipher(get_settings())
+    connection = await upsert_google_connection(
+        db_session,
+        workspace_id=workspace_id,
+        userinfo=GoogleUserInfo(sub=f"g-{sub}", email=f"{sub}@gmail.com"),
+        token=GoogleTokenResponse(
+            access_token="a", expires_in=3600, scopes=("openid",), refresh_token="r"
+        ),
+        cipher=cipher,
+    )
+    db_session.add_all(
+        [
+            WebsiteGoogleLink(
+                website_id=site.id,
+                google_connection_id=connection.id,
+                resource_type=ResourceType.GA4_PROPERTY,
+                resource_id="properties/42",
+            ),
+            WebsiteGoogleLink(
+                website_id=site.id,
+                google_connection_id=connection.id,
+                resource_type=ResourceType.GSC_SITE,
+                resource_id=f"sc-domain:{sub}.test",
+            ),
+        ]
+    )
+    await db_session.flush()
+    return site, connection, cipher
+
+
+async def test_invalid_grant_is_a_definitive_error(db_session: AsyncSession, make_user) -> None:
+    site, connection, cipher = await _linked_site(db_session, make_user, "cred-revoked")
+    credentials = await resolve_google_credentials(
+        db_session, site, oauth=_FailingOAuth(InvalidGrantError()), cipher=cipher
+    )
+    assert connection.status == ConnectionStatus.NEEDS_REAUTH
+    assert credentials.ga4_token is None and credentials.gsc_token is None
+    assert credentials.ga4_problem == "token_unavailable"
+    assert credentials.gsc_problem == "token_unavailable"
+    with pytest.raises(SourceError) as excinfo:
+        await Ga4Source(
+            property_id=credentials.ga4_property,
+            token=credentials.ga4_token,
+            token_problem=credentials.ga4_problem,
+        ).collect(SITE, WINDOW)
+    assert (excinfo.value.reason, excinfo.value.recoverable) == ("token_unavailable", False)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [httpx.ConnectError("boom"), GoogleOAuthError("5xx")],
+    ids=["network", "google-5xx"],
+)
+async def test_temporary_refresh_failure_is_recoverable(
+    db_session: AsyncSession, make_user, error: Exception
+) -> None:
+    site, connection, cipher = await _linked_site(db_session, make_user, "cred-flaky")
+    credentials = await resolve_google_credentials(
+        db_session, site, oauth=_FailingOAuth(error), cipher=cipher
+    )
+    assert connection.status == ConnectionStatus.ACTIVE
+    assert credentials.ga4_token is None and credentials.gsc_token is None
+    assert credentials.ga4_problem == "token_refresh_failed"
+    assert credentials.gsc_problem == "token_refresh_failed"
+    for source in (
+        Ga4Source(
+            property_id=credentials.ga4_property,
+            token=credentials.ga4_token,
+            token_problem=credentials.ga4_problem,
+        ),
+        GscSource(
+            site_url=credentials.gsc_site,
+            token=credentials.gsc_token,
+            token_problem=credentials.gsc_problem,
+        ),
+    ):
+        with pytest.raises(SourceError) as excinfo:
+            await source.collect(SITE, WINDOW)
+        assert (excinfo.value.reason, excinfo.value.recoverable) == ("token_refresh_failed", True)
+
+
+async def test_healthy_credentials_have_no_problem(db_session: AsyncSession, make_user) -> None:
+    site, _, cipher = await _linked_site(db_session, make_user, "cred-ok")
+    oauth = FakeOAuth(DiscoveredResources(ga4_properties=(), gsc_sites=()))
+    credentials = await resolve_google_credentials(db_session, site, oauth=oauth, cipher=cipher)
+    assert credentials.ga4_problem is None and credentials.gsc_problem is None

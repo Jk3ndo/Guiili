@@ -20,6 +20,12 @@ RECOVERABLE_REASONS: dict[str, bool] = {
     "token_unavailable": False,
     "permission_or_api_disabled": False,
     "not_found": False,
+    # Requête invalide (HTTP 400) : la renvoyer telle quelle échouerait de nouveau.
+    "bad_request": False,
+    # Échec temporaire du rafraîchissement du jeton (réseau, 5xx) : retenter a du sens.
+    "token_refresh_failed": True,
+    # Réponse paginée coupée (plafond de pages atteint) : jamais de collecte partielle.
+    "truncated": True,
     "quota": True,
     "network": True,
     "api_error": True,
@@ -46,6 +52,8 @@ async def google_json(
     finally:
         if owns:
             await http.aclose()
+    if response.status_code == 400:
+        raise SourceError("bad_request", recoverable=False)
     try:
         _raise_for_status(response)
     except GoogleReadError as exc:
