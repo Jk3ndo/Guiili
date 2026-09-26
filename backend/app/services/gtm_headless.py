@@ -299,3 +299,58 @@ async def verify_gtm(url: str, *, timeout: float = 20.0) -> GtmHeadlessResult:
         ads_requests=ads_requests,
         consent_default_seen=consent_default_seen,
     )
+
+
+def _flag(data: dict[str, Any], key: str) -> bool:
+    value = data[key]
+    if not isinstance(value, bool):
+        raise ValueError(f"champ booléen attendu : {key}")
+    return value
+
+
+def _strings(values: Any) -> tuple[str, ...]:
+    if not isinstance(values, list) or not all(isinstance(v, str) for v in values):
+        raise ValueError("liste de chaînes attendue")
+    return tuple(values)
+
+
+def headless_result_from_dict(data: Any) -> GtmHeadlessResult:
+    """Inverse exact de `headless_result_to_dict` (réponse du service worker). Toute forme
+    inattendue lève `ValueError` : l'appelant la traite comme un échec du navigateur."""
+    if not isinstance(data, dict):
+        raise ValueError("résultat headless illisible")
+    try:
+        findings_raw = data["findings"]
+        if not isinstance(findings_raw, list) or not all(isinstance(f, dict) for f in findings_raw):
+            raise ValueError("findings illisibles")
+        findings = tuple(
+            GtmFinding(
+                code=str(f["code"]),
+                severity=f["severity"],
+                title=str(f["title"]),
+                detail=str(f["detail"]),
+            )
+            for f in findings_raw
+        )
+        error = data.get("error")
+        ads_requests = data.get("ads_requests", 0)
+        if isinstance(ads_requests, bool) or not isinstance(ads_requests, int):
+            raise ValueError("ads_requests illisible")
+        return GtmHeadlessResult(
+            gtm_js_loaded=_flag(data, "gtm_js_loaded"),
+            containers_initialised=_strings(data["containers_initialised"]),
+            datalayer_present=_flag(data, "datalayer_present"),
+            gtm_events=_strings(data["gtm_events"]),
+            requests_before_consent=_flag(data, "requests_before_consent"),
+            csp_console_errors=_strings(data["csp_console_errors"]),
+            findings=findings,
+            checked_at=datetime.fromisoformat(str(data["checked_at"])),
+            error=str(error) if error is not None else None,
+            ga4_measurement_ids=_strings(data.get("ga4_measurement_ids", [])),
+            ads_requests=ads_requests,
+            consent_default_seen=_flag(data, "consent_default_seen")
+            if "consent_default_seen" in data
+            else False,
+        )
+    except (KeyError, TypeError) as exc:
+        raise ValueError("résultat headless illisible") from exc

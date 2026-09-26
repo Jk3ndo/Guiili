@@ -16,6 +16,7 @@ from app.services.advisor.llm import AdvisorLLM, MockAdvisorLLM, RealAdvisorLLM
 from app.services.audit_engine import Detector, GtmChecker, TlsChecker
 from app.services.audit_probe import AuditProbe, MockAuditProbe, RealAuditProbe
 from app.services.email import ConsoleEmailSender, EmailSender
+from app.services.gcp_metadata import MetadataTokenProvider
 from app.services.google_oauth import GoogleOAuthClient, get_google_oauth_client
 from app.services.gtm_check import check_gtm
 from app.services.gtm_headless import GtmHeadlessVerifier, verify_gtm
@@ -26,6 +27,7 @@ from app.services.measurement.google_reader import GoogleReader, web_stream_host
 from app.services.measurement.service import ReaderFactory
 from app.services.stack_detector import StackDetection, demo_detector, detect_stack
 from app.services.tls_check import check_certificate
+from app.services.worker_client import RemoteHeadlessVerifier
 
 # Detecteur qui accepte `allow_insecure=` (contrairement a `Detector`, 1-arg).
 LiveDetector = Callable[..., Awaitable[StackDetection]]
@@ -74,10 +76,22 @@ def get_gtm_checker() -> GtmChecker:
     return check_gtm
 
 
-def get_gtm_headless_verifier() -> GtmHeadlessVerifier:
+# Un seul fournisseur par processus : il met en cache le jeton d'identité (50 min).
+_METADATA_TOKENS = MetadataTokenProvider()
+
+
+def get_gtm_headless_verifier(settings: SettingsDep) -> GtmHeadlessVerifier:
     # Jamais gate sur un flag mock : c'est une action explicite (bouton /
     # outil agent), jamais declenchee automatiquement par un scan. Les tests
     # overrident cette dependance pour ne jamais lancer de vrai navigateur.
+    # Deploye, l'image de l'API n'a plus Chromium : le navigateur tourne sur le
+    # service worker (meme resultat, meme contrat). En local, verify_gtm direct.
+    if settings.worker_base_url:
+        return RemoteHeadlessVerifier(
+            base_url=settings.worker_base_url,
+            audience=settings.internal_oidc_audience or settings.worker_base_url,
+            tokens=_METADATA_TOKENS,
+        )
     return verify_gtm
 
 
