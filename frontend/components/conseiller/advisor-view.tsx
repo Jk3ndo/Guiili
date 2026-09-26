@@ -1,7 +1,7 @@
 "use client";
 
 import { Archive, Loader2, Sparkle } from "lucide-react";
-import { useEffect, useState, type MouseEvent } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { toast } from "sonner";
 
 import { PageShell } from "@/components/shell/page-shell";
@@ -17,6 +17,7 @@ import { ApiError } from "@/lib/api/client";
 import type {
   AdvisorMessageDto,
   AdvisorSettingsDto,
+  AdvisorThreadDto,
   AdvisorThreadSummaryDto,
 } from "@/lib/api/dto";
 import { useShell } from "@/lib/shell/shell-context";
@@ -53,6 +54,22 @@ function deriveChatMessages(messages: AdvisorMessageDto[]): ChatMessage[] {
   return out;
 }
 
+/** Longueur maximale d'un prompt prérempli depuis l'URL (le backend accepte 4000). */
+const MAX_PREFILL_LENGTH = 1000;
+
+/**
+ * Lit `?prompt=` : donnée non fiable (n'importe quel lien peut la fixer). Elle n'est jamais
+ * interprétée : uniquement placée comme texte dans le champ de saisie, sans envoi automatique.
+ * `URLSearchParams` gère le décodage ; on retire les caractères de contrôle et on borne la taille.
+ */
+function readPrefillPrompt(search: string): string | null {
+  const raw = new URLSearchParams(search).get("prompt");
+  if (raw === null) return null;
+  const cleaned = raw.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "").trim();
+  if (!cleaned) return null;
+  return Array.from(cleaned).slice(0, MAX_PREFILL_LENGTH).join("");
+}
+
 function AdvisorPanel({ websiteId }: { websiteId: string }) {
   const [settings, setSettings] = useState<AdvisorSettingsDto | null>(null);
   const [threads, setThreads] = useState<AdvisorThreadSummaryDto[]>([]);
@@ -61,6 +78,22 @@ function AdvisorPanel({ websiteId }: { websiteId: string }) {
   const [chatInput, setChatInput] = useState("");
   const [generating, setGenerating] = useState(false);
   const [sending, setSending] = useState(false);
+  // Vrai quand un prompt vient de l'URL : on ouvre alors le plan le plus récent pour que le
+  // champ de saisie (visible seulement dans un fil) reçoive la question.
+  const prefilledRef = useRef(false);
+
+  useEffect(() => {
+    const prompt = readPrefillPrompt(window.location.search);
+    if (!prompt) return;
+    prefilledRef.current = true;
+    // Le prompt n'est appliqué qu'une fois : on l'ôte de l'URL pour qu'un rechargement ne le
+    // remette pas. L'utilisateur relit, modifie et envoie lui-même.
+    const url = new URL(window.location.href);
+    url.searchParams.delete("prompt");
+    window.history.replaceState(window.history.state, "", url);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setChatInput(prompt);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -71,8 +104,21 @@ function AdvisorPanel({ websiteId }: { websiteId: string }) {
           fetchThreads(websiteId),
         ]);
         if (!active) return;
+        let latest: AdvisorThreadDto | null = null;
+        if (prefilledRef.current && t.length > 0) {
+          try {
+            latest = await fetchThread(t[0].id);
+          } catch {
+            latest = null;
+          }
+          if (!active) return;
+        }
         setSettings(s);
         setThreads(t);
+        if (latest) {
+          setActiveThreadId(latest.id);
+          setMessages(deriveChatMessages(latest.messages));
+        }
       } catch {
         if (active) toast.error("Impossible de charger le conseiller");
       }
@@ -232,6 +278,17 @@ function AdvisorPanel({ websiteId }: { websiteId: string }) {
         </div>
       ) : null}
 
+      {!activeThreadId && settings && chatInput.trim() ? (
+        <div className="space-y-2 rounded-xl border border-white/[0.08] bg-surface/60 p-5 backdrop-blur-sm">
+          <p className="text-sm font-medium text-ink">Ta question est prête</p>
+          <p className="whitespace-pre-wrap break-words text-xs text-ink-muted">{chatInput}</p>
+          <p className="text-xs text-ink-faint">
+            Génère d&apos;abord le plan d&apos;action (ou ouvre un plan précédent) : ta question
+            apparaîtra dans le champ de saisie, tu pourras la relire avant de l&apos;envoyer.
+          </p>
+        </div>
+      ) : null}
+
       {activeThreadId ? (
         <div className="flex items-end gap-2">
           <textarea
@@ -245,7 +302,7 @@ function AdvisorPanel({ websiteId }: { websiteId: string }) {
             }}
             disabled={sending}
             placeholder="Pose une question sur ce site…"
-            className="h-11 flex-1 resize-none rounded-lg border border-white/[0.08] bg-white/[0.03] p-2.5 text-sm text-ink placeholder:text-ink-faint focus:border-white/20 focus:outline-none disabled:opacity-60"
+            className={`${chatInput.length > 80 ? "h-28" : "h-11"} flex-1 resize-none rounded-lg border border-white/[0.08] bg-white/[0.03] p-2.5 text-sm text-ink placeholder:text-ink-faint focus:border-white/20 focus:outline-none disabled:opacity-60`}
           />
           <button
             type="button"

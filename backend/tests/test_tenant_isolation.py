@@ -13,7 +13,13 @@ from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_gtm_headless_verifier
+from app.api.deps import (
+    get_google_client,
+    get_gtm_headless_verifier,
+    get_measurement_reader_factory,
+    get_page_fetcher,
+    get_stream_hosts_fetcher,
+)
 from app.config import get_settings
 from app.main import app
 from app.models.advisor import AdvisorThread
@@ -27,17 +33,21 @@ from app.models.enums import (
 )
 from app.models.google_connection import GoogleConnection
 from app.models.issue_item import IssueItem
+from app.models.measurement_item_status import MeasurementItemStatus
 from app.models.user import User
 from app.models.website import Website
 from app.models.website_google_link import WebsiteGoogleLink
+from app.models.website_profile import WebsiteProfile
 from app.models.workspace_invitation import WorkspaceInvitation
 from app.models.workspace_member import WorkspaceMember
 from app.security.session import issue_session
 from app.security.token_crypto import load_token_cipher
 from app.services.connections import upsert_google_connection
-from app.services.google_oauth.base import GoogleTokenResponse, GoogleUserInfo
+from app.services.google_oauth.base import DiscoveredResources, GoogleTokenResponse, GoogleUserInfo
 from app.services.gtm_headless import GtmHeadlessResult
+from app.services.measurement.google_reader import GoogleReadError
 from tests.conftest import owner_workspace_id
+from tests.measurement_fakes import FakeOAuth, fake_stream_hosts
 
 TENANT_PARAMS = ("{website_id}", "{workspace_id}", "{thread_id}", "{issue_id}", "{connection_id}")
 VICTIM_DOMAIN = "victime-secrete.test"
@@ -69,6 +79,7 @@ class World:
             "issue_id": str(self.victim_issue_id),
             "connection_id": str(self.victim_connection_id),
             "member_user_id": str(self.victim_user_id),
+            "item_id": "robots_txt",
         }
 
 
@@ -89,6 +100,12 @@ CASES: dict[tuple[str, str], Body] = {
     ("POST", "/websites/{website_id}/gtm/headless"): None,
     ("POST", "/websites/{website_id}/advisor/brief"): None,
     ("POST", "/websites/{website_id}/redetect"): {},
+    ("GET", "/websites/{website_id}/measurement-plan"): None,
+    ("POST", "/websites/{website_id}/measurement-plan/refresh"): None,
+    ("PATCH", "/websites/{website_id}/measurement-plan/profile"): {"uses_google_ads": True},
+    ("PATCH", "/websites/{website_id}/measurement-plan/items/{item_id}"): {"dismissed": True},
+    ("POST", "/websites/{website_id}/measurement-plan/gtm-container"): {"pack": "starter"},
+    ("POST", "/websites/{website_id}/measurement-plan/google-autolink"): None,
     ("POST", "/websites/{website_id}/link-resource"): lambda w: {
         "google_connection_id": str(w.attacker_connection_id),
         "resource_type": "ga4_property",
@@ -140,14 +157,49 @@ async def _fake_headless_verify(url: str) -> GtmHeadlessResult:
     )
 
 
+async def _fake_page_fetcher(url: str, *, allow_insecure: bool = False):
+    _ = (url, allow_insecure)
+    return None  # site injoignable : aucun DNS, aucun réseau
+
+
+class _FakeReader:
+    gsc_state = "not_linked"
+
+    async def _unavailable(self):
+        raise GoogleReadError("ga4_not_connected")
+
+    event_stats = key_events = ads_links_count = measurement_id = _unavailable
+
+    async def sitemaps_count(self):
+        raise GoogleReadError("gsc_not_connected")
+
+
+async def _fake_reader_factory(session, website):
+    _ = (session, website)
+    return _FakeReader()
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def _no_real_browser() -> AsyncGenerator[None, None]:
-    """Jamais de vrai Chromium : même si le contrôle d'appartenance de la route headless
-    disparaissait, elle répondrait 200 (et le test échouerait) au lieu de lancer un
-    navigateur."""
+    """Jamais de vrai Chromium ni de réseau (page, robots.txt, Google) : même si un
+    contrôle d'appartenance disparaissait, la route répondrait 200 (et le test
+    échouerait) au lieu de sortir sur Internet."""
     app.dependency_overrides[get_gtm_headless_verifier] = lambda: _fake_headless_verify
+    app.dependency_overrides[get_page_fetcher] = lambda: _fake_page_fetcher
+    app.dependency_overrides[get_measurement_reader_factory] = lambda: _fake_reader_factory
+    app.dependency_overrides[get_google_client] = lambda: FakeOAuth(
+        DiscoveredResources(ga4_properties=(), gsc_sites=())
+    )
+    app.dependency_overrides[get_stream_hosts_fetcher] = lambda: fake_stream_hosts({})
     yield
-    app.dependency_overrides.pop(get_gtm_headless_verifier, None)
+    for dependency in (
+        get_gtm_headless_verifier,
+        get_page_fetcher,
+        get_measurement_reader_factory,
+        get_google_client,
+        get_stream_hosts_fetcher,
+    ):
+        app.dependency_overrides.pop(dependency, None)
 
 
 # Instantané de la victime : sans lui, /audit et /gtm/headless répondraient 404
@@ -310,6 +362,8 @@ async def test_a_stranger_cannot_reach_or_alter_another_workspace(
     )
     links = await db_session.scalar(select(func.count()).select_from(WebsiteGoogleLink))
     assert invitations == 0 and members == 1 and links == 0
+    assert await db_session.scalar(select(func.count()).select_from(WebsiteProfile)) == 0
+    assert await db_session.scalar(select(func.count()).select_from(MeasurementItemStatus)) == 0
 
 
 async def test_the_real_owner_reaches_the_seeded_routes(

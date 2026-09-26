@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings, get_settings
 from app.db.session import get_session
 from app.models.user import User
+from app.models.website import Website
 from app.security.session import read_session
 from app.security.token_crypto import TokenCipher, load_token_cipher
 from app.services.advisor.llm import AdvisorLLM, MockAdvisorLLM, RealAdvisorLLM
@@ -18,6 +19,11 @@ from app.services.email import ConsoleEmailSender, EmailSender
 from app.services.google_oauth import GoogleOAuthClient, get_google_oauth_client
 from app.services.gtm_check import check_gtm
 from app.services.gtm_headless import GtmHeadlessVerifier, verify_gtm
+from app.services.measurement.autolink import StreamHostsFetcher
+from app.services.measurement.fetch import PageFetcher, fetch_page_safe
+from app.services.measurement.google_access import build_reader
+from app.services.measurement.google_reader import GoogleReader, web_stream_hosts
+from app.services.measurement.service import ReaderFactory
 from app.services.stack_detector import StackDetection, demo_detector, detect_stack
 from app.services.tls_check import check_certificate
 
@@ -75,6 +81,16 @@ def get_gtm_headless_verifier() -> GtmHeadlessVerifier:
     return verify_gtm
 
 
+def get_page_fetcher() -> PageFetcher:
+    # Fetch HTTP leger, jamais d'exception reseau (None si injoignable).
+    return fetch_page_safe
+
+
+def get_stream_hosts_fetcher() -> StreamHostsFetcher:
+    # Lecture seule des flux web GA4 ; les tests injectent un factice (aucun réseau).
+    return web_stream_hosts
+
+
 def get_advisor_llm(settings: SettingsDep) -> AdvisorLLM:
     key = settings.anthropic_api_key.get_secret_value()
     if settings.advisor_mock or not key:
@@ -109,6 +125,20 @@ GtmCheckerDep = Annotated[GtmChecker, Depends(get_gtm_checker)]
 GtmHeadlessVerifierDep = Annotated[GtmHeadlessVerifier, Depends(get_gtm_headless_verifier)]
 AdvisorLLMDep = Annotated[AdvisorLLM, Depends(get_advisor_llm)]
 EmailSenderDep = Annotated[EmailSender, Depends(get_email_sender)]
+PageFetcherDep = Annotated[PageFetcher, Depends(get_page_fetcher)]
+StreamHostsFetcherDep = Annotated[StreamHostsFetcher, Depends(get_stream_hosts_fetcher)]
+
+
+def get_measurement_reader_factory(
+    oauth: GoogleClientDep, cipher: TokenCipherDep
+) -> ReaderFactory:
+    async def _factory(session: AsyncSession, website: Website) -> GoogleReader:
+        return await build_reader(session, website, oauth=oauth, cipher=cipher)
+
+    return _factory
+
+
+ReaderFactoryDep = Annotated[ReaderFactory, Depends(get_measurement_reader_factory)]
 
 
 def _session_user_id(request: Request, settings: Settings):

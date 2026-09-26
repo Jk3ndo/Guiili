@@ -6,6 +6,7 @@ import { useShell } from "@/lib/shell/shell-context";
 
 import { MetricCard } from "./metric-card";
 import { OverviewHeader } from "./overview-header";
+import { PlanProgressCard } from "./plan-progress-card";
 import { PriorityRecommendation } from "./priority-recommendation";
 import { RecentEvents } from "./recent-events";
 import { StackConfirmPrompt } from "./stack-confirm-prompt";
@@ -26,6 +27,8 @@ export function OverviewView() {
       }
     >
       <StackConfirmPrompt />
+
+      <PlanProgressCard websiteId={workspace.websiteId} />
 
       <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {data.metrics.map((metric) => (
