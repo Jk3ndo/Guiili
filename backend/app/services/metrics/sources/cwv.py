@@ -90,6 +90,16 @@ def parse_cwv(payload: Any, *, day: date) -> list[Observation]:
     lighthouse = payload.get("lighthouseResult")
     if not isinstance(lighthouse, dict):
         raise _bad_shape()
+    runtime_error = lighthouse.get("runtimeError")
+    if runtime_error is not None:
+        if not isinstance(runtime_error, dict):
+            raise _bad_shape()
+        code = runtime_error.get("code")
+        if isinstance(code, str) and code and code != "NO_ERROR":
+            # Lighthouse dit explicitement ne pas avoir pu mesurer la page (ex. NO_FCP,
+            # PROTOCOL_TIMEOUT) : un `score: null` qui suit n'est pas « pas de donnée »,
+            # c'est un site injoignable ce jour-là.
+            raise SourceError("site_unreachable", recoverable=False)
     metrics = _section(_section(payload, "originLoadingExperience"), "metrics")
     observations: list[Observation] = []
     for name, keys in _FIELD_METRICS.items():

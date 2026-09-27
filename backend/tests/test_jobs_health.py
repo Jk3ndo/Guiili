@@ -158,6 +158,7 @@ def test_every_error_code_the_code_can_produce_has_a_french_message() -> None:
         "db_transient", "api_key_rejected", "token_refresh_failed", "truncated", "bad_request",
         "job_lease_lost", "lease_expired", "not_dispatched", "enqueue_failed", "internal_error",
         "site_unreachable", "unreachable", "ga4_not_connected", "gsc_not_connected",
+        "no_observation",
     }
     assert produced <= set(ERROR_MESSAGES)
     assert all(text.strip() for text in ERROR_MESSAGES.values())

@@ -2,7 +2,8 @@
 
 Un passage :
 1. matérialise les plannings par défaut des sites actifs, expire les tâches restées en
-   file plus de 2 h ; commit ;
+   file plus de 2 h ainsi que les tâches `running` au bail expiré depuis longtemps que
+   personne n'a reprises ; commit ;
 2. réserve les plannings dus (`FOR UPDATE SKIP LOCKED` : deux passages concurrents ne
    prennent jamais le même), applique la limite quotidienne du workspace, avance
    `next_due_at` au créneau suivant et crée les lignes `job_runs` « en file » ; commit ;
@@ -25,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.job_run import JobRun
 from app.models.schedule import Schedule
 from app.models.website import Website
-from app.services.jobs.health import compute_jobs_health, report_jobs_health
+from app.services.jobs.health import STUCK_RUNNING_GRACE, compute_jobs_health, report_jobs_health
 from app.services.jobs.kinds import (
     BACKFILL_SOURCES,
     KINDS,
@@ -36,10 +37,15 @@ from app.services.jobs.kinds import (
     slot_start,
 )
 from app.services.jobs.queue import EnqueueError, TaskMessage, TaskQueue
+from app.services.jobs.runner import record_schedule_outcome
 
 logger = logging.getLogger(__name__)
 
 STALE_QUEUED_AFTER = timedelta(hours=2)
+# Marge après laquelle une ligne `running` au bail expiré, que personne n'a reprise
+# (tentatives Cloud Tasks épuisées), est considérée abandonnée. Au-delà de la marge de
+# `stuck_running` (le temps d'une redélivrance normale) plus 1 h de sécurité.
+STUCK_RUNNING_SWEEP_AFTER = STUCK_RUNNING_GRACE + timedelta(hours=1)
 # Verrou consultatif du passage : il sérialise la lecture de la limite quotidienne et
 # l'insertion des lignes « en file » (deux passages concurrents la dépasseraient).
 TICK_LOCK_KEY = "jobs:tick"
@@ -86,6 +92,37 @@ async def expire_stale_queued(
         .values(status="failed", error_code="not_dispatched", recoverable=True, finished_at=now)
     )
     return result.rowcount or 0
+
+
+async def expire_stuck_running(
+    session: AsyncSession, *, now: datetime, older_than: timedelta = STUCK_RUNNING_SWEEP_AFTER
+) -> int:
+    """Une ligne `running` dont le bail a expiré depuis longtemps ET qu'aucune nouvelle
+    livraison n'a reprise (tentatives Cloud Tasks épuisées : l'instance qui l'exécutait
+    est morte) resterait `running` pour toujours sinon : `stuck_running >= 1` à chaque
+    passage, en continu. Chargée ligne par ligne (verrou de ligne) pour que
+    `record_schedule_outcome` puisse faire refléter l'échec au planning."""
+    runs = (
+        await session.execute(
+            select(JobRun)
+            .where(
+                JobRun.status == "running",
+                JobRun.lease_expires_at.is_not(None),
+                JobRun.lease_expires_at < now - older_than,
+            )
+            .with_for_update()
+        )
+    ).scalars().all()
+    for run in runs:
+        run.status = "failed"
+        run.error_code = "lease_expired"
+        run.recoverable = True
+        run.finished_at = now
+        run.lease_expires_at = None
+        if run.started_at is not None:
+            run.duration_ms = max(0, int((now - run.started_at).total_seconds() * 1000))
+        await record_schedule_outcome(session, run, now=now)
+    return len(runs)
 
 
 async def due_schedules(
@@ -198,6 +235,7 @@ async def tick(
     now = now.astimezone(UTC)
     materialized = await materialize_default_schedules(session, now=now)
     expired = await expire_stale_queued(session, now=now)
+    await expire_stuck_running(session, now=now)
     await session.commit()
 
     planned: list[_Planned] = []

@@ -166,6 +166,7 @@ class JobsHealthOut(BaseModel):
     overdue: int
     stuck_running: int
     stuck_queued: int
+    maintenance_stale: bool
 
 
 class HeadlessIn(BaseModel):
@@ -278,6 +279,7 @@ async def jobs_health(session: SessionDep) -> JobsHealthOut:
         overdue=health.overdue,
         stuck_running=health.stuck_running,
         stuck_queued=health.stuck_queued,
+        maintenance_stale=health.maintenance_stale,
     )
 
 

@@ -16,6 +16,7 @@ ERROR_MESSAGES: dict[str, str] = {
     "api_error": "Réponse inattendue du service : nouvel essai automatique.",
     "site_unreachable": "Ton site n'a pas pu être analysé par Google (page injoignable).",
     "unreachable": "Ton site ne répond pas.",
+    "no_observation": "Aucune donnée de performance disponible pour ce site pour l'instant.",
     "website_inactive": "Site archivé : suivi suspendu.",
     "not_dispatched": "La tâche n'a pas démarré : nouvel essai au prochain créneau.",
     "enqueue_failed": "La tâche n'a pas pu être programmée : nouvel essai au prochain passage.",

@@ -180,8 +180,9 @@ async def collect(
     source = await _open_source(services, session, website, name, run)
     window = source.spec.regular_window(services.today())
     observations = await _fetch(services, session, run, source, name, website, window)
-    if name == "probe" and not observations:
-        # Une sonde sans aucune mesure n'est pas une réussite silencieuse.
+    if name in ("probe", "cwv") and not observations:
+        # Une sonde ou une collecte CWV sans aucune mesure n'est pas une réussite
+        # silencieuse : mieux vaut échouer (nouvel essai) qu'un « à jour » mensonger.
         raise SourceError("no_observation", recoverable=True)
     result = await store_observations(
         session,

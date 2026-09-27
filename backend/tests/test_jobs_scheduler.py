@@ -11,14 +11,16 @@ from app.models.user import User
 from app.models.website import Website
 from app.models.workspace import Workspace
 from app.models.workspace_member import WorkspaceMember
-from app.services.jobs.health import compute_jobs_health, report_jobs_health
+from app.services.jobs.health import STUCK_RUNNING_GRACE, compute_jobs_health, report_jobs_health
 from app.services.jobs.kinds import RunSpec
 from app.services.jobs.queue import EnqueueError, InlineQueue, TaskMessage
 from app.services.jobs.runner import lock_key
 from app.services.jobs.scheduler import (
+    STUCK_RUNNING_SWEEP_AFTER,
     TICK_LOCK_KEY,
     due_schedules,
     expire_stale_queued,
+    expire_stuck_running,
     materialize_default_schedules,
     plan_run,
     runs_today,
@@ -231,6 +233,87 @@ async def test_stale_queued_runs_expire(db_session: AsyncSession, make_user) -> 
     run = await db_session.scalar(select(JobRun).where(JobRun.idempotency_key == "old"))
     await db_session.refresh(run)
     assert (run.status, run.error_code, run.recoverable) == ("failed", "not_dispatched", True)
+
+
+async def test_stuck_running_runs_with_a_long_expired_lease_are_swept(
+    db_session: AsyncSession, make_user
+) -> None:
+    site = await make_site(db_session, make_user, "tick-stuck.test")
+    schedule = Schedule(
+        website_id=site.id, kind="collect_probes", frequency="three_daily",
+        enabled=True, next_due_at=NOW,
+    )
+    db_session.add(schedule)
+    db_session.add(
+        JobRun(
+            idempotency_key="stuck", kind="collect_probes", website_id=site.id,
+            workspace_id=site.workspace_id, window_label="w", params={}, status="running",
+            attempt=1, max_attempts=5, observations=0, enqueued_at=NOW - timedelta(hours=3),
+            started_at=NOW - timedelta(hours=3),
+            lease_expires_at=NOW - STUCK_RUNNING_SWEEP_AFTER - timedelta(minutes=1),
+        )
+    )
+    await db_session.flush()
+    assert await expire_stuck_running(db_session, now=NOW) == 1
+    run = await db_session.scalar(select(JobRun).where(JobRun.idempotency_key == "stuck"))
+    await db_session.refresh(run)
+    assert (run.status, run.error_code, run.recoverable, run.lease_expires_at) == (
+        "failed", "lease_expired", True, None,
+    )
+    await db_session.refresh(schedule)
+    assert schedule.last_status == "failed" and schedule.failing_since == NOW
+    # Balayée : la santé ne la compte plus en `stuck_running`.
+    health = await compute_jobs_health(db_session, now=NOW)
+    assert health.stuck_running == 0
+
+
+async def test_a_recently_expired_running_lease_is_not_swept_yet(
+    db_session: AsyncSession, make_user
+) -> None:
+    site = await make_site(db_session, make_user, "tick-stuck-recent.test")
+    db_session.add(
+        JobRun(
+            idempotency_key="recent", kind="collect_probes", website_id=site.id,
+            workspace_id=site.workspace_id, window_label="w", params={}, status="running",
+            attempt=1, max_attempts=5, observations=0, enqueued_at=NOW - STUCK_RUNNING_GRACE,
+            started_at=NOW - STUCK_RUNNING_GRACE,
+            lease_expires_at=NOW - STUCK_RUNNING_GRACE,
+        )
+    )
+    await db_session.flush()
+    # Bail expiré, mais depuis moins que la marge de balayage : une redélivrance normale
+    # de la file peut encore reprendre la tâche.
+    assert await expire_stuck_running(db_session, now=NOW) == 0
+    run = await db_session.scalar(select(JobRun).where(JobRun.idempotency_key == "recent"))
+    assert run.status == "running"
+
+
+async def test_a_tick_sweeps_a_stuck_running_task_and_updates_the_schedule(
+    db_session: AsyncSession, make_user
+) -> None:
+    site = await make_site(db_session, make_user, "tick-stuck-full.test")
+    schedule = Schedule(
+        website_id=site.id, kind="collect_probes", frequency="three_daily",
+        enabled=True, next_due_at=NOW + timedelta(days=1),
+    )
+    db_session.add(schedule)
+    db_session.add(
+        JobRun(
+            idempotency_key="stuck-full", kind="collect_probes", website_id=site.id,
+            workspace_id=site.workspace_id, window_label="w", params={}, status="running",
+            attempt=1, max_attempts=5, observations=0, enqueued_at=NOW - timedelta(hours=3),
+            started_at=NOW - timedelta(hours=3), lease_expires_at=NOW - timedelta(hours=2),
+        )
+    )
+    await db_session.flush()
+    await _tick(db_session, RecordingQueue())
+    run = await db_session.scalar(select(JobRun).where(JobRun.idempotency_key == "stuck-full"))
+    await db_session.refresh(run)
+    assert (run.status, run.error_code, run.recoverable) == ("failed", "lease_expired", True)
+    await db_session.refresh(schedule)
+    assert schedule.last_status == "failed" and schedule.failing_since == NOW
+    health = await compute_jobs_health(db_session, now=NOW)
+    assert health.stuck_running == 0
 
 
 async def test_plan_run_switches_to_regular_collection_after_the_backfill(

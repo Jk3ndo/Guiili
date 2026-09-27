@@ -484,6 +484,34 @@ async def test_a_probe_without_any_measure_is_not_a_success(
     assert run.error_code == "no_observation"
 
 
+async def test_a_cwv_collection_without_any_measure_is_not_a_success(
+    db_session: AsyncSession, make_user
+) -> None:
+    # PageSpeed peut répondre 200 avec `score: null` sur une petite origine sans CrUX :
+    # zéro observation n'est jamais un succès silencieux (« à jour » mensonger).
+    site = await make_site(db_session, make_user, "h-emptycwv.test")
+    db_session.add(
+        Schedule(
+            website_id=site.id, kind="collect_cwv", frequency="daily", enabled=True,
+            next_due_at=NOW, last_success_at=NOW - timedelta(days=1),
+        )
+    )
+    await db_session.flush()
+    cwv = FakeSource("cwv", [])
+    spec = RunSpec("collect_cwv", site.id, site.workspace_id, "w")
+    result = await execute_run(
+        db_session, spec, handlers=build_handlers(fake_services({"cwv": cwv})),
+        limits=LIMITS, clock=_clock,
+    )
+    assert (result.status, result.retry) == ("failed", True)
+    run = await db_session.scalar(select(JobRun).where(JobRun.idempotency_key == spec.key))
+    assert run.error_code == "no_observation"
+    schedule = await db_session.scalar(select(Schedule).where(Schedule.website_id == site.id))
+    # Ni `last_success_at` ni `failing_since` ne doivent laisser croire à une collecte réussie.
+    assert schedule.last_success_at == NOW - timedelta(days=1)
+    assert schedule.failing_since == NOW
+
+
 async def test_the_scheduled_plan_check_is_bounded_in_time(
     db_session: AsyncSession, make_user, monkeypatch
 ) -> None:

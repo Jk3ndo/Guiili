@@ -49,7 +49,9 @@ def _sources(probe: FakeSource | None = None) -> dict[str, FakeSource]:
     return {
         "ga4": FakeSource("ga4", error=unlinked),
         "gsc": FakeSource("gsc", error=unlinked),
-        "cwv": FakeSource("cwv"),
+        # Une collecte CWV sans aucune observation échoue désormais (`no_observation`) :
+        # ce double doit porter une vraie mesure pour rester un succès.
+        "cwv": FakeSource("cwv", [Observation("performance_score", TODAY, 80.0)]),
         "probe": probe or FakeSource("probe", [Observation("page_up", TODAY, 1.0)]),
     }
 
@@ -284,6 +286,20 @@ async def test_the_health_failing_list_is_bounded(
     monkeypatch.setattr("app.api.internal.compute_jobs_health", fake_health)
     body = (await worker.get("/internal/jobs/health", headers=_auth())).json()
     assert body["ok"] is False and len(body["failing"]) == 100 and body["failing_total"] == 150
+
+
+async def test_the_health_summary_relays_maintenance_stale(
+    worker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_health(session, *, now):
+        return JobsHealth(
+            checked_at=now, failing=(), overdue=0, stuck_running=0, stuck_queued=0,
+            maintenance_stale=True,
+        )
+
+    monkeypatch.setattr("app.api.internal.compute_jobs_health", fake_health)
+    body = (await worker.get("/internal/jobs/health", headers=_auth())).json()
+    assert body["maintenance_stale"] is True
 
 
 async def test_the_default_services_share_one_clock_and_need_no_network(

@@ -122,6 +122,37 @@ def test_parse_cwv_rejects_a_present_invalid_score(score: object) -> None:
     assert excinfo.value.reason == "api_error" and excinfo.value.recoverable
 
 
+@pytest.mark.parametrize("code", ["NO_FCP", "PROTOCOL_TIMEOUT", "ERRORED_DOCUMENT_REQUEST"])
+def test_parse_cwv_a_lighthouse_runtime_error_is_site_unreachable(code: str) -> None:
+    # 200 avec `score: null` ET une origine trop petite : sans ce contrôle, `[]` serait
+    # renvoyé silencieusement alors que Lighthouse dit explicitement avoir échoué.
+    payload = {"lighthouseResult": {"runtimeError": {"code": code, "message": "x"}}}
+    with pytest.raises(SourceError) as excinfo:
+        parse_cwv(payload, day=TODAY)
+    assert (excinfo.value.reason, excinfo.value.recoverable) == ("site_unreachable", False)
+
+
+def test_parse_cwv_runtime_error_no_error_is_not_a_failure() -> None:
+    # Certaines réponses portent `runtimeError: {"code": "NO_ERROR"}` : ce n'est pas une
+    # erreur, juste l'absence explicite d'erreur.
+    payload = _payload(origin=_ORIGIN)
+    payload["lighthouseResult"]["runtimeError"] = {"code": "NO_ERROR"}
+    observations = parse_cwv(payload, day=TODAY)
+    assert {o.metric for o in observations} == {"lcp_p75_ms", "inp_p75_ms", "cls_p75", "performance_score"}
+
+
+@pytest.mark.parametrize("runtime_error", [None, "x", 3, []])
+def test_parse_cwv_rejects_a_runtime_error_of_the_wrong_type(runtime_error: object) -> None:
+    payload = {"lighthouseResult": {"runtimeError": runtime_error}}
+    if runtime_error is None:
+        # `None` explicite est traité comme absent (clé présente mais vide) : légitime.
+        assert parse_cwv(payload, day=TODAY) == []
+        return
+    with pytest.raises(SourceError) as excinfo:
+        parse_cwv(payload, day=TODAY)
+    assert excinfo.value.reason == "api_error" and excinfo.value.recoverable
+
+
 def test_parse_cwv_absent_keys_are_legitimately_no_data() -> None:
     # Origine trop petite : Google ne renvoie ni `metrics` ni, ici, de catégories.
     assert parse_cwv({"lighthouseResult": {}}, day=TODAY) == []
