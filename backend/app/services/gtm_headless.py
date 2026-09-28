@@ -29,7 +29,7 @@ from urllib.parse import parse_qs, urlparse
 
 from playwright.async_api import async_playwright
 
-from app.services.gtm_check import GtmFinding
+from app.services.gtm_check import GtmFinding, Severity
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +51,7 @@ _CSP_HINT = "content security policy"
 # d'autorisation) — d'ou l'extraction de la ressource plutot qu'un simple
 # `in` sur le message entier.
 _BLOCKED_URL_RE = re.compile(r"'([^']*)'")
+_SEVERITIES = ("low", "medium", "high")
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,6 +198,22 @@ def headless_result_to_dict(result: GtmHeadlessResult) -> dict[str, Any]:
 GtmHeadlessVerifier = Callable[[str], Awaitable[GtmHeadlessResult]]
 
 
+def failed_headless_result() -> GtmHeadlessResult:
+    """Résultat d'un navigateur qui n'a pas pu s'exécuter (local ou délégué au worker) :
+    aucune observation, seul le code stable `HEADLESS_FAILED`."""
+    return GtmHeadlessResult(
+        gtm_js_loaded=False,
+        containers_initialised=(),
+        datalayer_present=False,
+        gtm_events=(),
+        requests_before_consent=False,
+        csp_console_errors=(),
+        findings=(),
+        checked_at=datetime.now(UTC),
+        error=HEADLESS_FAILED,
+    )
+
+
 async def verify_gtm(url: str, *, timeout: float = 20.0) -> GtmHeadlessResult:
     """Charge `url` dans Chromium headless et observe le comportement reel de GTM.
 
@@ -264,17 +281,7 @@ async def verify_gtm(url: str, *, timeout: float = 20.0) -> GtmHeadlessResult:
         # resultat n'expose qu'un code stable.
         logger.warning("Verification headless en echec pour %s: %s", url, type(exc).__name__)
         logger.debug("Detail de l'echec headless", exc_info=True)
-        return GtmHeadlessResult(
-            gtm_js_loaded=False,
-            containers_initialised=(),
-            datalayer_present=False,
-            gtm_events=(),
-            requests_before_consent=False,
-            csp_console_errors=(),
-            findings=(),
-            checked_at=datetime.now(UTC),
-            error=HEADLESS_FAILED,
-        )
+        return failed_headless_result()
 
     csp_blocked = tuple(e for e in console_errors if _is_gtm_csp_violation(e))
     gtm_js_loaded = bool(requests_gtm)
@@ -299,3 +306,72 @@ async def verify_gtm(url: str, *, timeout: float = 20.0) -> GtmHeadlessResult:
         ads_requests=ads_requests,
         consent_default_seen=consent_default_seen,
     )
+
+
+def _flag(data: dict[str, Any], key: str) -> bool:
+    value = data[key]
+    if not isinstance(value, bool):
+        raise ValueError(f"champ booléen attendu : {key}")
+    return value
+
+
+def _text(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("chaîne attendue")
+    return value
+
+
+def _severity(value: Any) -> Severity:
+    if value not in _SEVERITIES:
+        raise ValueError("criticité inconnue")
+    return value
+
+
+def _strings(values: Any) -> tuple[str, ...]:
+    if not isinstance(values, list) or not all(isinstance(v, str) for v in values):
+        raise ValueError("liste de chaînes attendue")
+    return tuple(values)
+
+
+def headless_result_from_dict(data: Any) -> GtmHeadlessResult:
+    """Inverse exact de `headless_result_to_dict` (réponse du service worker). Toute forme
+    inattendue lève `ValueError` : l'appelant la traite comme un échec du navigateur."""
+    if not isinstance(data, dict):
+        raise ValueError("résultat headless illisible")
+    try:
+        findings_raw = data["findings"]
+        if not isinstance(findings_raw, list) or not all(isinstance(f, dict) for f in findings_raw):
+            raise ValueError("findings illisibles")
+        findings = tuple(
+            GtmFinding(
+                code=_text(f["code"]),
+                severity=_severity(f["severity"]),
+                title=_text(f["title"]),
+                detail=_text(f["detail"]),
+            )
+            for f in findings_raw
+        )
+        error = data.get("error")
+        if error is not None:
+            error = _text(error)
+        ads_requests = data.get("ads_requests", 0)
+        if isinstance(ads_requests, bool) or not isinstance(ads_requests, int):
+            raise ValueError("ads_requests illisible")
+        return GtmHeadlessResult(
+            gtm_js_loaded=_flag(data, "gtm_js_loaded"),
+            containers_initialised=_strings(data["containers_initialised"]),
+            datalayer_present=_flag(data, "datalayer_present"),
+            gtm_events=_strings(data["gtm_events"]),
+            requests_before_consent=_flag(data, "requests_before_consent"),
+            csp_console_errors=_strings(data["csp_console_errors"]),
+            findings=findings,
+            checked_at=datetime.fromisoformat(_text(data["checked_at"])),
+            error=error,
+            ga4_measurement_ids=_strings(data.get("ga4_measurement_ids", [])),
+            ads_requests=ads_requests,
+            consent_default_seen=_flag(data, "consent_default_seen")
+            if "consent_default_seen" in data
+            else False,
+        )
+    except (KeyError, TypeError) as exc:
+        raise ValueError("résultat headless illisible") from exc

@@ -9,6 +9,7 @@ from app.api.v1.endpoints import (
     google,
     gtm,
     measurement,
+    metrics,
     websites,
     workspaces,
 )
@@ -24,4 +25,5 @@ api_router.include_router(advisor.router)
 api_router.include_router(workspaces.router)
 api_router.include_router(connections.router)
 api_router.include_router(measurement.router)
+api_router.include_router(metrics.router)
 api_router.include_router(dev.router)

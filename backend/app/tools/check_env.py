@@ -1,6 +1,6 @@
 """Vérifie un fichier d'environnement de déploiement AVANT de le pousser sur Cloud Run.
 
-    python -m app.tools.check_env deploy/env.production.yaml [--expect production]
+    python -m app.tools.check_env deploy/env.production.yaml [--expect production] [--service worker]
 
 `--expect ENV` refuse un fichier dont ENVIRONMENT (défaut `local` s'il est absent) diffère de
 la cible du déploiement : sans cela, un fichier sans ENVIRONMENT passe toutes les règles de
@@ -22,20 +22,24 @@ import yaml
 from pydantic import ValidationError
 from pydantic_core import ErrorDetails
 
-from app.config import Settings
+from app.config import Settings, worker_problems
 from app.security.token_crypto import TokenCryptoConfigError, load_token_cipher
 
-_JSON_KEYS = {"token_enc_keys", "cors_origins"}
+_JSON_KEYS = {"token_enc_keys", "cors_origins", "internal_allowed_invokers"}
 _CLOUD_RUN_MANAGED = {"PORT", "K_SERVICE", "K_REVISION", "K_CONFIGURATION"}
 _ENVIRONMENTS = ("local", "staging", "production")
+_SERVICES = ("api", "worker")
 
 
-def validate_env(mapping: dict[str, str], *, expect: str | None = None) -> list[str]:
+def validate_env(
+    mapping: dict[str, str], *, expect: str | None = None, service: str = "api"
+) -> list[str]:
     """Liste de problèmes (vide si la configuration est valide).
 
     Les messages ne contiennent JAMAIS de valeur du fichier (secrets) : uniquement
     des noms de variables et des messages de validation. `expect` : environnement cible
-    du déploiement, que le fichier doit déclarer.
+    du déploiement, que le fichier doit déclarer. `service="worker"` ajoute les exigences du
+    service worker (`worker_problems`).
     """
     problems = _check_expected_environment(mapping, expect) if expect else []
     try:
@@ -59,7 +63,7 @@ def validate_env(mapping: dict[str, str], *, expect: str | None = None) -> list[
         # Ne cite que la position, jamais le contenu.
         return [
             *problems,
-            f"une variable JSON (TOKEN_ENC_KEYS, CORS_ORIGINS) est illisible : {exc.msg}",
+            f"une variable JSON (TOKEN_ENC_KEYS, CORS_ORIGINS, INTERNAL_ALLOWED_INVOKERS) est illisible : {exc.msg}",
         ]
     # Settings ne valide pas le contenu des clés : l'API, elle, les charge à chaque requête
     # (deps.py) et répondrait 500 partout. Les messages ne citent que des numéros de version
@@ -68,6 +72,8 @@ def validate_env(mapping: dict[str, str], *, expect: str | None = None) -> list[
         load_token_cipher(settings)
     except TokenCryptoConfigError as exc:
         problems.append(f"TOKEN_ENC_KEYS / TOKEN_ENC_ACTIVE_VERSION : {exc}")
+    if service == "worker":
+        problems.extend(worker_problems(settings))
     return problems
 
 
@@ -98,17 +104,39 @@ def _describe(error: ErrorDetails) -> str:
     return f"{where} : {message}" if where else message
 
 
-def main(argv: list[str]) -> int:
-    usage = "usage: python -m app.tools.check_env FICHIER.yaml [--expect local|staging|production]"
-    args = argv[1:]
+def _parse_args(args: list[str]) -> tuple[str, str | None, str] | None:
+    """(fichier, environnement attendu, service) ou None si l'usage est incorrect."""
+    if not args:
+        return None
+    path, rest = args[0], args[1:]
     expect: str | None = None
-    if len(args) == 3 and args[1] == "--expect":
-        expect = args[2]
-        args = args[:1]
-    if len(args) != 1 or (expect is not None and expect not in _ENVIRONMENTS):
+    service = "api"
+    seen: set[str] = set()
+    while rest:
+        if len(rest) < 2 or rest[0] in seen:
+            return None
+        flag, value = rest[0], rest[1]
+        rest = rest[2:]
+        seen.add(flag)
+        if flag == "--expect" and value in _ENVIRONMENTS:
+            expect = value
+        elif flag == "--service" and value in _SERVICES:
+            service = value
+        else:
+            return None
+    return path, expect, service
+
+
+def main(argv: list[str]) -> int:
+    usage = (
+        "usage: python -m app.tools.check_env FICHIER.yaml "
+        "[--expect local|staging|production] [--service api|worker]"
+    )
+    parsed = _parse_args(argv[1:])
+    if parsed is None:
         print(usage, file=sys.stderr)
         return 2
-    path = args[0]
+    path, expect, service = parsed
 
     data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     if not isinstance(data, dict):
@@ -116,13 +144,15 @@ def main(argv: list[str]) -> int:
         return 1
     problems = check_string_values(data)
     if not problems:
-        problems = validate_env({str(k): v for k, v in data.items()}, expect=expect)
+        problems = validate_env(
+            {str(k): v for k, v in data.items()}, expect=expect, service=service
+        )
     if problems:
         print("Fichier d'environnement invalide :", file=sys.stderr)
         for problem in problems:
             print(f"  - {problem}", file=sys.stderr)
         return 1
-    print(f"{path} : OK ({len(data)} variables)")
+    print(f"{path} : OK ({len(data)} variables, service {service})")
     return 0
 
 

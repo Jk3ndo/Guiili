@@ -67,6 +67,33 @@ class Settings(BaseSettings):
     # Limitation de débit des routes sensibles (voir app/api/rate_limit.py).
     rate_limit_enabled: bool = True
 
+    # --- Tâches planifiées (lot B) ---
+    # Bail d'une tâche : au-delà, une autre livraison peut la reprendre.
+    jobs_lease_seconds: int = 900
+    # Aligné sur la configuration des files Cloud Tasks (runbook).
+    jobs_max_attempts: int = 5
+    # Tâches simultanées par workspace, et tâches déposées par jour et par workspace.
+    jobs_workspace_concurrency: int = 2
+    jobs_workspace_daily_cap: int = 300
+    # Tâches déposées au plus par passage du planificateur.
+    jobs_tick_batch: int = 100
+
+    # --- Files et appels internes (lot B) ---
+    # "inline" : exécution dans le processus (local, tests). "cloud_tasks" : production.
+    task_queue_backend: Literal["inline", "cloud_tasks"] = "inline"
+    gcp_project: str = ""
+    cloud_tasks_location: str = ""
+    # Files « {préfixe}-{ga4|gsc|cwv|light|heavy} » (ex. guiili-staging-ga4).
+    cloud_tasks_queue_prefix: str = "guiili"
+    # Compte de service dont Cloud Tasks joint le jeton OIDC en appelant le worker.
+    tasks_invoker_service_account: str = ""
+    # URL https du service worker (appels internes, délégation headless).
+    worker_base_url: str = ""
+    # Audience attendue des jetons OIDC reçus par le worker (en général = worker_base_url).
+    internal_oidc_audience: str = ""
+    # E-mails des comptes autorisés à appeler /internal/* (Scheduler, Tasks, API).
+    internal_allowed_invokers: list[str] = []
+
     # {version:int -> clé base64 de 32 octets}. pydantic-settings parse le JSON
     # de la variable d'environnement automatiquement pour un type dict ; chaque
     # valeur est enveloppée en SecretStr (jamais en clair dans un repr/log).
@@ -102,6 +129,9 @@ class Settings(BaseSettings):
             problems.append("FRONTEND_BASE_URL doit commencer par https://")
         if any(not origin.startswith("https://") for origin in self.cors_origins):
             problems.append("CORS_ORIGINS ne doit contenir que des origines https://")
+        if self.worker_base_url and not self.worker_base_url.startswith("https://"):
+            # Le jeton d'identité de l'API part vers cette URL : jamais en clair.
+            problems.append("WORKER_BASE_URL doit commencer par https://")
         if self.environment == "production":
             if self.audit_probe_mock:
                 problems.append("AUDIT_PROBE_MOCK doit être false (données factices sinon)")
@@ -118,3 +148,27 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def worker_problems(settings: Settings) -> list[str]:
+    """Réglages exigés par le service worker hors `local` : vérifiés au démarrage du
+    worker (`app.worker_main`) et avant déploiement (`check_env --service worker`). Les
+    messages ne citent que des noms de variables, jamais de valeur."""
+    if settings.environment == "local":
+        return []
+    problems: list[str] = []
+    if settings.task_queue_backend != "cloud_tasks":
+        problems.append("TASK_QUEUE_BACKEND doit valoir cloud_tasks")
+    for name in (
+        "gcp_project",
+        "cloud_tasks_location",
+        "tasks_invoker_service_account",
+        "internal_oidc_audience",
+    ):
+        if not getattr(settings, name):
+            problems.append(f"{name.upper()} est obligatoire")
+    if not settings.worker_base_url.startswith("https://"):
+        problems.append("WORKER_BASE_URL doit commencer par https://")
+    if not settings.internal_allowed_invokers:
+        problems.append("INTERNAL_ALLOWED_INVOKERS doit lister au moins un compte de service")
+    return problems

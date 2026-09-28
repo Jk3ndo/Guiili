@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 from logging.config import fileConfig
 
 from sqlalchemy import pool
@@ -43,6 +44,22 @@ AUTOGENERATE_PLUGINS = (
     "~alembic.autogenerate.checkconstraint_byname",
 )
 
+# Les partitions de metric_points (créées par la migration et par la tâche
+# `partition_maintenance`) ne sont pas des modèles : sans ce filtre, `alembic check`
+# signale chacune comme une table à supprimer (`remove_table`). La table mère, elle,
+# reste comparée (colonnes, clé primaire, clé étrangère). tests/test_migrations.py
+# vérifie séparément la forme partitionnée.
+_METRIC_PARTITION = re.compile(r"^metric_points_(?:default|p\d{4}_\d{2})$")
+
+
+def include_object(obj, name, type_, reflected, compare_to) -> bool:
+    return not (
+        type_ == "table"
+        and reflected
+        and name is not None
+        and _METRIC_PARTITION.match(name) is not None
+    )
+
 
 def _database_url() -> str:
     return os.environ.get("ALEMBIC_DATABASE_URL") or get_settings().database_url
@@ -57,6 +74,7 @@ def run_migrations_offline() -> None:
         compare_type=True,
         compare_server_default=False,
         autogenerate_plugins=AUTOGENERATE_PLUGINS,
+        include_object=include_object,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -69,6 +87,7 @@ def do_run_migrations(connection) -> None:
         compare_type=True,
         compare_server_default=False,
         autogenerate_plugins=AUTOGENERATE_PLUGINS,
+        include_object=include_object,
     )
     with context.begin_transaction():
         context.run_migrations()
