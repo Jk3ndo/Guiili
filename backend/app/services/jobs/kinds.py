@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -88,9 +89,20 @@ def effective_interval(kind: TaskKind, frequency: str) -> timedelta:
     return max(FREQUENCY_INTERVALS[frequency], kind.floor)
 
 
-def slot_start(now: datetime, interval: timedelta) -> datetime:
-    """Début du créneau contenant `now` (créneaux alignés sur l'époque Unix, en UTC)."""
-    return _EPOCH + ((now - _EPOCH) // interval) * interval
+def schedule_offset(schedule_id: UUID, interval: timedelta) -> timedelta:
+    """Décalage stable de CE planning dans `[0, interval)`.
+
+    Sans lui, tous les plannings « tous les jours » retombent à minuit UTC pile (grille
+    Unix) et lancent leurs collectes Google en même temps. Dérivé de l'identifiant du
+    planning : deux sources d'un même site se décalent aussi l'une de l'autre."""
+    digest = hashlib.sha256(schedule_id.bytes).digest()
+    return interval * (int.from_bytes(digest[:8], "big") / 2**64)
+
+
+def slot_start(now: datetime, interval: timedelta, *, offset: timedelta = timedelta(0)) -> datetime:
+    """Début du créneau contenant `now` (grille Unix en UTC décalée de `offset`)."""
+    anchor = _EPOCH + offset
+    return anchor + ((now - anchor) // interval) * interval
 
 
 def slot_label(slot: datetime) -> str:
