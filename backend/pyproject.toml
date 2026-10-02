@@ -15,7 +15,7 @@ dependencies = [
     "playwright>=1.63.0",
     "argon2-cffi>=25.1.0",
     "email-validator>=2.3.0",
-    "sentry-sdk[fastapi]>=2.20",
+    "sentry-sdk[fastapi]>=2.71.0",
     "pyjwt[crypto]>=2.10",
 ]
 
