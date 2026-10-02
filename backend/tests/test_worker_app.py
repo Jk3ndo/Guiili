@@ -314,6 +314,54 @@ def test_worker_problems_name_missing_settings_without_values() -> None:
     assert worker_problems(Settings(_env_file=None, **_STAGING, **_WORKER)) == []
 
 
+_ROUTE_INVOKERS = (
+    "INTERNAL_SCHEDULER_INVOKERS",
+    "INTERNAL_TASKS_INVOKERS",
+    "INTERNAL_HEADLESS_INVOKERS",
+)
+
+
+def _worker_settings(**route_lists: list[str]) -> Settings:
+    return Settings(_env_file=None, **_STAGING, **_WORKER, **route_lists)
+
+
+def test_worker_problems_accept_per_route_lists_inside_the_global_list() -> None:
+    settings = _worker_settings(
+        internal_scheduler_invokers=[CALLER],
+        internal_tasks_invokers=[CALLER],
+        internal_headless_invokers=[CALLER],
+    )
+    assert worker_problems(settings) == []
+
+
+def test_worker_problems_accept_empty_per_route_lists() -> None:
+    settings = _worker_settings(
+        internal_scheduler_invokers=[], internal_tasks_invokers=[], internal_headless_invokers=[]
+    )
+    assert worker_problems(settings) == []
+
+
+def test_worker_problems_compare_per_route_invokers_case_insensitively() -> None:
+    settings = _worker_settings(internal_tasks_invokers=[CALLER.upper()])
+    assert worker_problems(settings) == []
+
+
+@pytest.mark.parametrize("name", _ROUTE_INVOKERS)
+def test_worker_problems_flag_a_route_invoker_missing_from_the_global_list(name: str) -> None:
+    stray = "intrus@guiili.iam.gserviceaccount.com"
+    settings = _worker_settings(**{name.lower(): [CALLER, stray]})
+    problems = worker_problems(settings)
+    assert len(problems) == 1
+    assert name in problems[0] and "INTERNAL_ALLOWED_INVOKERS" in problems[0]
+    assert "intrus" not in " ".join(problems)
+
+
+def test_worker_problems_ignore_per_route_lists_in_local() -> None:
+    settings = get_settings().model_copy(update={"internal_tasks_invokers": ["x@example.com"]})
+    assert settings.environment == "local"
+    assert worker_problems(settings) == []
+
+
 def test_an_incomplete_worker_refuses_to_start_outside_local() -> None:
     with pytest.raises(RuntimeError, match="worker"):
         create_worker_app(Settings(_env_file=None, **_STAGING))

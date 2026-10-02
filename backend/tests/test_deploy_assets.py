@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from app.tools.check_env import main, validate_env
+from app.tools.check_env import _JSON_KEYS, main, validate_env
 
 ROOT = Path(__file__).resolve().parents[2]
 BASH = shutil.which("bash")
@@ -268,6 +268,19 @@ def test_validate_env_accepts_the_optional_per_route_invoker_lists() -> None:
     assert validate_env({**_VALID, **optional}) == []
 
 
+def test_validate_env_json_error_lists_every_json_variable() -> None:
+    problems = validate_env({**_VALID, "INTERNAL_TASKS_INVOKERS": ""})
+    text = " ".join(problems)
+    for name in _JSON_KEYS:
+        assert name.upper() in text, name
+    assert "illisible" in text
+
+
+def test_validate_env_rejects_an_empty_string_per_route_list_and_accepts_empty_json() -> None:
+    assert validate_env({**_VALID, "INTERNAL_HEADLESS_INVOKERS": ""})
+    assert validate_env({**_VALID, "INTERNAL_HEADLESS_INVOKERS": "[]"}) == []
+
+
 # --- Lot B : deux images, deux services, service worker ---------------------------------
 
 _WORKER_ENV = {
@@ -311,6 +324,15 @@ def test_validate_env_names_missing_worker_settings_without_values() -> None:
     assert validate_env({**_VALID, **_WORKER_ENV}, service="worker") == []
     # Le contrôle par défaut (API) n'exige rien de nouveau.
     assert validate_env({**_VALID}) == []
+
+
+def test_validate_env_flags_a_route_invoker_missing_from_the_global_list() -> None:
+    stray = '["intrus@guiili.iam.gserviceaccount.com"]'
+    problems = validate_env(
+        {**_VALID, **_WORKER_ENV, "INTERNAL_TASKS_INVOKERS": stray}, service="worker"
+    )
+    assert len(problems) == 1
+    assert "INTERNAL_TASKS_INVOKERS" in problems[0] and "intrus" not in problems[0]
 
 
 def test_main_service_flag(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

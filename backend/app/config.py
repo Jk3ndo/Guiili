@@ -177,4 +177,14 @@ def worker_problems(settings: Settings) -> list[str]:
         problems.append("WORKER_BASE_URL doit commencer par https://")
     if not settings.internal_allowed_invokers:
         problems.append("INTERNAL_ALLOWED_INVOKERS doit lister au moins un compte de service")
+    # La liste globale est contrôlée en premier : un compte de route qui n'y figure pas
+    # recevrait 403 partout. On ne nomme que la variable, jamais l'e-mail.
+    allowed = {email.lower() for email in settings.internal_allowed_invokers}
+    for name in (
+        "internal_scheduler_invokers",
+        "internal_tasks_invokers",
+        "internal_headless_invokers",
+    ):
+        if any(email.lower() not in allowed for email in getattr(settings, name)):
+            problems.append(f"{name.upper()} contient un compte absent de INTERNAL_ALLOWED_INVOKERS")
     return problems
