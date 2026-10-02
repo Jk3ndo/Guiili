@@ -96,7 +96,9 @@ def schedule_offset(schedule_id: UUID, interval: timedelta) -> timedelta:
     Unix) et lancent leurs collectes Google en même temps. Dérivé de l'identifiant du
     planning : deux sources d'un même site se décalent aussi l'une de l'autre."""
     digest = hashlib.sha256(schedule_id.bytes).digest()
-    return interval * (int.from_bytes(digest[:8], "big") / 2**64)
+    # Arithmétique entière : `n / 2**64` en flottant peut arrondir à 1.0 et sortir de `[0, interval)`.
+    n = int.from_bytes(digest[:8], "big")
+    return timedelta(microseconds=((interval // timedelta(microseconds=1)) * n) >> 64)
 
 
 def slot_start(now: datetime, interval: timedelta, *, offset: timedelta = timedelta(0)) -> datetime:
