@@ -523,6 +523,14 @@ exécution laisse une ligne `job_runs` (clé d'idempotence `type:site:fenêtre`,
 vérification GTM en conditions réelles (le navigateur n'existe que dans l'image du
 worker). Aucune de ces routes n'existe dans l'API publique.
 
+Liste blanche par route (optionnelle, à renseigner après le 1er déploiement stable) :
+`INTERNAL_SCHEDULER_INVOKERS` (`/internal/tick` : compte `guiili-scheduler`),
+`INTERNAL_TASKS_INVOKERS` (`/internal/tasks/run` : compte `guiili-tasks`) et
+`INTERNAL_HEADLESS_INVOKERS` (`/internal/headless/verify` : compte d'exécution de l'API),
+chacune au format JSON comme `INTERNAL_ALLOWED_INVOKERS`. Une liste non vide s'ajoute à la
+liste globale (qui s'applique toujours) ; une liste vide ou absente ne restreint rien.
+`/internal/jobs/health` n'est soumise qu'à la liste globale. `check_env` ne les exige pas.
+
 Fréquences proposées : toutes les heures, 3 fois par jour, tous les jours, tous les 3
 jours, toutes les semaines ; planchers : 8 h pour GA4, Search Console, Core Web Vitals
 et la vérification du plan de mesure, 1 h pour les sondes (TLS, disponibilité). Limites

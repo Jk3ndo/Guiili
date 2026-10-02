@@ -68,6 +68,11 @@ def create_worker_app(
             allowed_emails=settings.internal_allowed_invokers,
         )
     application.state.oidc_verifier = oidc_verifier
+    application.state.route_invokers = {
+        "scheduler": frozenset(e.lower() for e in settings.internal_scheduler_invokers),
+        "tasks": frozenset(e.lower() for e in settings.internal_tasks_invokers),
+        "headless": frozenset(e.lower() for e in settings.internal_headless_invokers),
+    }
     application.add_exception_handler(RequestValidationError, _validation_error)  # type: ignore[arg-type]
     application.add_middleware(RequestContextMiddleware)
     application.include_router(internal_router, prefix="/internal")

@@ -258,6 +258,16 @@ def test_validate_env_parses_the_internal_invokers_list_as_json() -> None:
     assert validate_env({**_VALID, "INTERNAL_ALLOWED_INVOKERS": invokers}) == []
 
 
+def test_validate_env_accepts_the_optional_per_route_invoker_lists() -> None:
+    invokers = '["guiili-tasks@guiili.iam.gserviceaccount.com"]'
+    optional = {
+        "INTERNAL_SCHEDULER_INVOKERS": invokers,
+        "INTERNAL_TASKS_INVOKERS": invokers,
+        "INTERNAL_HEADLESS_INVOKERS": invokers,
+    }
+    assert validate_env({**_VALID, **optional}) == []
+
+
 # --- Lot B : deux images, deux services, service worker ---------------------------------
 
 _WORKER_ENV = {

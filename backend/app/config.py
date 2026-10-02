@@ -93,6 +93,12 @@ class Settings(BaseSettings):
     internal_oidc_audience: str = ""
     # E-mails des comptes autorisés à appeler /internal/* (Scheduler, Tasks, API).
     internal_allowed_invokers: list[str] = []
+    # Restrictions par route, en plus de la liste globale ci-dessus. Vide = pas de
+    # restriction supplémentaire (comportement d'avant). /tick : compte du Scheduler ;
+    # /tasks/run : compte de Cloud Tasks ; /headless/verify : compte d'exécution de l'API.
+    internal_scheduler_invokers: list[str] = []
+    internal_tasks_invokers: list[str] = []
+    internal_headless_invokers: list[str] = []
 
     # {version:int -> clé base64 de 32 octets}. pydantic-settings parse le JSON
     # de la variable d'environnement automatiquement pour un type dict ; chaque
