@@ -25,7 +25,15 @@ from pydantic_core import ErrorDetails
 from app.config import Settings, worker_problems
 from app.security.token_crypto import TokenCryptoConfigError, load_token_cipher
 
-_JSON_KEYS = {"token_enc_keys", "cors_origins", "internal_allowed_invokers"}
+_JSON_KEYS = {
+    "token_enc_keys",
+    "cors_origins",
+    "internal_allowed_invokers",
+    "internal_scheduler_invokers",
+    "internal_tasks_invokers",
+    "internal_headless_invokers",
+}
+_JSON_NAMES = ", ".join(sorted(key.upper() for key in _JSON_KEYS))
 _CLOUD_RUN_MANAGED = {"PORT", "K_SERVICE", "K_REVISION", "K_CONFIGURATION"}
 _ENVIRONMENTS = ("local", "staging", "production")
 _SERVICES = ("api", "worker")
@@ -63,7 +71,7 @@ def validate_env(
         # Ne cite que la position, jamais le contenu.
         return [
             *problems,
-            f"une variable JSON (TOKEN_ENC_KEYS, CORS_ORIGINS, INTERNAL_ALLOWED_INVOKERS) est illisible : {exc.msg}",
+            f"une variable JSON ({_JSON_NAMES}) est illisible : {exc.msg}",
         ]
     # Settings ne valide pas le contenu des clés : l'API, elle, les charge à chaque requête
     # (deps.py) et répondrait 500 partout. Les messages ne citent que des numéros de version

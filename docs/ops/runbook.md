@@ -523,10 +523,30 @@ exécution laisse une ligne `job_runs` (clé d'idempotence `type:site:fenêtre`,
 vérification GTM en conditions réelles (le navigateur n'existe que dans l'image du
 worker). Aucune de ces routes n'existe dans l'API publique.
 
+Liste blanche par route (à renseigner dès l'activation du scheduler en production, étape 5 du §15.2 : pas « plus tard ») :
+`INTERNAL_SCHEDULER_INVOKERS` (`/internal/tick` : compte `guiili-scheduler`),
+`INTERNAL_TASKS_INVOKERS` (`/internal/tasks/run` : compte `guiili-tasks`) et
+`INTERNAL_HEADLESS_INVOKERS` (`/internal/headless/verify` : compte d'exécution de l'API),
+chacune au format JSON comme `INTERNAL_ALLOWED_INVOKERS`. Une liste non vide s'ajoute à la
+liste globale (qui s'applique toujours) ; une liste vide ou absente ne restreint rien.
+`/internal/jobs/health` n'est soumise qu'à la liste globale. `check_env` ne les exige pas,
+mais il en contrôle le format : chaque variable doit être un tableau JSON (`'[]'` pour une
+liste vide ; une chaîne vide est refusée) et chaque e-mail doit aussi figurer dans
+`INTERNAL_ALLOWED_INVOKERS`, sinon la route répondrait 403 à tout le monde (la liste globale
+est contrôlée en premier). Ces trois variables font partie de la liste d'activation de la
+production (§15.2, étape 5) : on les renseigne en même temps que le scheduler.
+
 Fréquences proposées : toutes les heures, 3 fois par jour, tous les jours, tous les 3
 jours, toutes les semaines ; planchers : 8 h pour GA4, Search Console, Core Web Vitals
 et la vérification du plan de mesure, 1 h pour les sondes (TLS, disponibilité). Limites
 par workspace : 2 tâches simultanées, 300 tâches déposées par jour.
+
+Les collectes quotidiennes ou périodiques sont étalées sur la journée par un décalage
+stable propre à chaque planning, au lieu de partir toutes à 00:00 UTC. Les plannings déjà
+existants au moment de ce déploiement peuvent sauter une collecte, une seule fois ; un
+passage tardif du scheduler peut aussi, rarement, sauter une exécution (elle est
+dédupliquée : aucune date n'est perdue, l'écart entre deux collectes vaut alors environ
+deux intervalles).
 
 Comportement des tentatives (à connaître avant de modifier une file) :
 
@@ -612,6 +632,9 @@ gcloud iam service-accounts add-iam-policy-binding guiili-scheduler@guiili.iam.g
    compte d'exécution de l'API : le script déploie l'API sans `--service-account`, c'est
    donc le compte par défaut de Compute Engine, `<NUM>-compute@developer.gserviceaccount.com`
    (à confirmer par `gcloud run services describe backend-guiili --format='value(spec.template.spec.serviceAccountName)'`).
+   Renseigner aussi `INTERNAL_SCHEDULER_INVOKERS`, `INTERNAL_TASKS_INVOKERS` et
+   `INTERNAL_HEADLESS_INVOKERS` (tableaux JSON, §15.1) : chaque e-mail doit déjà figurer dans
+   `INTERNAL_ALLOWED_INVOKERS`.
    Le fichier reste en clair comme au §10 : Secret Manager n'est pas dans le périmètre du
    lot B ([PROPRIÉTAIRE], §10).
 6. Déployer : `./scripts/deploy-backend.sh production --dry-run`, puis sans `--dry-run`

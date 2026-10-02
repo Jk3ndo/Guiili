@@ -93,6 +93,12 @@ class Settings(BaseSettings):
     internal_oidc_audience: str = ""
     # E-mails des comptes autorisés à appeler /internal/* (Scheduler, Tasks, API).
     internal_allowed_invokers: list[str] = []
+    # Restrictions par route, en plus de la liste globale ci-dessus. Vide = pas de
+    # restriction supplémentaire (comportement d'avant). /tick : compte du Scheduler ;
+    # /tasks/run : compte de Cloud Tasks ; /headless/verify : compte d'exécution de l'API.
+    internal_scheduler_invokers: list[str] = []
+    internal_tasks_invokers: list[str] = []
+    internal_headless_invokers: list[str] = []
 
     # {version:int -> clé base64 de 32 octets}. pydantic-settings parse le JSON
     # de la variable d'environnement automatiquement pour un type dict ; chaque
@@ -171,4 +177,14 @@ def worker_problems(settings: Settings) -> list[str]:
         problems.append("WORKER_BASE_URL doit commencer par https://")
     if not settings.internal_allowed_invokers:
         problems.append("INTERNAL_ALLOWED_INVOKERS doit lister au moins un compte de service")
+    # La liste globale est contrôlée en premier : un compte de route qui n'y figure pas
+    # recevrait 403 partout. On ne nomme que la variable, jamais l'e-mail.
+    allowed = {email.lower() for email in settings.internal_allowed_invokers}
+    for name in (
+        "internal_scheduler_invokers",
+        "internal_tasks_invokers",
+        "internal_headless_invokers",
+    ):
+        if any(email.lower() not in allowed for email in getattr(settings, name)):
+            problems.append(f"{name.upper()} contient un compte absent de INTERNAL_ALLOWED_INVOKERS")
     return problems

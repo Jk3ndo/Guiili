@@ -17,7 +17,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from sqlalchemy import func, select
 
 from app.api.deps import SessionDep
-from app.api.internal_auth import require_internal_caller
+from app.api.internal_auth import (
+    require_headless_caller,
+    require_internal_caller,
+    require_scheduler_caller,
+    require_tasks_caller,
+)
 from app.config import Settings
 from app.models.website import Website
 from app.services.gcp_metadata import MetadataTokenProvider
@@ -197,7 +202,7 @@ class HeadlessIn(BaseModel):
         return value
 
 
-@router.post("/tick", response_model=TickOut)
+@router.post("/tick", response_model=TickOut, dependencies=[Depends(require_scheduler_caller)])
 async def tick_endpoint(
     session: SessionDep,
     settings: WorkerSettingsDep,
@@ -227,7 +232,9 @@ async def tick_endpoint(
     return TickOut(**asdict(result))
 
 
-@router.post("/tasks/run", response_model=RunTaskOut)
+@router.post(
+    "/tasks/run", response_model=RunTaskOut, dependencies=[Depends(require_tasks_caller)]
+)
 async def run_task(
     body: RunTaskIn,
     response: Response,
@@ -283,7 +290,7 @@ async def jobs_health(session: SessionDep) -> JobsHealthOut:
     )
 
 
-@router.post("/headless/verify")
+@router.post("/headless/verify", dependencies=[Depends(require_headless_caller)])
 async def headless_verify(
     body: HeadlessIn, session: SessionDep, verifier: HeadlessRunnerDep
 ) -> dict[str, Any]:

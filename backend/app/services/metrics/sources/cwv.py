@@ -8,7 +8,8 @@ Lighthouse (laboratoire) est stocké à part (`performance_score`).
 Validation de forme : une clé ABSENTE est « pas de donnée » (légitime : origine trop
 petite), une valeur PRÉSENTE mais invalide (mauvais type, négative, booléenne, NaN, hors
 bornes) est une réponse inattendue (`api_error`, récupérable), jamais stockée ni ignorée
-en silence."""
+en silence. Un échec du laboratoire (`runtimeError`) n'invalide que le score Lighthouse :
+les données terrain valides sont gardées."""
 
 from __future__ import annotations
 
@@ -90,16 +91,17 @@ def parse_cwv(payload: Any, *, day: date) -> list[Observation]:
     lighthouse = payload.get("lighthouseResult")
     if not isinstance(lighthouse, dict):
         raise _bad_shape()
+    lab_failed = False
     runtime_error = lighthouse.get("runtimeError")
     if runtime_error is not None:
         if not isinstance(runtime_error, dict):
             raise _bad_shape()
         code = runtime_error.get("code")
         if isinstance(code, str) and code and code != "NO_ERROR":
-            # Lighthouse dit explicitement ne pas avoir pu mesurer la page (ex. NO_FCP,
-            # PROTOCOL_TIMEOUT) : un `score: null` qui suit n'est pas « pas de donnée »,
-            # c'est un site injoignable ce jour-là.
-            raise SourceError("site_unreachable", recoverable=False)
+            # Lighthouse dit ne pas avoir pu mesurer la page (ex. NO_FCP, PROTOCOL_TIMEOUT).
+            # Cela n'invalide que le score de laboratoire : `originLoadingExperience` est
+            # une mesure Google indépendante (vrais visiteurs, fenêtre de 28 jours).
+            lab_failed = True
     metrics = _section(_section(payload, "originLoadingExperience"), "metrics")
     observations: list[Observation] = []
     for name, keys in _FIELD_METRICS.items():
@@ -109,6 +111,12 @@ def parse_cwv(payload: Any, *, day: date) -> list[Observation]:
         # CrUX donne le CLS multiplié par 100.
         value = percentile / 100 if name == "cls_p75" else percentile
         observations.append(Observation(name, day, value))
+    if lab_failed:
+        if not observations:
+            # Labo en échec ET aucune donnée terrain : rien d'exploitable ce jour-là, un
+            # `[]` passerait pour un succès.
+            raise SourceError("site_unreachable", recoverable=False)
+        return observations
     performance = _section(_section(lighthouse, "categories"), "performance")
     # `score: null` est la réponse de Lighthouse quand la mesure a échoué : pas de donnée.
     score = performance.get("score")

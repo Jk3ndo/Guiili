@@ -12,7 +12,7 @@ from app.models.website import Website
 from app.models.workspace import Workspace
 from app.models.workspace_member import WorkspaceMember
 from app.services.jobs.health import STUCK_RUNNING_GRACE, compute_jobs_health, report_jobs_health
-from app.services.jobs.kinds import RunSpec
+from app.services.jobs.kinds import KINDS, RunSpec, effective_interval, schedule_offset, slot_start
 from app.services.jobs.queue import EnqueueError, InlineQueue, TaskMessage
 from app.services.jobs.runner import lock_key
 from app.services.jobs.scheduler import (
@@ -38,6 +38,11 @@ async def _tick(session: AsyncSession, queue, *, now: datetime = NOW, daily_cap:
 async def _schedules(session: AsyncSession, website_id) -> dict[str, Schedule]:
     rows = await session.execute(select(Schedule).where(Schedule.website_id == website_id))
     return {row.kind: row for row in rows.scalars()}
+
+
+def _own_next_slot(schedule: Schedule, now: datetime = NOW) -> datetime:
+    interval = effective_interval(KINDS[schedule.kind], schedule.frequency)
+    return slot_start(now, interval, offset=schedule_offset(schedule.id, interval)) + interval
 
 
 async def test_default_schedules_are_materialized_once_for_active_sites(
@@ -85,8 +90,8 @@ async def test_a_first_tick_backfills_google_sources_and_runs_the_others(
     assert (result.materialized, result.enqueued, result.capped) == (5, 6, 0)
 
     schedules = await _schedules(db_session, site.id)
-    assert schedules["collect_cwv"].next_due_at == datetime(2026, 9, 27, tzinfo=UTC)
-    assert schedules["collect_probes"].next_due_at == datetime(2026, 9, 26, 8, tzinfo=UTC)
+    assert schedules["collect_cwv"].next_due_at == _own_next_slot(schedules["collect_cwv"])
+    assert schedules["collect_probes"].next_due_at == _own_next_slot(schedules["collect_probes"])
     queued = await db_session.scalar(
         select(func.count()).select_from(JobRun).where(JobRun.status == "queued")
     )
@@ -119,7 +124,7 @@ async def test_the_frequency_floor_applies_even_to_a_bad_row(
     ga4 = next(m for m in queue.messages if m.spec.kind == "collect_ga4")
     assert ga4.spec.window == "20260926T0000"  # créneau de 8 h, pas d'1 h
     schedules = await _schedules(db_session, site.id)
-    assert schedules["collect_ga4"].next_due_at == datetime(2026, 9, 26, 8, tzinfo=UTC)
+    assert schedules["collect_ga4"].next_due_at == _own_next_slot(schedules["collect_ga4"])
 
 
 async def test_the_workspace_daily_cap_holds_back_extra_tasks(
@@ -133,16 +138,18 @@ async def test_the_workspace_daily_cap_holds_back_extra_tasks(
     assert len(site_messages) == 2 and result.capped == 3
     # Écart au brief : les plannings retenus AVANCENT aussi (au plus tard à minuit UTC),
     # sinon ils seraient re-sélectionnés en tête de chaque passage et compteraient
-    # « en retard ». Sondes 8 h : créneau suivant ; les autres : minuit.
+    # « en retard ». Échéance propre au planning, plafonnée à minuit UTC non décalé.
+    # Un backfill (`params["source"]`) correspond au planning `collect_<source>`.
+    processed = {
+        f"collect_{m.spec.params['source']}" if m.spec.kind == "backfill" else m.spec.kind
+        for m in site_messages
+    }
     schedules = await _schedules(db_session, site.id)
     midnight = datetime(2026, 9, 27, tzinfo=UTC)
-    assert {kind: s.next_due_at for kind, s in schedules.items()} == {
-        "collect_ga4": midnight,
-        "collect_gsc": midnight,
-        "collect_cwv": midnight,
-        "collect_probes": datetime(2026, 9, 26, 8, tzinfo=UTC),
-        "measurement_check": midnight,
-    }
+    for kind, schedule in schedules.items():
+        own = _own_next_slot(schedule)
+        expected = own if kind in processed else min(own, midnight)
+        assert schedule.next_due_at == expected, kind
     records = [r for r in caplog.records if getattr(r, "event", "") == "job_daily_cap_reached"]
     assert [(r.workspace_id, r.held) for r in records] == [(str(site.workspace_id), 3)]
 
@@ -361,7 +368,7 @@ async def test_a_key_already_queued_or_finished_is_not_deposited_again(
     assert all(m.spec.key != key for m in queue.messages)
     # Le planning avance quand même : pas de ré-enfilage en boucle au passage suivant.
     schedules = await _schedules(db_session, site.id)
-    assert schedules["collect_cwv"].next_due_at == datetime(2026, 9, 27, tzinfo=UTC)
+    assert schedules["collect_cwv"].next_due_at == _own_next_slot(schedules["collect_cwv"])
     run = await db_session.scalar(select(JobRun).where(JobRun.idempotency_key == key))
     assert run.status == "running"
 

@@ -90,6 +90,41 @@ def _web_streams(payload: Any) -> list[dict[str, Any]]:
     return streams
 
 
+# Raisons Google d'un quota épuisé, parfois servies avec un 403 plutôt qu'un 429.
+_QUOTA_REASONS = frozenset(
+    {
+        "RESOURCE_EXHAUSTED",
+        "rateLimitExceeded",
+        "userRateLimitExceeded",
+        "dailyLimitExceeded",
+        "quotaExceeded",
+    }
+)
+
+
+def _error_reasons(response: httpx.Response) -> set[str]:
+    """Codes de raison du corps d'erreur Google (`error.status`, `error.errors[].reason`,
+    `error.details[].reason`). Jamais le message, qui peut citer une ressource."""
+    try:
+        body = response.json()
+    except ValueError:
+        return set()
+    error = body.get("error") if isinstance(body, dict) else None
+    if not isinstance(error, dict):
+        return set()
+    reasons: set[str] = set()
+    status = error.get("status")
+    if isinstance(status, str):
+        reasons.add(status)
+    for list_key in ("errors", "details"):
+        items = error.get(list_key)
+        for item in items if isinstance(items, list) else []:
+            reason = item.get("reason") if isinstance(item, dict) else None
+            if isinstance(reason, str):
+                reasons.add(reason)
+    return reasons
+
+
 def _raise_for_status(response: httpx.Response) -> None:
     code = response.status_code
     if code < 400:
@@ -97,6 +132,10 @@ def _raise_for_status(response: httpx.Response) -> None:
     if code == 401:
         raise GoogleReadError("token_unavailable")
     if code == 403:
+        # Un quota épuisé et un refus de droits n'appellent pas la même réaction : l'un
+        # se résout seul (nouvel essai, disjoncteur), l'autre demande une action du client.
+        if _error_reasons(response) & _QUOTA_REASONS:
+            raise GoogleReadError("quota")
         raise GoogleReadError("permission_or_api_disabled")
     if code == 404:
         raise GoogleReadError("not_found")

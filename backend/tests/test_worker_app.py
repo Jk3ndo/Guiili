@@ -91,6 +91,83 @@ async def worker(worker_app):
         yield client
 
 
+OTHER = "guiili-scheduler@guiili.iam.gserviceaccount.com"
+
+
+@pytest_asyncio.fixture
+async def strict_worker_app(db_session: AsyncSession):
+    async def fetch_jwks() -> dict:
+        return jwks_for(SIGNING_KEY)
+
+    verifier = OidcVerifier(
+        audience=AUDIENCE, allowed_emails={CALLER, OTHER}, fetch_jwks=fetch_jwks
+    )
+    settings = get_settings().model_copy(
+        update={
+            "internal_scheduler_invokers": [OTHER],
+            "internal_tasks_invokers": [CALLER],
+            "internal_headless_invokers": [CALLER],
+        }
+    )
+    application = create_worker_app(settings, oidc_verifier=verifier)
+
+    async def _session():
+        yield db_session
+
+    application.dependency_overrides[get_session] = _session
+    application.dependency_overrides[get_job_services] = lambda: fake_services(_sources())
+    application.dependency_overrides[get_headless_runner] = lambda: _fake_headless
+    return application
+
+
+@pytest_asyncio.fixture
+async def strict_worker(strict_worker_app):
+    async with AsyncClient(
+        transport=ASGITransport(app=strict_worker_app), base_url="http://w"
+    ) as client:
+        yield client
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body", "allowed", "refused"),
+    [
+        ("POST", "/internal/tick", None, OTHER, CALLER),
+        ("POST", "/internal/tasks/run", {"kind": "partition_maintenance", "window": "20260926"},
+         CALLER, OTHER),
+    ],
+)
+async def test_a_route_only_accepts_its_own_invoker(
+    strict_worker, method, path, body, allowed, refused
+) -> None:
+    denied = await strict_worker.request(method, path, json=body, headers=_auth(refused))
+    assert denied.status_code == 403
+    ok = await strict_worker.request(method, path, json=body, headers=_auth(allowed))
+    assert ok.status_code == 200, ok.text
+
+
+async def test_headless_only_accepts_its_own_invoker(
+    strict_worker, db_session: AsyncSession, make_user
+) -> None:
+    await make_site(db_session, make_user, "strict-headless.test")
+    body = {"url": "https://strict-headless.test"}
+    denied = await strict_worker.post("/internal/headless/verify", json=body, headers=_auth(OTHER))
+    assert denied.status_code == 403
+    ok = await strict_worker.post("/internal/headless/verify", json=body, headers=_auth(CALLER))
+    assert ok.status_code == 200
+
+
+async def test_the_health_route_keeps_the_global_allowlist(strict_worker) -> None:
+    for email in (CALLER, OTHER):
+        assert (await strict_worker.get("/internal/jobs/health", headers=_auth(email))).status_code == 200
+    stranger = await strict_worker.get("/internal/jobs/health", headers=_auth("intrus@example.com"))
+    assert stranger.status_code == 403
+
+
+async def test_empty_route_lists_keep_the_current_behaviour(worker) -> None:
+    # Le fixture `worker` n'a aucune liste par route : tout appelant global passe partout.
+    assert (await worker.post("/internal/tick", headers=_auth())).status_code == 200
+
+
 def test_the_public_api_exposes_no_internal_route() -> None:
     assert not any(getattr(route, "path", "").startswith("/internal") for route in api_app.routes)
     assert not any(path.startswith("/internal") for path in api_app.openapi()["paths"])
@@ -235,6 +312,54 @@ def test_worker_problems_name_missing_settings_without_values() -> None:
     for name in ("TASK_QUEUE_BACKEND", "GCP_PROJECT", "WORKER_BASE_URL", "INTERNAL_ALLOWED_INVOKERS"):
         assert name in text
     assert worker_problems(Settings(_env_file=None, **_STAGING, **_WORKER)) == []
+
+
+_ROUTE_INVOKERS = (
+    "INTERNAL_SCHEDULER_INVOKERS",
+    "INTERNAL_TASKS_INVOKERS",
+    "INTERNAL_HEADLESS_INVOKERS",
+)
+
+
+def _worker_settings(**route_lists: list[str]) -> Settings:
+    return Settings(_env_file=None, **_STAGING, **_WORKER, **route_lists)
+
+
+def test_worker_problems_accept_per_route_lists_inside_the_global_list() -> None:
+    settings = _worker_settings(
+        internal_scheduler_invokers=[CALLER],
+        internal_tasks_invokers=[CALLER],
+        internal_headless_invokers=[CALLER],
+    )
+    assert worker_problems(settings) == []
+
+
+def test_worker_problems_accept_empty_per_route_lists() -> None:
+    settings = _worker_settings(
+        internal_scheduler_invokers=[], internal_tasks_invokers=[], internal_headless_invokers=[]
+    )
+    assert worker_problems(settings) == []
+
+
+def test_worker_problems_compare_per_route_invokers_case_insensitively() -> None:
+    settings = _worker_settings(internal_tasks_invokers=[CALLER.upper()])
+    assert worker_problems(settings) == []
+
+
+@pytest.mark.parametrize("name", _ROUTE_INVOKERS)
+def test_worker_problems_flag_a_route_invoker_missing_from_the_global_list(name: str) -> None:
+    stray = "intrus@guiili.iam.gserviceaccount.com"
+    settings = _worker_settings(**{name.lower(): [CALLER, stray]})
+    problems = worker_problems(settings)
+    assert len(problems) == 1
+    assert name in problems[0] and "INTERNAL_ALLOWED_INVOKERS" in problems[0]
+    assert "intrus" not in " ".join(problems)
+
+
+def test_worker_problems_ignore_per_route_lists_in_local() -> None:
+    settings = get_settings().model_copy(update={"internal_tasks_invokers": ["x@example.com"]})
+    assert settings.environment == "local"
+    assert worker_problems(settings) == []
 
 
 def test_an_incomplete_worker_refuses_to_start_outside_local() -> None:

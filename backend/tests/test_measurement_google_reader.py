@@ -156,6 +156,47 @@ async def test_http_errors_map_to_reasons(status: int, reason: str) -> None:
     assert excinfo.value.reason == reason
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"error": {"code": 403, "status": "RESOURCE_EXHAUSTED", "message": "x"}},
+        {"error": {"code": 403, "errors": [{"reason": "rateLimitExceeded"}]}},
+        {"error": {"code": 403, "errors": [{"reason": "dailyLimitExceeded"}]}},
+        {"error": {"code": 403, "details": [{"reason": "quotaExceeded"}]}},
+        {"error": {"code": 403, "errors": [{"reason": "userRateLimitExceeded"}]}},
+    ],
+)
+async def test_a_403_with_a_quota_reason_is_a_quota_error(body: dict) -> None:
+    reader = _reader(lambda request: httpx.Response(403, json=body))
+    with pytest.raises(GoogleReadError) as excinfo:
+        await reader.event_stats()
+    assert excinfo.value.reason == "quota"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"error": {"code": 403, "status": "PERMISSION_DENIED"}},
+        {"error": {"code": 403, "errors": [{"reason": "forbidden"}]}},
+        {"error": "pas un objet"},
+        {"error": {"errors": "pas une liste"}},
+    ],
+)
+async def test_a_403_without_a_quota_reason_stays_a_permission_error(body: dict) -> None:
+    reader = _reader(lambda request: httpx.Response(403, json=body))
+    with pytest.raises(GoogleReadError) as excinfo:
+        await reader.event_stats()
+    assert excinfo.value.reason == "permission_or_api_disabled"
+
+
+async def test_a_non_json_403_stays_a_permission_error() -> None:
+    reader = _reader(lambda request: httpx.Response(403, content=b"<html>Forbidden</html>"))
+    with pytest.raises(GoogleReadError) as excinfo:
+        await reader.event_stats()
+    assert excinfo.value.reason == "permission_or_api_disabled"
+
+
 async def test_network_error_maps_to_network_reason() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("boom")

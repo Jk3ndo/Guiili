@@ -33,6 +33,7 @@ from app.services.jobs.kinds import (
     SCHEDULABLE_KINDS,
     RunSpec,
     effective_interval,
+    schedule_offset,
     slot_label,
     slot_start,
 )
@@ -252,10 +253,14 @@ async def tick(
                 counts[workspace_id] = await runs_today(session, workspace_id, now=now)
             interval = effective_interval(KINDS[schedule.kind], schedule.frequency)
             previous_due = schedule.next_due_at
-            next_slot = slot_start(now, interval) + interval
+            next_slot = slot_start(
+                now, interval, offset=schedule_offset(schedule.id, interval)
+            ) + interval
             if counts[workspace_id] >= daily_cap:
                 # Retenu par la limite du jour : l'échéance avance quand même (au plus tard
-                # à minuit UTC, quand la limite se remet à zéro), sinon les plus anciens
+                # à minuit UTC NON décalé : `runs_today` se remet à zéro à minuit UTC pile ;
+                # reprendre à minuit plutôt qu'au décalage propre est acceptable, vu le
+                # plafond de 300 tâches/jour/workspace), sinon les plus anciens
                 # plannings seraient re-sélectionnés en tête à chaque passage, priveraient
                 # les autres workspaces du lot et compteraient « en retard » (alertes).
                 schedule.next_due_at = min(next_slot, _next_midnight(now))
