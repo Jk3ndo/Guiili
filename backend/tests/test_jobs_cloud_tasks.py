@@ -68,8 +68,25 @@ async def test_a_task_is_created_in_its_source_queue_with_an_oidc_token() -> Non
     assert json.loads(base64.b64decode(http_request["body"])) == SPEC.to_payload()
 
 
-async def test_an_already_existing_task_is_not_an_error() -> None:
-    await _queue(lambda request: httpx.Response(409, json={})).enqueue(TaskMessage(SPEC, "ga4"))
+async def test_a_409_already_exists_is_a_silent_duplicate() -> None:
+    body = {"error": {"code": 409, "status": "ALREADY_EXISTS", "message": "x"}}
+    queue = _queue(lambda request: httpx.Response(409, json=body))
+    await queue.enqueue(TaskMessage(SPEC, "ga4"))  # ne lève pas
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(409, json={}),
+        httpx.Response(409, json={"error": {"code": 409, "status": "ABORTED"}}),
+        httpx.Response(409, content=b"<html>conflict</html>"),
+    ],
+)
+async def test_any_other_409_is_an_enqueue_error(response: httpx.Response) -> None:
+    queue = _queue(lambda request: response)
+    with pytest.raises(EnqueueError) as excinfo:
+        await queue.enqueue(TaskMessage(SPEC, "ga4"))
+    assert excinfo.value.reason == "http_409"
 
 
 @pytest.mark.parametrize("status", [400, 403, 429, 500])

@@ -22,6 +22,15 @@ def task_id_for(key: str) -> str:
     return "t-" + hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
+def _is_already_exists(response: httpx.Response) -> bool:
+    try:
+        body = response.json()
+    except ValueError:
+        return False
+    error = body.get("error") if isinstance(body, dict) else None
+    return isinstance(error, dict) and error.get("status") == "ALREADY_EXISTS"
+
+
 class CloudTasksQueue:
     def __init__(
         self,
@@ -83,7 +92,9 @@ class CloudTasksQueue:
         finally:
             if owns:
                 await http.aclose()
-        if response.status_code == 409:  # déjà déposée : c'est le but de la clé
-            return
+        if response.status_code == 409:
+            if _is_already_exists(response):  # déjà déposée : c'est le but de la clé
+                return
+            raise EnqueueError("http_409")
         if response.status_code >= 400:
             raise EnqueueError(f"http_{response.status_code}")
