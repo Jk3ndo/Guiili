@@ -23,6 +23,7 @@ from app.services.metrics.sources import ga4 as ga4_module
 from app.services.metrics.sources import gsc as gsc_module
 from app.services.metrics.sources.credentials import resolve_google_credentials
 from app.services.metrics.sources.ga4 import Ga4Source, parse_events, parse_totals
+from app.services.metrics.sources.google_http import google_json
 from app.services.metrics.sources.gsc import GscSource, parse_dimension
 from app.services.metrics.sources.gsc import parse_totals as parse_gsc_totals
 from app.services.metrics.types import DayRange, Observation, SourceError
@@ -162,6 +163,22 @@ async def test_ga4_http_errors_are_classified(status: int, reason: str, recovera
     )
     with pytest.raises(SourceError) as excinfo:
         await source.collect(SITE, WINDOW)
+    assert (excinfo.value.reason, excinfo.value.recoverable) == (reason, recoverable)
+
+
+@pytest.mark.parametrize(
+    ("body", "reason", "recoverable"),
+    [
+        ({"error": {"code": 403, "errors": [{"reason": "rateLimitExceeded"}]}}, "quota", True),
+        ({}, "permission_or_api_disabled", False),
+    ],
+)
+async def test_google_json_classifies_a_403_by_its_body(
+    body: dict, reason: str, recoverable: bool
+) -> None:
+    client = _client(lambda request: httpx.Response(403, json=body))
+    with pytest.raises(SourceError) as excinfo:
+        await google_json("GET", "https://example.test/x", "jeton", client=client)
     assert (excinfo.value.reason, excinfo.value.recoverable) == (reason, recoverable)
 
 
