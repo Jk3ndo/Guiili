@@ -141,6 +141,33 @@ def test_parse_cwv_runtime_error_no_error_is_not_a_failure() -> None:
     assert {o.metric for o in observations} == {"lcp_p75_ms", "inp_p75_ms", "cls_p75", "performance_score"}
 
 
+def test_parse_cwv_runtime_error_keeps_valid_field_data() -> None:
+    # Le labo peut échouer (anti-robot, délai dépassé) alors que les données terrain
+    # CrUX, calculées par Google sur 28 jours, restent valides : les jeter est une perte.
+    payload = {
+        "lighthouseResult": {"runtimeError": {"code": "PROTOCOL_TIMEOUT", "message": "x"}},
+        "originLoadingExperience": {"metrics": _ORIGIN},
+    }
+    observations = parse_cwv(payload, day=TODAY)
+    assert {o.metric: o.value for o in observations} == {
+        "lcp_p75_ms": 2300.0,
+        "inp_p75_ms": 180.0,
+        "cls_p75": 0.05,
+    }
+
+
+def test_parse_cwv_runtime_error_never_reads_the_lab_score() -> None:
+    payload = {
+        "lighthouseResult": {
+            "runtimeError": {"code": "NO_FCP", "message": "x"},
+            "categories": {"performance": {"score": 0.9}},
+        },
+        "originLoadingExperience": {"metrics": _ORIGIN},
+    }
+    metrics = {o.metric for o in parse_cwv(payload, day=TODAY)}
+    assert "performance_score" not in metrics and "lcp_p75_ms" in metrics
+
+
 @pytest.mark.parametrize("runtime_error", [None, "x", 3, []])
 def test_parse_cwv_rejects_a_runtime_error_of_the_wrong_type(runtime_error: object) -> None:
     payload = {"lighthouseResult": {"runtimeError": runtime_error}}
