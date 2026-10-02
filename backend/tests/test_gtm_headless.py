@@ -1,12 +1,15 @@
 """Tests de `gtm_headless.py`.
 
 `verify_gtm` lance un vrai navigateur Chromium — jamais exerce ici (voir la
-docstring du module). On teste uniquement la logique pure : derivation des
-findings depuis un resultat observe, et la serialisation vers un dict JSONB.
+docstring du module). On teste la logique pure : derivation des findings depuis
+un resultat observe, la serialisation vers un dict JSONB, et (avec un faux
+Playwright) les arguments de lancement du navigateur.
 """
 
+import asyncio
 from datetime import UTC, datetime
 
+from app.services import gtm_headless
 from app.services.gtm_headless import (
     _MAX_GA4_IDS,
     GtmHeadlessResult,
@@ -211,6 +214,51 @@ def test_headless_result_dict_exposes_new_fields_with_defaults() -> None:
     assert out["ga4_measurement_ids"] == ["G-ABC123XYZ"]
     assert out["ads_requests"] == 2
     assert out["consent_default_seen"] is True
+
+
+def test_verify_gtm_launches_chromium_with_the_sandbox_choice_explicit(monkeypatch) -> None:
+    # Faux Playwright : aucun vrai navigateur. On capture les arguments de `launch`.
+    launch_kwargs: dict[str, object] = {}
+
+    class _FakePage:
+        def on(self, *_args: object) -> None:
+            return None
+
+        async def goto(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        async def evaluate(self, *_args: object) -> list[object]:
+            return []
+
+    class _FakeBrowser:
+        async def new_page(self) -> _FakePage:
+            return _FakePage()
+
+        async def close(self) -> None:
+            return None
+
+    class _FakeChromium:
+        async def launch(self, *args: object, **kwargs: object) -> _FakeBrowser:
+            launch_kwargs.update(kwargs)
+            return _FakeBrowser()
+
+    class _FakePlaywright:
+        chromium = _FakeChromium()
+
+    class _FakeContext:
+        async def __aenter__(self) -> _FakePlaywright:
+            return _FakePlaywright()
+
+        async def __aexit__(self, *_exc: object) -> None:
+            return None
+
+    monkeypatch.setattr(gtm_headless, "async_playwright", _FakeContext)
+
+    result = asyncio.run(gtm_headless.verify_gtm("https://example.com"))
+
+    assert result.error is None
+    # Choix explicite (voir le commentaire dans verify_gtm) : jamais laisse au defaut.
+    assert launch_kwargs.get("chromium_sandbox") is False
 
 
 def test_invalid_ga4_tid_is_ignored() -> None:

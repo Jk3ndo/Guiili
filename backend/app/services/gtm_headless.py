@@ -231,7 +231,10 @@ async def verify_gtm(url: str, *, timeout: float = 20.0) -> GtmHeadlessResult:
 
     try:
         async with async_playwright() as pw:
-            browser = await pw.chromium.launch()
+            # Choix explicite : sous Cloud Run (gVisor) le bac à sable propre à Chromium ne
+            # s'initialise pas ; l'isolement réel est celui du conteneur (utilisateur non
+            # privilégié, Dockerfile.worker), du compte de service et du réseau.
+            browser = await pw.chromium.launch(chromium_sandbox=False)
             try:
                 page = await browser.new_page()
 
